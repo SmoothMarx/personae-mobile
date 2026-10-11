@@ -1,0 +1,4 @@
+Phase A falsifiability probe, 2026-10-11, against git HEAD (0.6.1)
+avatars.ts  : []
+components  : []  paddingLeft:60=True  width:84=True
+=> the new geometry test asserts avatar==54 and the source test asserts no "size ?? 32": both fail on HEAD, both pass now.
