@@ -142,7 +142,12 @@ export const t = {
     title: 'Definições',
     surface: 'Tipo de ligação',
     surfaceHelp:
-      'O dashboard (9119) usa uma credencial da app; a API do gateway (9222) usa a chave de API. É a app que fala com um deles de cada vez.',
+      'Só há uma coisa obrigatória: o tipo de ligação tem de ser «Dashboard (:9119)» e a credencial tem de ser o bearer da app. A API do gateway (:9222) continua a funcionar, mas não tem perfis nem grupos.',
+    surfaceCheckOk: 'Dashboard (:9119) + bearer — está preenchido. Usa «Testar ligação» para confirmar.',
+    surfaceCheckPending:
+      'Falta escolher «Dashboard (:9119)» ou preencher a credencial (o bearer). É o único par obrigatório.',
+    gatewayNoProfiles:
+      'A API do gateway (:9222) não tem lista de perfis: o roster fica sem perfis, sem grupos e sem conversas por perfil. Muda para «Dashboard (:9119)» para ver o conjunto todo.',
     baseUrl: 'Endereço do servidor',
     baseUrlHelp: 'Ex.: http://10.0.0.5:9119',
     baseUrlHelpGateway: 'Ex.: http://10.0.0.5:9222',

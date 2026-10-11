@@ -146,8 +146,8 @@ export default function SettingsScreen() {
   const exportLog = useCallback(async () => {
     const doc = buildLogDocument(
       {
-        appVersion: '0.4.0',
-        versionCode: '4',
+        appVersion: '0.5.0',
+        versionCode: '5',
         surface: surfaceLabel(form.surface),
         baseUrl: form.baseUrl,
         routes: form.routes.map((route, index) => ({ url: route.url, role: route.role, priority: index })),
@@ -181,6 +181,14 @@ export default function SettingsScreen() {
 
   const urlCheck = checkBaseUrl(form.baseUrl);
   const contacts = useMemo(() => contactsOf({ ...form, profiles: effectiveProfiles }), [form, effectiveProfiles]);
+
+  /**
+   * F7: the pair the user must get right, and whether it is right — shown in one line.
+   * `Dashboard (:9119)` + a bearer is the requirement; a valid URL and a stored key are what make it
+   * satisfiable, and the last "Testar ligação" result is what says whether it actually worked.
+   */
+  const surfaceOk = form.surface === 'dashboard' && Boolean(form.apiKey) && urlCheck.ok;
+  const checkResult = results.length ? results[0] : null;
 
   const testConnection = useCallback(async () => {
     setTesting(true);
@@ -292,6 +300,35 @@ export default function SettingsScreen() {
           <Text style={styles.effectiveLabel}>{t.settings.effective}</Text>
           <Text style={styles.effectiveValue}>{surfaceLabel(form.surface)}</Text>
         </View>
+
+        {/* F7's second half: name the ONE thing a user must set, and put its check result right
+            next to it. `Tipo de ligação = Dashboard (:9119)` plus the bearer is the whole
+            requirement; everything else on this screen has a working default. */}
+        <View style={styles.requiredRow}>
+          <Ionicons
+            name={surfaceOk ? 'checkmark-circle' : 'alert-circle-outline'}
+            size={16}
+            color={surfaceOk ? colors.green : colors.amber}
+          />
+          <Text style={styles.requiredText}>
+            {surfaceOk ? t.settings.surfaceCheckOk : t.settings.surfaceCheckPending}
+          </Text>
+        </View>
+        {checkResult ? (
+          <View style={styles.checkRow}>
+            <View style={[styles.dot, { backgroundColor: statusColor(checkResult.probe.status, colors) }]} />
+            <Text style={styles.checkText} numberOfLines={2}>
+              {checkResult.probe.status === 'ok'
+                ? t.settings.testOk(checkResult.probe.version ?? '')
+                : checkResult.detail || checkResult.probe.status}
+              {checkResult.ms !== null ? ` · ${checkResult.ms} ms` : ''}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* The api_server has NO profile route. A 0.4.0 upgrade lands here with the old :9222 key,
+            so say it in the UI instead of letting the roster look empty for no stated reason. */}
+        {form.surface === 'gateway' ? <Text style={styles.invalid}>{t.settings.gatewayNoProfiles}</Text> : null}
       </View>
 
       <Field
@@ -852,6 +889,10 @@ const styles = StyleSheet.create({
   pillActive: { borderColor: colors.accent, backgroundColor: colors.panelAlt },
   pillText: { color: colors.muted, fontSize: font.small },
   pillTextActive: { color: colors.accent, fontWeight: '700' },
+  requiredRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingTop: space.xs },
+  requiredText: { color: colors.text, fontSize: font.small, flexShrink: 1 },
+  checkRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  checkText: { color: colors.muted, fontSize: font.small, flexShrink: 1 },
   diagRow: { flexDirection: 'row', alignItems: 'baseline', gap: space.sm },
   diagLabel: { color: colors.faint, fontSize: font.small, width: 160 },
   diagValue: { color: colors.text, fontSize: font.small, flex: 1 },
