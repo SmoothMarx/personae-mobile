@@ -1060,9 +1060,15 @@ docker run … personae-android:1 ./gradlew :app:assembleRelease --no-daemon --m
 | **Live bearer in the bundle** | **0 occurrences** |
 | Environment facts | `100.64.0.11` 0 · `10.0.0.15` 0 · `personae` 0 · `API_SERVER_KEY=` 0 |
 
-`bash logs/verify-0.6.0.sh` re-runs the whole check — **19 PASS, exit 0** (`logs/verify-0.6.0.txt`):
-app tests, `tsc`, server tests, deployed-vs-repo drift, service status, version, the artifact summary,
-the signer fingerprint against 0.5.0's, the bearer grep and the bundle markers.
+`bash logs/verify-0.6.0.sh` re-runs the whole check. **Corrected 2026-10-11**: as first shipped, line 19
+declared `ENV_BEARER_FILE` and nothing ever read it, so the bearer check silently skipped and then
+reported a FAIL *against the bundle* — 15 PASS + 1 FAIL, with "the check did not run" indistinguishable
+from a real leak. The repaired script reads the bearer from `$HERMES_HOME/.env`, adds a positive
+control, and separates not-run from leak: **16 PASS, exit 0**. The "19 PASS" once claimed here was
+never true in any shell.
+
+What it exercises: app tests, `tsc`, server tests, deployed-vs-repo drift, service status, version, the
+artifact summary, the signer fingerprint against 0.5.0's, the bearer grep and the bundle markers.
 
 ## Deviations from the brief, and why (each one deliberate)
 
@@ -1136,3 +1142,95 @@ Commands for the two things only the phone can prove (marked **deferred** — no
 adb install -r dist/personae-0.6.0.apk
 adb shell am start -a android.intent.action.VIEW -d 'personae://connect?base=HTTP%3A%2F%2Fhost%3A9119&code=…'
 ```
+
+# 0.6.1 — the brand: launcher icon, adaptive icon, splash (2026-10-11)
+
+0.6.0 shipped the stock Expo template's placeholders. `app.json` declared no `icon` and no
+`adaptiveIcon`, so `npx expo config --type public` resolved neither and prebuild wrote its own
+defaults: a generic teal Android-mascot launcher tile, and a construction-grid splash on white. 0.6.1
+puts the Personae mark in both slots. **No app code changed** — same bundle, same server, same features.
+
+## What 0.6.1 changes for the user
+
+| Slot | 0.6.0 shipped | 0.6.1 ships |
+|---|---|---|
+| Launcher, API 26+ (adaptive) | teal mascot tile | the bust on `#0B0F14`, with `backgroundColor` set to the art's own colour so no mask shape shows a seam |
+| Launcher, legacy | the same placeholder | `assets/icon.png` — the kit's icon framing, 1024px, **alpha-free** (the App Store rejects an alpha channel) |
+| Splash / launch window | construction grid, `windowBackground` `#FFFFFF` | the mark centred on `#0b0f14`, 288dp canvas with 192dp of art (the Android 12 ratio) |
+| In-app UI | no logo anywhere | **still no logo anywhere** — see gaps |
+
+## The three decisions the measurements forced
+
+1. **The kit's `transparent/` art is not usable for the adaptive foreground here.** Composited on
+   `#0b0f14` it scores RMSE **0.505** against the opaque art: the keying drops the bust's own darks and
+   outlines, so on a dark field the drawing loses half its content. (The kit README says as much —
+   "for light surfaces".) The foreground is therefore the opaque art scaled to the 66dp safe zone on a
+   `#0B0F14` canvas that matches `android.adaptiveIcon.backgroundColor` exactly — corner pixel
+   `srgb(11,15,20)` on both. Functionally identical to a transparent foreground, without losing a line.
+2. **The splash is sized to the platform, not to the template.** The template's drawable is a bare
+   bitmap used as `windowBackground`, i.e. stretched to fill the window, which distorts it on a tall
+   phone. The first pass here kept the template's 288dp canvas with art at 88% of it — a 254dp bust;
+   the corrected version uses **288dp canvas / 192dp art** (Android 12's ratio, the same 2/3 as
+   adaptive icons), visible bust ≈169dp, never stretched.
+3. **`icon/` and `logo/` are the same framing in practice** (content bbox 657×902 at +184+62 vs
+   654×897 at +185+69 — 3px apart), so either would do; `icon/` was used for both slots.
+
+## P5 — the artifact, measured
+
+```
+npx expo prebuild -p android --no-install      # versionCode 7 / versionName 0.6.1
+bash scripts/patch-android-signing.sh
+bash scripts/patch-android-branding.sh         # NEW — splash + launch background colour
+docker run … personae-android:1 ./gradlew :app:assembleRelease --no-daemon --max-workers=1
+# BUILD SUCCESSFUL in 42s · 449 actionable tasks: 36 executed, 413 up-to-date
+```
+
+| Measured fact | Value |
+|---|---|
+| Path / bytes | `dist/personae-0.6.1.apk` / **114 272 009** |
+| sha256 | **72795c59de0419da226f82a26047466eaf5117f57fea878abbdfdd637bdf1082** |
+| versionCode / versionName | **7** / **0.6.1** |
+| Signer | `CN=Personae Mobile, …`, SHA-256 `bd40e005…dd37f26` — **the same key as 0.1.0-0.6.0** |
+| min / target SDK | 24 / 36 |
+| Packaged splash | 288/432/576/864/1152px tiles, content at **59% of canvas** (2/3 art × the art's own 88%), corner `srgb(11,15,20)` |
+| Packaged adaptive foreground | `5c.webp` 432², content 58% of canvas, corner `srgb(11,15,20)` |
+| Bundle markers | `personae://connect` 1 · `pair/redeem` 1 · `api/plugins/messenger/state` 1 · `expo-camera` 1 |
+| Live bearer in the bundle | **0 occurrences** (positive control 1) |
+| Environment facts | `100.64.0.11` 0 · `10.0.0.15` 0 · `personae` 0 · `API_SERVER_KEY=` 0 |
+
+`bash logs/verify-0.6.1.sh` — **16 PASS, 0 FAIL, exit 0** (`logs/verify-0.6.1.txt`). Two additions over
+the 0.6.0 script, both because the old one could pass a wrong artifact:
+
+- the expected version is **derived from `app.json`**, so a stale APK fails instead of satisfying a
+  hardcoded expectation;
+- the brand is checked **by content**, not by trusting that prebuild ran: every packaged bitmap under
+  `res/` is compared against `assets/icon.png`, and 0.6.0's placeholders are pushed through the same
+  probe as a **negative control** — they score RMSE **0.310591** where 0.6.1 scores **0.0723231** (the
+  masked legacy launcher icon; the splash tiles and adaptive foreground land at 0.004-0.025). Without
+  that control, a "the probe found nothing" result would prove nothing.
+
+## Honest gaps (0.6.1)
+
+- **Nothing verified on the phone.** Still no `adb` on either host and the Pixel 8 is offline, so the
+  launcher icon, the splash and the pairing QR remain *unseen* here: the geometry, the packaged bytes
+  and the signer are verified; the pixels on a real screen are not. Same gap 0.6.0 declared.
+- **No logo inside the app UI.** The roster, the connect screen and Definições carry no brand mark.
+  Deliberately not invented — that is a design decision, not an implementation detail.
+- **Low-density launcher icons stay soft.** Below ~48px the detailed bust mushes; the kit's README says
+  so itself and offers `favicon/personae-f1-tight-*` for those slots. Per-density art is not wired
+  (prebuild derives every density from one `icon`) and a different framing at some densities would make
+  the icon inconsistent across devices, so the full bust ships everywhere.
+- **Android 12+ `windowSplashScreen*` attributes are not set.** The launch window is a `layer-list`;
+  a very slow cold start on API 31+ can still flash the system's own icon before our window draws.
+- `brand/` is **untracked** — the designer drop, ~14MB including a 6.6MB zip. `assets/` holds the three
+  files the build actually consumes.
+
+## For the user — install and what to look at
+
+1. Put `dist/personae-0.6.1.apk` on the phone and tap it. Same release key as 0.5.0/0.6.0, so it
+   installs **over** the existing app; nothing to uninstall first.
+2. Home screen and app switcher: the bust on the dark field, no teal mascot.
+3. Kill the app and reopen: the launch window should be the mark on near-black, centred — not the
+   construction grid on white.
+4. Functionally nothing moved from 0.6.0, so the pairing/options steps in the 0.6.0 section still
+   apply verbatim.

@@ -133,15 +133,41 @@ for f in $(find /tmp/v061-res -type f \( -name '*.webp' -o -name '*.png' \) -siz
   t=$(mktemp /tmp/v061-c.XXXXXX.png); convert "$f" -resize 512x512! "$t" 2>/dev/null || { rm -f "$t"; continue; }
   r=$(compare -metric RMSE /tmp/v061-src.png "$t" null: 2>&1 | sed 's/.*(\(.*\))/\1/')
   awk -v a="$r" -v b="$best" 'BEGIN{exit !(a+0 < b+0)}' && { best="$r"; bestf="$f"; }
-  awk -v a="$r" 'BEGIN{exit !(a+0 < 0.05)}' && hits=$((hits+1))
+  # 0.10, not 0.05: the legacy ic_launcher ships with the launcher's rounded-corner mask baked in, so
+  # it can never be pixel-exact against the square source (measured 0.0723). The splash tiles and the
+  # adaptive foreground carry no mask and land at 0.004-0.025, which is why they clear the loose gate
+  # too — a genuinely wrong icon scores far above 0.3, not 0.07.
+  awk -v a="$r" 'BEGIN{exit !(a+0 < 0.10)}' && hits=$((hits+1))
   rm -f "$t"
 done
 note "bitmaps compared: $(find /tmp/v061-res -type f \( -name '*.webp' -o -name '*.png' \) -size -400k | wc -l)"
 note "best match: RMSE $best  ($(basename "$bestf"))"
 if awk -v a="$best" 'BEGIN{exit !(a+0 < 0.10)}'; then
-  ok "the Personae launcher mark is inside the APK ($hits packaged bitmaps match assets/icon.png)"
+  ok "the Personae launcher mark is inside the APK — closest bitmap $(basename "$bestf") at RMSE $best, $hits packaged bitmaps within 0.10"
 else
   bad "no packaged bitmap matches the Personae mark — the placeholder icon may still be shipping"
+fi
+
+echo
+echo "--- negative control: 0.6.0's packaged bitmaps vs the same source ---"
+if [ -f dist/personae-0.6.0.apk ]; then
+  rm -rf /tmp/v061-res0 && mkdir -p /tmp/v061-res0
+  unzip -o -q dist/personae-0.6.0.apk 'res/*' -d /tmp/v061-res0 2>/dev/null
+  best0=99
+  for f in $(find /tmp/v061-res0 -type f \( -name '*.webp' -o -name '*.png' \) -size -400k | head -120); do
+    t=$(mktemp /tmp/v061-n.XXXXXX.png); convert "$f" -resize 512x512! "$t" 2>/dev/null || { rm -f "$t"; continue; }
+    r=$(compare -metric RMSE /tmp/v061-src.png "$t" null: 2>&1 | sed 's/.*(\(.*\))/\1/')
+    awk -v a="$r" -v b="$best0" 'BEGIN{exit !(a+0 < b+0)}' && best0="$r"
+    rm -f "$t"
+  done
+  note "0.6.0 (template placeholder icons) closest bitmap: RMSE $best0"
+  if awk -v a="$best0" 'BEGIN{exit !(a+0 > 0.10)}'; then
+    ok "negative control holds — the placeholder build cannot pass this check ($best0 > 0.10)"
+  else
+    bad "negative control FAILS — 0.6.0 also scores $best0, so the check proves nothing"
+  fi
+else
+  note "skipped: dist/personae-0.6.0.apk not present"
 fi
 
 echo

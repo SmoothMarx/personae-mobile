@@ -1,0 +1,49 @@
+=== 0.6.1 release check — 2026-10-11T19:25:51Z ===
+
+--- app ---
+PASS  app tests: 145/145 passed, 0 failed (floor 132)
+PASS  typecheck: tsc --noEmit rc 0
+
+--- server plugins ---
+PASS  server tests: 43 passed in 1.54s (floor 43)
+PASS  deployed plugins match server/ (no drift)
+PASS  hermes-serve.service active
+
+--- app.json declares the release and the brand ---
+PASS  app.json: 0.6.1 / versionCode 7
+PASS  icon -> assets/icon.png
+PASS  adaptiveIcon.foregroundImage wired
+PASS  assets/icon.png has no alpha channel (App Store requirement)
+
+--- the artifact ---
+      path: dist/personae-0.6.1.apk
+      bytes: 114272009
+      sha256: 72795c59de0419da226f82a26047466eaf5117f57fea878abbdfdd637bdf1082
+summary: com.personae.mobile	7	0.6.1
+min-sdk: 24  target-sdk: 36
+camera permission: 1
+deep-link scheme personae: 11
+adaptive-icon xml entries: 1
+splashscreen drawable entries: 1
+markers: personae://connect=1 pair/redeem=1 api/plugins/messenger/state=1 expo-camera=1 
+env facts (want 0): 100.64.0.11=0 personae=0 10.0.0.15=0 API_SERVER_KEY==0 
+positive control personae://connect: 1
+live bearer occurrences (want 0): 0
+Signer #1 certificate DN: CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT
+Signer #1 certificate SHA-256 digest: bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26
+PASS  APK is 0.6.1 / versionCode 7 (matches app.json)
+PASS  signed with the SAME Personae release key as 0.5.0/0.6.0 (installs over it)
+PASS  adaptive launcher icon packaged
+PASS  splash screen asset packaged
+PASS  live bearer occurrences in the shipped bundle: 0
+
+--- the brand is really inside the APK (every packaged bitmap vs assets/icon.png) ---
+      bitmaps compared: 247
+      best match: RMSE 0.0723231  (sK.webp)
+PASS  the Personae launcher mark is inside the APK — closest bitmap sK.webp at RMSE 0.0723231, 3 packaged bitmaps within 0.10
+
+--- negative control: 0.6.0's packaged bitmaps vs the same source ---
+      0.6.0 (template placeholder icons) closest bitmap: RMSE 0.310591
+PASS  negative control holds — the placeholder build cannot pass this check (0.310591 > 0.10)
+
+RESULT: PASS — 0.6.1 verified
