@@ -37,6 +37,77 @@ export const t = {
     newBadge: (n: number) => (n > 0 ? `${n} nova${n === 1 ? '' : 's'}` : ''),
     newTag: 'nova',
     messages: (n: number) => `${n} mensage${n === 1 ? 'm' : 'ns'}`,
+
+    // ── the roster proper (0.5.0): a vertical list of faces that expand in place ──
+    searchPlaceholder: 'Procurar perfis e conversas…',
+    searchClear: 'Limpar',
+    searchResults: (n: number) => (n === 1 ? '1 resultado' : `${n} resultados`),
+    searchEmpty: 'Nada encontrado. Tenta outra palavra.',
+    searchBodyHint: 'Inclui o texto das mensagens.',
+    expandAll: 'Abrir todos',
+    collapseAll: 'Fechar todos',
+    automatic: 'Automático',
+    automaticCount: (n: number) => (n === 1 ? '1 execução automática' : `${n} execuções automáticas`),
+    automaticHelp:
+      'Execuções de tarefas agendadas. Não são conversas; ficam aqui só para poderes vê-las.',
+    noSessions: 'Sem conversas neste perfil.',
+    profileErrorTitle: 'Não foi possível ler a lista de perfis',
+    profileErrorBody:
+      'O servidor respondeu, mas não deu a lista de perfis. Isto não é o mesmo que "não há perfis" — vê o erro abaixo e o registo de diagnóstico.',
+    surfaceNoProfiles:
+      'Esta ligação é a API do gateway (:9222), que não tem lista de perfis. Para ver o conjunto de perfis, muda em Definições para Dashboard (:9119).',
+
+    groups: {
+      title: 'Grupos',
+      ungrouped: 'Sem grupo',
+      new: 'Novo grupo',
+      namePlaceholder: 'Nome do grupo',
+      create: 'Criar grupo',
+      rename: 'Mudar o nome',
+      renamePrompt: 'Nome do grupo',
+      delete: 'Apagar grupo',
+      deleteConfirm: (name: string) =>
+        `Apagar o grupo "${name}"? As conversas não são tocadas: os perfis voltam para «Sem grupo».`,
+      empty: 'Grupo vazio. Mantém premido um perfil e escolhe «Mover para grupo» para o pôr aqui.',
+      assign: 'Mover para grupo',
+      assignment: (name: string) => `Mover para «${name}»`,
+      remove: 'Tirar do grupo',
+      help: 'Agrupa perfis com um nome. Apagar um grupo nunca apaga conversas.',
+    },
+
+    menu: {
+      title: 'Ações',
+      newSession: 'Nova sessão',
+      rename: 'Mudar o nome…',
+      renamePrompt: 'Novo nome',
+      colour: 'Cor',
+      colourNone: 'Sem cor',
+      hide: 'Esconder perfil',
+      unhide: 'Mostrar perfil',
+      archiveAll: 'Arquivar todas as conversas',
+      archiveAllConfirm: (label: string) =>
+        `Arquivar todas as conversas de ${label}? Nada é apagado — ficam arquivadas no servidor.`,
+      open: 'Abrir',
+      copyId: 'Copiar identificador',
+      copied: 'Identificador copiado.',
+      sessionColour: 'Cor da conversa',
+      deleteSession: 'Apagar conversa',
+      deleteSessionConfirm: (title: string) => `Apagar a conversa "${title}"? Isto não se desfaz.`,
+      deleted: 'Conversa apagada.',
+      group: 'Grupo',
+      sort: 'Ordenar',
+      sortActivity: 'Por atividade',
+      sortName: 'Por nome',
+      sortSessions: 'Por nº de conversas',
+      cancel: 'Cancelar',
+    },
+
+    lights: {
+      waiting: 'À espera de ti',
+      unread: 'Por ler',
+      idle: 'Nada pendente',
+      fresh: (n: number) => (n === 1 ? '1 nova desde a última visita' : `${n} novas desde a última visita`),
+    },
   },
 
   thread: {

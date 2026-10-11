@@ -29,8 +29,15 @@ export type Probe = {
 };
 
 /**
- * Contacts = the gateway's own profile first, then every extra profile from Settings.
- * The server exposes no /api/profiles route (see QUESTIONS.md Q2), so the list is user-declared.
+ * The DECLARED contacts: the gateway's own profile plus every extra profile from Settings.
+ *
+ * This is no longer the roster's source of truth — the dashboard HAS a profile route and it answers
+ * (`GET /api/profiles` → 200 with 22 rows on the live box, measured 2026-10-11). The roster builds
+ * its contacts with `rosterContacts()` (`src/logic/rosterFeed.ts`), which prefers the server's rows
+ * and, when that call FAILS, returns the error with NO contacts rather than fabricating one.
+ *
+ * This function survives for the one surface that genuinely has no profile route — the legacy
+ * `:9222` api_server — where the user's own declared list is the honest answer.
  */
 export function contactsOf(settings: Settings): Contact[] {
   const contacts: Contact[] = [{ profile: '', label: t.roster.primary, isPrimary: true, prefix: '' }];

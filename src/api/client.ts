@@ -30,6 +30,8 @@ import type { StreamHandle, StreamTransport } from './transport';
 export type HermesSession = {
   id: string;
   source?: string;
+  /** Which profile this row came from (the dashboard's rail tags every row). */
+  profile?: string | null;
   user_id?: string | null;
   model?: string | null;
   title?: string | null;
@@ -46,6 +48,12 @@ export type HermesSession = {
   api_call_count?: number;
   parent_session_id?: string | null;
   last_active?: number;
+  /** The read watermark the dashboard serves on every row — the emerald dot's only source. */
+  last_read_at?: number | null;
+  /** Live-state hints, tolerated when absent (see `src/logic/lights.ts`). */
+  is_active?: boolean | null;
+  waiting?: boolean | null;
+  needs_input?: boolean | null;
   preview?: string | null;
   pinned?: boolean;
   archived?: boolean;

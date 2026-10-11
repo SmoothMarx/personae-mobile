@@ -12,8 +12,9 @@
 
 import assert from 'node:assert/strict';
 import { createMockGateway } from '../mock/server.mjs';
-import { createMockDashboard } from '../mock/dashboard.mjs';
+import { createMockDashboard, profileFixture, sessionFixture } from '../mock/dashboard.mjs';
 import { createDashboardClient, type GatewayEvent } from '../src/api/dashboard';
+import { createBackend } from '../src/api/backend';
 import { SSEParser, parseFrame } from '../src/api/sse';
 import { createApi } from '../src/api/client';
 import { nodeTransport } from '../src/api/transportNode';
@@ -61,8 +62,43 @@ import {
   shouldProbeAvatar,
 } from '../src/logic/avatars';
 import { threadTitle } from '../src/logic/roster';
+import {
+  UNASSIGNED,
+  addSection,
+  deleteSection,
+  groupsFor,
+  normalizeSections,
+  renameSection,
+  sectionOf,
+} from '../src/logic/sections';
+import { dotStateFor, isUnread, profileRollup, showBadge } from '../src/logic/lights';
+import {
+  automaticRuns,
+  bodySearchRequests,
+  buildRoster,
+  coloursFor,
+  conversations,
+  isAutomatic,
+  mergeBodyHits,
+  rosterContacts,
+  searchRoster,
+} from '../src/logic/rosterFeed';
+import {
+  EMPTY_PREFS,
+  SWATCHES,
+  expandedNames,
+  isHidden,
+  loadRosterPrefs,
+  normalizeExpanded,
+  saveRosterPrefs,
+  setProfileColour,
+  setSessionColour,
+  toggleExpanded,
+  toggleHidden,
+} from '../src/rosterPrefs';
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
+import { t } from '../src/i18n';
 
 type TestFn = () => void | Promise<void>;
 const tests: { name: string; fn: TestFn }[] = [];
@@ -1483,6 +1519,419 @@ async function main(): Promise<void> {
     await expectRawSocketFailure(`${dashboard.wsUrl}?ticket=${ticket}`);
   });
 
+  // ══════════════════════ 0.5.0 — the roster becomes the plugin's roster (F5) ══════════════════
+  // The main view is a vertical list of FACES that expand in place, with groups, a search bar,
+  // status lights and colour that fills. Everything that decides what the screen draws lives in
+  // pure modules, so all of it is pinned here, offline, without a renderer.
+
+  // ── groups ("sections") — the plugin's own shape and keys ──
+  test('sections: a deleted group drops no session — its members fall back to ungrouped', () => {
+    let model = normalizeSections({ sections: [{ id: 'fam', name: 'Família' }], members: { cody: 'fam', scout: 'fam' } });
+    assert.equal(sectionOf(model, 'cody'), 'fam');
+    // A "session" stands in for anything the group might have been holding: deleting the group
+    // cannot reach it, because sessions are simply not part of this model.
+    const sessions = ['sess-a', 'sess-b'];
+    model = deleteSection(model, 'fam');
+    assert.equal(model.sections.length, 0);
+    assert.deepEqual(model.members, {}, 'the members are released, not deleted');
+    assert.equal(sectionOf(model, 'cody'), UNASSIGNED);
+    assert.deepEqual(sessions, ['sess-a', 'sess-b'], 'nothing the group was holding is touched');
+  });
+
+  test('sections: the shape round-trips exactly (sections/members/collapsed/order/sort)', () => {
+    const stored = {
+      sections: [
+        { id: 'trabalho', name: 'Trabalho' },
+        { id: 'casa', name: 'Casa' },
+      ],
+      members: { cody: 'trabalho', scout: 'casa' },
+      collapsed: ['casa'],
+      order: { trabalho: ['cody'], casa: ['scout'] },
+      sort: { casa: 'name', trabalho: 'manual' },
+    };
+    const model = normalizeSections(stored);
+    assert.deepEqual(model, stored, 'the same keys the desktop pane stores, unchanged');
+    // and the setters keep them:
+    const added = addSection(model, 'Pessoal');
+    assert.deepEqual(added.sections.map((s) => s.name), ['Trabalho', 'Casa', 'Pessoal']);
+    const renamed = renameSection(added, 'casa', 'Casa e família');
+    assert.equal(renamed.sections.find((s) => s.id === 'casa')?.name, 'Casa e família');
+  });
+
+  test('sections: an orphan member and an unknown sort mode are dropped, never trusted', () => {
+    const model = normalizeSections({
+      sections: [{ id: 'keep', name: 'Mantém' }, { id: 'keep', name: 'Duplicado' }, { id: '', name: 'x' }],
+      members: { a: 'keep', b: 'deleted-group' },
+      collapsed: ['keep', 'deleted-group'],
+      sort: { keep: 'por-magia', deleted: 'name' },
+      order: { deleted: ['a'], keep: ['a'] },
+    });
+    assert.deepEqual(model.sections, [{ id: 'keep', name: 'Mantém' }]);
+    assert.deepEqual(model.members, { a: 'keep' }, 'a member of a group that is gone does not resurrect it');
+    assert.deepEqual(model.collapsed, ['keep']);
+    assert.deepEqual(model.sort, {}, 'a stale mode falls back to the default rather than doing nothing');
+    assert.deepEqual(model.order, { keep: ['a'] });
+  });
+
+  test('sections: an empty declared group is kept; the empty implicit one is not drawn', () => {
+    const model = normalizeSections({ sections: [{ id: 'vazio', name: 'Vazio' }], members: { cody: 'vazio' } });
+    const rows = [{ name: 'cody' }, { name: 'scout' }];
+    const groups = groupsFor(model, rows, (row) => row.name, t.roster.groups.ungrouped);
+    // The declared-but-empty group is NOT in this list (it holds cody), so check a genuinely empty one:
+    const withEmpty = normalizeSections({ sections: [{ id: 'sem-ninguem', name: 'Sem ninguém' }], members: { cody: 'sem-ninguem' } });
+    const groups2 = groupsFor(withEmpty, [{ name: 'scout' }], (row) => row.name, t.roster.groups.ungrouped);
+    assert.deepEqual(groups2.map((g) => g.name), [t.roster.groups.ungrouped, 'Sem ninguém']);
+    assert.equal(groups2[1].rows.length, 0, 'an empty group is kept — it explains how to fill it');
+    assert.equal(groups2[0].rows.length, 1);
+    // …and with nothing ungrouped, no phantom heading appears:
+    const groups3 = groupsFor(withEmpty, [{ name: 'cody' }], (row) => row.name, t.roster.groups.ungrouped);
+    assert.deepEqual(groups3.map((g) => g.name), ['Sem ninguém']);
+    assert.equal(groups.length, 2);
+  });
+
+  // ── the feed: `recents`, never cron (R3/F6) ──
+  test('feed: cron and webhook runs are NOT in the roster feed, and stay reachable as automatic runs', () => {
+    const all = [
+      { id: 'chat-1', source: 'dashboard', title: 'Conversa', last_active: 300 },
+      { id: 'cron-1', source: 'cron', title: 'Scholes - Daily School Digest', last_active: 400 },
+      { id: 'hook-1', source: 'webhook', title: 'Hook', last_active: 200 },
+      { id: 'cron-2', source: 'cron_output', title: 'Dobbs - Birthday Briefing', last_active: 500 },
+      { id: 'chat-2', source: 'cli', title: 'Outra', last_active: 100 },
+    ];
+    assert.deepEqual(conversations(all).map((s) => s.id), ['chat-1', 'chat-2'], 'the feed is conversations only');
+    assert.deepEqual(automaticRuns(all).map((s) => s.id), ['cron-1', 'hook-1', 'cron-2'], 'and the runs are kept, not discarded');
+    assert.equal(isAutomatic({ id: 'x', source: 'CRON' }), true, 'case is not a way back into the feed');
+  });
+
+  test('feed: a cron run never becomes a profile row\'s preview (it is not the latest conversation)', () => {
+    const contacts = rosterContacts({
+      hasProfiles: true,
+      profiles: [{ name: 'dobbs', label: 'Dobbs', isDefault: false, hasAvatar: null }],
+      declared: [],
+    }).contacts;
+    const sessions = [
+      { id: 'cron-newest', source: 'cron', profile: 'dobbs', title: 'Birthday Briefing', last_active: 900, preview: 'bom dia' },
+      { id: 'chat-older', source: 'dashboard', profile: 'dobbs', title: 'Festa da Ana', last_active: 700, preview: 'o bolo ficou pronto' },
+    ];
+    const model = buildRoster({ contacts, sessions, expanded: [], now: 1_700_000_000_000 });
+    assert.equal(model.rows.length, 1);
+    assert.equal(model.rows[0].preview, 'o bolo ficou pronto', 'the face shows the last CONVERSATION');
+    assert.equal(model.rows[0].automatic.length, 1, 'the run is still reachable, under its own profile');
+    assert.equal(model.automaticSeen, 1);
+  });
+
+  // ── F7: a failed profile list is never covered up ──
+  test('contacts: a profile list that fails yields the REAL error and no fabricated contact', () => {
+    const failure = new ApiError(t.errors.server(500, 'profile roster unavailable'), { kind: 'http', status: 500 });
+    const result = rosterContacts({
+      hasProfiles: true,
+      profiles: [],
+      declared: [],
+      error: failure,
+    });
+    assert.deepEqual(result.contacts, [], 'NOT one synthetic `Principal` contact — an empty list');
+    assert.equal(result.error, failure, 'the real error is handed to the screen, never swallowed');
+    assert.equal(result.fromServer, false);
+  });
+
+  test('contacts: a surface with no profile route falls back to the DECLARED list', () => {
+    const result = rosterContacts({ hasProfiles: false, profiles: [], declared: ['cody', 'vintage'] });
+    assert.deepEqual(result.contacts.map((c) => c.name), ['cody', 'vintage']);
+    assert.equal(result.error, null, 'this is not a failure: it is what that surface can honestly say');
+    assert.equal(result.fromServer, false);
+  });
+
+  test('contacts: server rows are preferred, with their own labels and avatar flags', () => {
+    const result = rosterContacts({
+      hasProfiles: true,
+      profiles: [{ name: 'cody', label: 'Cody', isDefault: true, hasAvatar: true, model: 'x' }],
+      declared: ['ignored'],
+    });
+    assert.equal(result.contacts[0].label, 'Cody');
+    assert.equal(result.contacts[0].hasAvatar, true);
+    assert.equal(result.fromServer, true);
+  });
+
+  // ── R2/R9: expansion is a per-profile SET, and it round-trips ──
+  test('expansion: several profiles may be open at once, and the set round-trips', async () => {
+    __resetStoreProbe();
+    let prefs = EMPTY_PREFS;
+    prefs = toggleExpanded(prefs, 'cody');
+    prefs = toggleExpanded(prefs, 'scout');
+    assert.deepEqual(expandedNames(prefs).sort(), ['cody', 'scout'], 'one tap does not close the other');
+    prefs = toggleExpanded(prefs, 'cody');
+    assert.deepEqual(expandedNames(prefs), ['scout']);
+    await saveRosterPrefs(prefs);
+    const reloaded = await loadRosterPrefs();
+    assert.deepEqual(expandedNames(reloaded), ['scout'], 'the user\'s expand/collapse work survives a relaunch');
+    assert.deepEqual(normalizeExpanded({ cody: false, scout: 'yes', zulu: 1 }), { scout: true, zulu: true }, 'only OPEN profiles are stored');
+  });
+
+  test('expansion: opening a profile reveals ITS sessions, newest first, in place', () => {
+    const contacts = rosterContacts({
+      hasProfiles: true,
+      profiles: [
+        { name: 'cody', label: 'Cody', isDefault: true, hasAvatar: null },
+        { name: 'scout', label: 'Scout', isDefault: false, hasAvatar: null },
+      ],
+      declared: [],
+    }).contacts;
+    const sessions = [
+      { id: 'c-1', source: 'dashboard', profile: 'cody', title: 'Antiga', preview: 'antiga', last_active: 100 },
+      { id: 'c-2', source: 'dashboard', profile: 'cody', title: 'Recente', preview: 'recente', last_active: 900 },
+      { id: 's-1', source: 'dashboard', profile: 'scout', title: 'Scout 1', preview: 'x', last_active: 500 },
+    ];
+    const collapsed = buildRoster({ contacts, sessions, expanded: [], now: 1_700_000_000_000 });
+    assert.deepEqual(collapsed.rows.map((row) => row.expanded), [false, false]);
+    assert.equal(collapsed.rows.find((r) => r.name === 'cody')!.sessions.length, 0, 'collapsed: the face only');
+    const open = buildRoster({ contacts, sessions, expanded: ['cody'], now: 1_700_000_000_000 });
+    const cody = open.rows.find((r) => r.name === 'cody')!;
+    const scout = open.rows.find((r) => r.name === 'scout')!;
+    assert.equal(cody.expanded, true);
+    assert.equal(scout.expanded, false, 'expansion is PER PROFILE, not a single global');
+    assert.deepEqual(cody.sessions.map((s) => s.sessionId), ['c-2', 'c-1'], 'its sessions, newest first');
+    assert.deepEqual(scout.sessions, []);
+  });
+
+  // ── R5: search filters profiles AND sessions, and reveals the hit under its profile ──
+  test('search: the metadata sweep matches profiles and sessions, and auto-expands the hit\'s profile', () => {
+    const profiles = [
+      { name: 'cody', label: 'Cody' },
+      { name: 'scout', label: 'Scout' },
+    ];
+    const sessions = [
+      { id: 'a', source: 'dashboard', profile: 'scout', title: 'Orçamento de setembro', preview: 'linha 1' },
+      { id: 'b', source: 'dashboard', profile: 'cody', title: 'Outra coisa', preview: 'nada aqui' },
+    ];
+    const result = searchRoster({ needle: 'orçamento', profiles, sessions });
+    assert.deepEqual(result.hits.map((hit) => hit.sessionId), ['a']);
+    assert.deepEqual(result.autoExpand, ['scout'], 'a hit inside a profile opens that profile');
+    const byName = searchRoster({ needle: 'cody', profiles, sessions });
+    assert.deepEqual(byName.profileHits, ['cody']);
+    assert.deepEqual(byName.autoExpand, ['cody']);
+    assert.deepEqual(searchRoster({ needle: '   ', profiles, sessions }).hits, [], 'a blank query searches nothing');
+  });
+
+  test('search: a hit inside a profile is rendered UNDER it — the profile opens and shows it', () => {
+    const contacts = rosterContacts({
+      hasProfiles: true,
+      profiles: [{ name: 'scout', label: 'Scout', isDefault: false, hasAvatar: null }],
+      declared: [],
+    }).contacts;
+    const sessions = [{ id: 'a', source: 'dashboard', profile: 'scout', title: 'Orçamento de setembro', preview: 'linha 1', last_active: 400 }];
+    const search = searchRoster({ needle: 'orçamento', profiles: [{ name: 'scout', label: 'Scout' }], sessions });
+    const model = buildRoster({ contacts, sessions, expanded: [], search, now: 1_700_000_000_000 });
+    assert.equal(model.rows.length, 1, 'the profile that holds the hit is shown');
+    assert.equal(model.rows[0].expanded, true, 'auto-expanded, without the user tapping');
+    assert.deepEqual(model.rows[0].sessions.map((s) => s.sessionId), ['a']);
+    assert.equal(model.matches, 1);
+  });
+
+  test('search: a body hit reveals a session the local sweep could not see', () => {
+    const base = searchRoster({
+      needle: 'orçamento',
+      profiles: [{ name: 'scout', label: 'Scout' }],
+      sessions: [{ id: 'a', source: 'dashboard', profile: 'scout', title: 'Nada', preview: 'nada' }],
+    });
+    assert.deepEqual(base.hits, []);
+    const merged = mergeBodyHits(base, { scout: [{ session_id: 'deep-1', snippet: '>>>orçamento<<< do mês' }] });
+    assert.equal(merged.hits.length, 1);
+    assert.equal(merged.hits[0].source, 'body');
+    assert.equal(merged.hits[0].snippet, 'orçamento do mês', 'the FTS markers are stripped');
+    assert.ok(merged.autoExpand.includes('scout'));
+  });
+
+  test('search: one settled query is ONE batch of body requests — never one per keystroke', () => {
+    assert.deepEqual(bodySearchRequests(['cody', 'scout'], 'orçamento'), ['cody', 'scout']);
+    assert.deepEqual(bodySearchRequests(['cody', 'cody', 'scout'], 'x'), ['cody', 'scout'], 'deduped');
+    assert.deepEqual(bodySearchRequests(['cody'], '   '), [], 'nothing is fired for a blank query');
+    const many = Array.from({ length: 40 }, (_, index) => `p${index}`);
+    assert.equal(bodySearchRequests(many, 'x', 8).length, 8, 'and the fan-out is capped');
+  });
+
+  // ── R7: status lights, exactly the plugin's rule ──
+  test('lights: amber beats emerald, the badge shows at 2+, and "working" never colours a profile', () => {
+    const now = 1_700_000_000;
+    const waiting = { last_active: now - 10, last_read_at: now - 100, waiting: true };
+    const unread = { last_active: now - 20, last_read_at: now - 500 };
+    const reading = { last_active: now - 20, last_read_at: now - 5 };
+    assert.equal(dotStateFor(waiting), 'needs-input');
+    assert.equal(dotStateFor(unread), 'unread');
+    assert.equal(dotStateFor(reading), 'idle');
+    assert.equal(dotStateFor({ is_active: true, last_active: now, last_read_at: now }), 'idle', 'a running session is not news about the profile');
+    const rollup = profileRollup([waiting, unread, reading]);
+    assert.equal(rollup.state, 'needs-input', 'the LOUDEST state, not the latest session\'s');
+    assert.equal(rollup.count, 2);
+    assert.equal(showBadge(rollup), true, 'two awaiting things: the number appears');
+    const one = profileRollup([unread, reading]);
+    assert.equal(one.state, 'unread');
+    assert.equal(one.count, 1);
+    assert.equal(showBadge(one), false, 'one is already said by the colour');
+    assert.equal(profileRollup([reading]).state, 'idle');
+  });
+
+  test('lights: a missing read watermark stays quiet — honest about what it knows', () => {
+    const session = { last_active: 1_700_000_000, last_read_at: null };
+    assert.equal(isUnread(session), false);
+    assert.equal(dotStateFor(session), 'idle');
+    assert.equal(dotStateFor({}), 'idle');
+    assert.equal(dotStateFor(null), 'idle');
+    // and a profile never read through contributes nothing, rather than a guessed emerald:
+    assert.equal(profileRollup([session]).count, 0);
+  });
+
+  test('lights: the app\'s own lastSeen watermark still counts "new since my last visit"', () => {
+    // `lastSeen` is written with `Date.now()` (milliseconds), so the comparison is ms against the
+    // row's epoch-seconds converted to ms — the same heuristic `toMillis` applies everywhere else.
+    const sessions = [
+      { last_active: 900, last_read_at: 800 },
+      { last_active: 700, last_read_at: 600 },
+    ];
+    assert.equal(profileRollup(sessions, 750_000).fresh, 1, 'only the one that moved after my visit');
+    assert.equal(profileRollup(sessions, 0).fresh, 0, 'no watermark recorded yet = nothing claimed');
+  });
+
+  // ── R6: colour that fills, and tolerates the surface being silent ──
+  test('colours: a session colour beats its profile\'s, and an absent model yields null', () => {
+    const model = { profiles: { cody: '#4c8dff' }, sessions: { cody: { 'sess-9': '#f85149' } }, groups: {} };
+    assert.equal(coloursFor(model, 'cody'), '#4c8dff');
+    assert.equal(coloursFor(model, 'cody', 'sess-9'), '#f85149', 'the session overrides the profile');
+    assert.equal(coloursFor(model, 'cody', 'other'), '#4c8dff');
+    assert.equal(coloursFor(model, 'unknown'), null, 'never an invented hue');
+    assert.equal(coloursFor(null, 'cody'), null);
+    assert.equal(coloursFor(undefined, 'cody', 'x'), null);
+  });
+
+  test('colours: only a known swatch is ever stored, and clearing really clears', () => {
+    let prefs = EMPTY_PREFS;
+    prefs = setProfileColour(prefs, 'cody', SWATCHES[0]);
+    prefs = setSessionColour(prefs, 'cody', 'sess-1', SWATCHES[2]);
+    assert.equal(prefs.colours.profiles.cody, SWATCHES[0]);
+    assert.equal(prefs.colours.sessions.cody['sess-1'], SWATCHES[2]);
+    prefs = setProfileColour(prefs, 'cody', '#not-a-swatch');
+    assert.equal(prefs.colours.profiles.cody, undefined, 'an unknown value is dropped, not stored raw');
+    prefs = setSessionColour(prefs, 'cody', 'sess-1', null);
+    assert.equal(prefs.colours.sessions.cody, undefined, 'and the per-session map goes with it');
+  });
+
+  // ── R8: the long-press verbs never destroy anything by accident ──
+  test('rosterPrefs: hiding a profile hides the row and never its sessions', () => {
+    const prefs = toggleHidden(EMPTY_PREFS, 'cody');
+    assert.equal(isHidden(prefs, 'cody'), true);
+    assert.deepEqual(expandedNames(prefs), [], 'hiding is not the same verb as collapsing');
+    const back = toggleHidden(prefs, 'cody');
+    assert.equal(isHidden(back, 'cody'), false);
+  });
+
+  test('roster: a search reveals a profile the local roster was hiding', () => {
+    const contacts = rosterContacts({
+      hasProfiles: true,
+      profiles: [{ name: 'cody', label: 'Cody', isDefault: true, hasAvatar: null }],
+      declared: [],
+    }).contacts;
+    const sessions = [{ id: 'a', source: 'dashboard', profile: 'cody', title: 'Orçamento', preview: 'x', last_active: 100 }];
+    const hidden = buildRoster({ contacts, sessions, expanded: [], hidden: ['cody'], now: 1_700_000_000_000 });
+    assert.equal(hidden.rows[0].hidden, true);
+    const search = searchRoster({ needle: 'orçamento', profiles: [{ name: 'cody', label: 'Cody' }], sessions });
+    const found = buildRoster({ contacts, sessions, expanded: [], hidden: ['cody'], search, now: 1_700_000_000_000 });
+    assert.equal(found.rows[0].hidden, false, 'a hit is never hidden behind the user\'s own filter');
+  });
+
+  // ── the wire: the mock proves the app's read paths, offline ──
+  const rich = createMockDashboard({
+    port: 0,
+    bearer: DASH_BEARER,
+    bodies: { 'orçamento': [{ session_id: 'sess-deep', profile: 'scout', snippet: '>>>orçamento<<< de setembro' }] },
+    profiles: [
+      profileFixture('default', { has_avatar: true }),
+      profileFixture('scout', { has_avatar: false, label: 'Scout' }),
+    ],
+    sessions: [
+      sessionFixture('chat-1', { title: 'Conversa', profile: 'default', source: 'dashboard', last_active: Math.floor(Date.now() / 1000) - 60 }),
+      sessionFixture('cron-1', { title: 'Scholes - Daily School Digest', profile: 'default', source: 'cron', last_active: Math.floor(Date.now() / 1000) - 30 }),
+      sessionFixture('chat-2', { title: 'Orçamento de setembro', profile: 'scout', is_default_profile: false, source: 'dashboard', last_active: Math.floor(Date.now() / 1000) - 300 }),
+      sessionFixture('cron-2', { title: 'Dobbs - Birthday Briefing', profile: 'scout', is_default_profile: false, source: 'cron', last_active: Math.floor(Date.now() / 1000) - 400 }),
+    ],
+  });
+  await rich.listen();
+  const dashRich = createDashboardClient(settingsFor(rich.url, { apiKey: DASH_BEARER }), { timeoutMs: 4000, rpcTimeoutMs: 4000 });
+
+  test('dashboard: the sidebar separates recents from cron, and tags every row with its profile', async () => {
+    const slices = await dashRich.sidebar('all', { recentsLimit: 50 });
+    assert.deepEqual(slices.recents?.sessions.map((s) => s.id), ['chat-1', 'chat-2'], 'the feed carries no cron run');
+    assert.deepEqual(slices.cron?.sessions.map((s) => s.id), ['cron-1', 'cron-2'], 'they are kept, in their own slice');
+    assert.equal(slices.recents?.sessions[1].source, 'dashboard');
+    assert.equal(slices.cron?.sessions[0].source, 'cron');
+  });
+
+  test('dashboard: the roster built from the live SHAPE never shows a cron run in the feed', async () => {
+    const backend = createBackend(settingsFor(rich.url, { apiKey: DASH_BEARER }));
+    const profiles = await backend.profiles();
+    const slices = await backend.sidebar('all', { recents: 50 });
+    const contacts = rosterContacts({ hasProfiles: true, profiles, declared: [] }).contacts;
+    const model = buildRoster({
+      contacts,
+      sessions: slices.recents.map((row) => ({ ...row, source: row.source })),
+      expanded: [],
+      now: Date.now(),
+    });
+    assert.deepEqual(model.rows.map((row) => row.name), ['default', 'scout']);
+    assert.equal(model.automaticSeen, 0, 'the recents slice is cron-free as served');
+    // and the SAME guarantee holds if the caller uses the (cron-mixed) rail instead:
+    const rail = await backend.sessions('', 200);
+    const fromRail = buildRoster({ contacts, sessions: rail.data, expanded: [], now: Date.now() });
+    assert.equal(fromRail.automaticSeen, 2, 'the rail does carry the runs…');
+    assert.equal(
+      fromRail.rows.every((row) => row.sessions.every((hit) => !hit.sessionId.startsWith('cron'))),
+      true,
+      '…and they are still not in the feed',
+    );
+    assert.equal(fromRail.rows.every((row) => row.automatic.every((hit) => hit.sessionId.startsWith('cron'))), true);
+    backend.dispose();
+  });
+
+  test('dashboard: message-body search hits the FTS route and returns session_id + snippet', async () => {
+    const hits = await dashRich.searchMessages('orçamento', 'scout');
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].session_id, 'sess-deep');
+    assert.equal(hits[0].snippet, '>>>orçamento<<< de setembro');
+    assert.deepEqual(await dashRich.searchMessages('nada-disso', 'scout'), []);
+    assert.ok(rich.searchCalls.length >= 2, 'the route was actually called');
+  });
+
+  test('dashboard: one profile per FTS call is what makes the batch countable', async () => {
+    const backend = createBackend(settingsFor(rich.url, { apiKey: DASH_BEARER }));
+    const plan = bodySearchRequests(['default', 'scout'], 'orçamento');
+    const before = rich.searchCalls.length;
+    for (const profile of plan) await backend.searchMessages('orçamento', profile);
+    assert.equal(rich.searchCalls.length - before, 2, 'two profiles, two calls — one settled query');
+    backend.dispose();
+  });
+
+  const broken = createMockDashboard({ port: 0, bearer: DASH_BEARER, failProfiles: true });
+  await broken.listen();
+  const dashBroken = createDashboardClient(settingsFor(broken.url, { apiKey: DASH_BEARER }), { timeoutMs: 4000 });
+
+  test('dashboard: a failing /api/profiles raises a real error, so the banner can name it', async () => {
+    await expectApiError(() => dashBroken.profiles(), (error) => {
+      assert.equal(error.status, 500);
+      assert.equal(error.kind, 'http');
+    });
+    // and the roster that results from it has NO contacts and NO invented fallback:
+    const backend = createBackend(settingsFor(broken.url, { apiKey: DASH_BEARER }));
+    let profiles: Awaited<ReturnType<typeof backend.profiles>> = [];
+    let error: unknown = null;
+    try {
+      profiles = await backend.profiles();
+    } catch (caught) {
+      error = caught;
+    }
+    const result = rosterContacts({ hasProfiles: backend.hasProfiles, profiles, declared: [], error });
+    assert.deepEqual(result.contacts, [], 'no synthetic `Principal` contact, ever');
+    assert.ok(result.error, 'the error travels to the screen');
+    backend.dispose();
+  });
+
   // ─────────────────────────────────────────────────────── report ──
   let index = 0;
   for (const item of tests) {
@@ -1498,6 +1947,8 @@ async function main(): Promise<void> {
   }
   live.close?.();
   await dashboard.close();
+  await rich.close();
+  await broken.close();
   await gateway.close();
   process.stdout.write(`\n${tests.length - failures}/${tests.length} passed, ${failures} failed\n`);
   process.exit(failures === 0 ? 0 : 1);

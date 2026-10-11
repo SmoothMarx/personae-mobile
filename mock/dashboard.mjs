@@ -40,12 +40,19 @@ const DEFAULTS = {
   ticketTtlSeconds: 30,
   /** Paths registered with `register_token_route` in the real plugin — bearer-only, seam body. */
   tokenRoutes: ['/api/profiles/sessions/sidebar'],
+  /** Make `/api/profiles` answer 500, so the "no fabricated contact" rule can be pinned (F7). */
+  failProfiles: false,
+  /**
+   * Message bodies the FTS route can find: `{needle: [{session_id, profile, role, snippet}]}`.
+   * Keyed by a lower-cased substring; empty by default so a query with no fixture answers `[]`.
+   */
+  bodies: null,
 };
 
 const AVATAR_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 
-function profileFixture(name, overrides = {}) {
+export function profileFixture(name, overrides = {}) {
   return {
     name,
     label: name === 'default' ? 'Principal' : name,
@@ -62,7 +69,7 @@ function profileFixture(name, overrides = {}) {
   };
 }
 
-function sessionFixture(id, overrides = {}) {
+export function sessionFixture(id, overrides = {}) {
   const now = Math.floor(Date.now() / 1000);
   return {
     id,
@@ -174,10 +181,14 @@ export function createMockDashboard(options = {}) {
     sessionFixture('sess-2', { title: 'Outra conversa', profile: 'beta', is_default_profile: false, last_active: Math.floor(Date.now() / 1000) - 86400 }),
   ];
   const calls = [];
+  /** Every FTS call, so a test can prove search is one batch per settled query, not per keystroke. */
+  const searchCalls = [];
   const tickets = new Map();
   const sockets = new Set();
   let seq = 0;
   const events = []; // what the fake dispatch emitted, for assertions
+  /** The port actually bound; `config.port === 0` means the OS picks a free one. */
+  let boundPort = config.port;
 
   const emit = (socket, type, payload, sessionId) => {
     seq += 1;
@@ -282,6 +293,11 @@ export function createMockDashboard(options = {}) {
       const offset = Number(params('offset', 0));
 
       if (path === '/api/profiles' && req.method === 'GET') {
+        if (config.failProfiles) {
+          // A surface that HAS profiles failing to answer — the case 0.4.0 swallowed and covered up
+          // with one synthetic `Principal` contact (F7).
+          return json(500, { error: { message: 'profile roster unavailable', type: 'server_error' } });
+        }
         return json(200, { profiles, count: profiles.length, active: 'default' });
       }
 
@@ -304,7 +320,12 @@ export function createMockDashboard(options = {}) {
 
       if (path === '/api/profiles/sessions/sidebar' && req.method === 'GET') {
         const scope = params('recents_profile', 'all');
-        const recents = sessions.filter((s) => scope === 'all' || (s.profile ?? 'default') === scope);
+        const scoped = sessions.filter((s) => scope === 'all' || (s.profile ?? 'default') === scope);
+        // The live box's own split (measured 2026-10-11): `recents` carries no cron runs — they are
+        // a separate slice. Reproducing that here is what makes "cron is not in the feed" testable.
+        const isRun = (s) => ['cron', 'cron_output', 'webhook'].includes(String(s.source ?? ''));
+        const recents = scoped.filter((s) => !isRun(s));
+        const runs = scoped.filter((s) => isRun(s));
         // Live shape (measured 2026-10-11): each slice is an object wrapping `sessions`.
         return json(200, {
           recents: {
@@ -312,11 +333,29 @@ export function createMockDashboard(options = {}) {
             profiles_truncated: {},
             profiles_usage: { default: { input_tokens: 100, output_tokens: 50 } },
           },
-          cron: { sessions: [] },
+          cron: { sessions: runs.slice(0, Number(params('cron_limit', 20))) },
           messaging: { sessions: [], total: 0 },
           errors: [],
           storage: {},
         });
+      }
+
+      // GET /api/plugins/messenger/search — one profile per call, message-body FTS.
+      if (path === '/api/plugins/messenger/search' && req.method === 'GET') {
+        const q = String(params('q', '')).trim().toLowerCase();
+        const profile = params('profile', 'all');
+        const limit = Number(params('limit', 40));
+        searchCalls.push({ q, profile });
+        if (!q || !config.bodies) return json(200, { profile, query: q, results: [] });
+        const rows = [];
+        for (const [needle, hits] of Object.entries(config.bodies)) {
+          if (!q.includes(needle) && !needle.includes(q)) continue;
+          for (const hit of hits) {
+            if (profile !== 'all' && (hit.profile ?? 'default') !== profile) continue;
+            rows.push({ session_id: hit.session_id, role: hit.role ?? 'user', snippet: hit.snippet });
+          }
+        }
+        return json(200, { profile, query: q, results: rows.slice(0, limit) });
       }
 
       if (path === '/api/sessions' && req.method === 'GET') {
@@ -429,14 +468,29 @@ export function createMockDashboard(options = {}) {
   return {
     config,
     calls,
+    searchCalls,
     profiles,
     sessions,
     tickets,
     events,
-    url: `http://127.0.0.1:${config.port}`,
-    wsUrl: `ws://127.0.0.1:${config.port}/api/ws`,
+    /** The port actually bound: `0` in `config.port` means "whatever is free". */
+    get port() {
+      return boundPort;
+    },
+    get url() {
+      return `http://127.0.0.1:${boundPort}`;
+    },
+    get wsUrl() {
+      return `ws://127.0.0.1:${boundPort}/api/ws`;
+    },
     listen() {
-      return new Promise((resolve) => server.listen(config.port, '127.0.0.1', () => resolve(this)));
+      return new Promise((resolve) => {
+        server.listen(config.port, '127.0.0.1', () => {
+          const address = server.address();
+          if (address && typeof address === 'object') boundPort = address.port;
+          resolve(this);
+        });
+      });
     },
     close() {
       for (const socket of sockets) socket.destroy();

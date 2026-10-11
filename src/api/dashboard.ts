@@ -77,6 +77,9 @@ export type DashboardSession = {
   is_active?: boolean;
   /** Last time this phone read the session; drives the emerald "unread" dot (§2.1). */
   last_read_at?: number | null;
+  /** Live-state hints. Not part of the documented row today; tolerated when absent. */
+  waiting?: boolean | null;
+  needs_input?: boolean | null;
   parent_session_id?: string | null;
 };
 
@@ -470,6 +473,30 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
         cron_limit: query.cronLimit ?? 20,
         messaging_limit: query.messagingLimit ?? 20,
       });
+    },
+
+    /**
+     * GET /api/plugins/messenger/search — message-BODY full-text search.
+     *
+     * Measured on the live box (2026-10-11): `?q=&profile=&limit=` → 200
+     * `{profile, query, results:[{session_id, role, snippet}]}`. It is **one profile per call**,
+     * which is exactly why the caller debounces and issues the batch once per settled query rather
+     * than once per keystroke (R5).
+     */
+    async searchMessages(query: string, profile = 'all', limit = 40): Promise<{ session_id: string; role?: string; snippet: string }[]> {
+      const body = await json<{ results?: { session_id?: string; role?: string; snippet?: string }[] }>(
+        '/api/plugins/messenger/search',
+        { method: 'GET' },
+        { q: query, profile: profile || 'all', limit },
+      );
+      const rows = Array.isArray(body.results) ? body.results : [];
+      return rows
+        .map((row) => ({
+          session_id: String(row.session_id ?? ''),
+          role: row.role,
+          snippet: String(row.snippet ?? ''),
+        }))
+        .filter((row) => row.session_id);
     },
 
     /** GET /api/sessions — one profile's sessions (order=recent follows the compression chain). */

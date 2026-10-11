@@ -54,6 +54,13 @@ export type Backend = {
   profiles(): Promise<ProfileInfo[]>;
   /** Sessions, newest activity first. `profile` scopes the dashboard; the legacy path prefixes it. */
   sessions(profile: string, limit?: number, offset?: number): Promise<{ data: HermesSession[]; total?: number }>;
+  /**
+   * The batched sidebar slices (`recents` / `cron` / `messaging`). `recents` is the roster's own
+   * feed and carries no cron runs; `cron` is where those live. One call, no per-profile fan-out.
+   */
+  sidebar(profile?: string, limits?: { recents?: number; cron?: number }): Promise<SidebarSlices>;
+  /** Message-body search (FTS). Dashboard only; the legacy surface answers with an empty list. */
+  searchMessages(query: string, profile: string, limit?: number): Promise<MessageHit[]>;
   /** Authoritative title for one session, or null (F4's second link in the chain). */
   sessionTitle(id: string, profile?: string): Promise<string | null>;
   messages(id: string, profile: string, limit?: number): Promise<HermesMessage[]>;
@@ -66,6 +73,21 @@ export type Backend = {
   dispose(): void;
 };
 
+/** One message-body hit from `GET /api/plugins/messenger/search`. */
+export type MessageHit = {
+  session_id: string;
+  role?: string;
+  snippet: string;
+};
+
+/** The batched slices, normalised away from the wire (`recents.sessions` → `recents`). */
+export type SidebarSlices = {
+  recents: HermesSession[];
+  cron: HermesSession[];
+  messaging: HermesSession[];
+  errors: { profile: string; error: string }[];
+};
+
 function toHermesSession(row: DashboardSession): HermesSession {
   return {
     id: row.id,
@@ -73,8 +95,13 @@ function toHermesSession(row: DashboardSession): HermesSession {
     preview: row.preview ?? null,
     model: row.model ?? null,
     source: row.source ?? undefined,
+    profile: row.profile ?? null,
     started_at: row.started_at,
     last_active: row.last_active,
+    last_read_at: row.last_read_at ?? null,
+    is_active: row.is_active ?? null,
+    waiting: row.waiting ?? null,
+    needs_input: row.needs_input ?? null,
     message_count: row.message_count,
     tool_call_count: row.tool_call_count,
     input_tokens: row.input_tokens,
@@ -141,6 +168,30 @@ function createDashboardBackend(settings: Settings): Backend {
     async sessions(profile = '', limit = 200, offset = 0) {
       const body = await client.rail(profile || 'all', { limit, offset });
       return { data: (body.sessions ?? []).map(toHermesSession), total: body.total };
+    },
+
+    /**
+     * The batched slices in one call. `recents` is the roster's feed; `cron` is where the job runs
+     * live. Both are tagged with the profile they came from, which is what lets the roster group
+     * without a per-profile fan-out (R9).
+     */
+    async sidebar(profile = 'all', limits: { recents?: number; cron?: number } = {}) {
+      const body = await client.sidebar(profile, {
+        recentsLimit: limits.recents ?? 50,
+        cronLimit: limits.cron ?? 20,
+      });
+      const slice = (value: { sessions?: DashboardSession[] } | undefined) =>
+        (value?.sessions ?? []).map(toHermesSession);
+      return {
+        recents: slice(body.recents),
+        cron: slice(body.cron),
+        messaging: slice(body.messaging),
+        errors: body.errors ?? [],
+      };
+    },
+
+    async searchMessages(query, profile = 'all', limit = 40) {
+      return client.searchMessages(query, profile, limit);
     },
 
     async sessionTitle(id, profile = '') {
@@ -301,6 +352,23 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
     async sessions(profile = '', limit = 200, offset = 0) {
       const body = await api.listSessions(profile, limit, offset);
       return { data: body.data ?? [], total: undefined };
+    },
+
+    /**
+     * The legacy surface has no batched sidebar. Its flat list is what stands in for `recents`, so
+     * the roster keeps ONE code path: the api_server's list carries no `source`, so nothing is
+     * classified as a cron run here — and the surface has no cron slice to misread either.
+     */
+    async sidebar(profile = '') {
+      const body = await api.listSessions(profile, 100, 0);
+      const rows = (body.data ?? []).map((row) => ({ ...row, profile: row.profile ?? (profile || 'default') }));
+      return { recents: rows, cron: [], messaging: [], errors: [] };
+    },
+
+    async searchMessages() {
+      // Message bodies are not searchable on the api_server surface; the metadata sweep is all the
+      // search is there, and saying so beats issuing a request that cannot answer.
+      return [];
     },
 
     async sessionTitle(id, profile = '') {
