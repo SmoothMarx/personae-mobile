@@ -13,7 +13,8 @@
  * Pure: no React, no native module. `fetchImpl` is injected so the suite drives it offline.
  */
 
-import { checkBaseUrl } from './settings';
+import { checkBaseUrl, type Settings } from './settings';
+import { inferRole, isPrivateOverlay, normalizeRouteUrl, renumberRoutes } from './routes';
 
 export const PAIR_PREFIX = '/api/plugins/personae-mobile-auth';
 export const REDEEM_PATH = `${PAIR_PREFIX}/pair/redeem`;
@@ -196,4 +197,26 @@ export function candidateAddresses(known: string[]): string[] {
     if (!out.includes(fixed)) out.push(fixed);
   }
   return out;
+}
+
+/**
+ * The settings a successful pairing leaves behind: the dashboard surface, the address the phone
+ * used as the FIRST route (other known routes kept, behind it), and the per-device token as the
+ * credential (settingsStore writes `apiKey` to secure storage only). A plain-http address on a
+ * private overlay (LAN / tailnet) is marked as consented — the user just paired over it.
+ */
+export function settingsAfterPairing(settings: Settings, result: PairingResult): Partial<Settings> {
+  const url = normalizeRouteUrl(result.baseUrl);
+  const role = inferRole(url);
+  const first = { role, priority: -1, url, insecure: url.startsWith('http://') && isPrivateOverlay(role) };
+  const rest = settings.routes.filter((r) => normalizeRouteUrl(r.url) !== url);
+  return {
+    baseUrl: url,
+    surface: 'dashboard',
+    apiKey: result.token,
+    deviceId: result.deviceId,
+    deviceLabel: result.label,
+    routes: renumberRoutes([first, ...rest]),
+    healNote: '',
+  };
 }

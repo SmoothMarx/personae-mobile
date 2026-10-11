@@ -20,6 +20,8 @@ import { xhrTransport } from '../src/api/transport';
 import { useConnectivity } from '../src/ConnectivityContext';
 import { formatTime } from '../src/format';
 import { t } from '../src/i18n';
+import { revokeSelf } from '../src/pairing';
+import { useRouter } from 'expo-router';
 import { contactsOf, probeFromHealth, statusColor, type Probe } from '../src/logic/roster';
 import {
   checkBaseUrl,
@@ -47,6 +49,7 @@ type TestResult = { label: string; probe: Probe; ms: number | null; detail: stri
 
 export default function SettingsScreen() {
   const { settings, ready, savedAt, update } = useSettings();
+  const router = useRouter();
   const [form, setForm] = useState<Settings>(DEFAULT_SETTINGS);
   const [profilesText, setProfilesText] = useState('');
   const [revealKey, setRevealKey] = useState(false);
@@ -267,6 +270,40 @@ export default function SettingsScreen() {
           {t.settings.saved} · {formatTime(savedAt)}
         </Text>
       ) : null}
+
+      {/* 0.6.0 — Connection first: the heal note (once), the wizard, and this phone's paired identity. */}
+      {settings.healNote ? (
+        <View style={[styles.field, { borderColor: colors.amber, borderWidth: 1, borderRadius: radius.md, padding: space.md }]}>
+          <Text style={styles.help}>{settings.healNote}</Text>
+          <Pressable onPress={() => update({ healNote: '' })} style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
+            <Text style={styles.secondaryText}>{t.connect.dismiss}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.connect.title}</Text>
+        <Pressable onPress={() => router.push('/connect')} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
+          <Text style={styles.primaryText}>{t.connect.open}</Text>
+        </Pressable>
+        {settings.deviceId ? (
+          <>
+            <Text style={styles.help}>{t.connect.deviceLabel(settings.deviceLabel || settings.deviceId)}</Text>
+            <Pressable
+              onPress={() => {
+                void revokeSelf(settings.baseUrl, settings.apiKey, settings.deviceId).then((ok) => {
+                  if (ok) {
+                    update({ apiKey: '', deviceId: '', deviceLabel: '' });
+                    Alert.alert(t.connect.revoked);
+                  }
+                });
+              }}
+              style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
+            >
+              <Text style={styles.secondaryText}>{t.connect.revoke}</Text>
+            </Pressable>
+          </>
+        ) : null}
+      </View>
 
       {/* Interface language: one tap, applied and saved at once (no Save button). */}
       <View style={styles.field}>

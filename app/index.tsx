@@ -302,8 +302,8 @@ export default function RosterScreen() {
         <View style={styles.centered}>
           <Text style={styles.emptyTitle}>{t.roster.notConfiguredTitle}</Text>
           <Text style={styles.emptyBody}>{t.roster.notConfiguredBody}</Text>
-          <Pressable onPress={() => router.push('/settings')} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
-            <Text style={styles.primaryText}>{t.roster.openSettings}</Text>
+          <Pressable onPress={() => router.push('/connect')} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
+            <Text style={styles.primaryText}>{t.connect.open}</Text>
           </Pressable>
         </View>
       </View>

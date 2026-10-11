@@ -27,6 +27,7 @@ export default function RootLayout() {
             <Stack.Screen name="index" options={{ headerShown: false }} />
             <Stack.Screen name="thread/[id]" options={{ title: t.roster.sessions }} />
             <Stack.Screen name="settings" options={{ title: t.settings.title }} />
+            <Stack.Screen name="connect" options={{ title: t.connect.title }} />
           </Stack>
         </ConnectivityProvider>
       </SettingsProvider>

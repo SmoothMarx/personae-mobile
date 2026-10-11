@@ -21,6 +21,8 @@ import { normalizeError, type ApiError } from '../api/errors';
 import { useConnectivity } from '../ConnectivityContext';
 import { log } from '../logging';
 import { t, useLanguage } from '../i18n';
+import { applyShared, sharedFromPrefs, useUiSync } from '../sync/useUiSync';
+import { SYNC_KEYS } from '../sync/uiSync';
 import { useAvatars } from '../Avatar';
 import {
   EMPTY_COLOURS,
@@ -122,14 +124,35 @@ export function useRoster() {
     };
   }, []);
 
+  // ── options sync (0.6.0): groups/sort + session colours shared with the desktop pane ──
+  const { activeUrl } = useConnectivity();
+  const { sync, status: syncStatus } = useUiSync({
+    enabled: configured && settings.surface === 'dashboard',
+    baseUrl: activeUrl || settings.baseUrl,
+    token: settings.apiKey,
+    prefsReady,
+    prefs,
+    onRemote: (key, value) =>
+      setPrefs((current) => {
+        const next = applyShared(current, key, value);
+        void saveRosterPrefs(next);
+        return next;
+      }),
+  });
+
   /** Every preference write goes through here, so persistence can never be forgotten. */
   const mutate = useCallback((change: (current: RosterPrefs) => RosterPrefs) => {
     setPrefs((current) => {
       const next = change(current);
       void saveRosterPrefs(next);
+      const before = sharedFromPrefs(current);
+      const after = sharedFromPrefs(next);
+      for (const key of SYNC_KEYS) {
+        if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) sync.current?.noteLocal(key, after[key]);
+      }
       return next;
     });
-  }, []);
+  }, [sync]);
 
   // ── the two calls that build the roster ─────────────────────────────────────
   const loadAll = useCallback(
@@ -528,5 +551,6 @@ export function useRoster() {
     diagnostic,
     connectivityBusy: busy,
     recheck,
+    syncStatus,
   };
 }

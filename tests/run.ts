@@ -44,7 +44,7 @@ import {
 import { checkBaseUrl, DEFAULT_SETTINGS, healSurface, splitProfiles, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
 import { loadSettings, saveSettings, loadLastSeen, saveLastSeen } from '../src/settingsStore';
 import { __resetStoreProbe } from '../src/storage';
-import { candidateAddresses, dashboardAddressFor, pairPageUrl, parseConnectLink, PairingError, probeService, redeemPairing, REDEEM_PATH } from '../src/pairing';
+import { candidateAddresses, dashboardAddressFor, pairPageUrl, parseConnectLink, settingsAfterPairing, PairingError, probeService, redeemPairing, REDEEM_PATH } from '../src/pairing';
 import { buildPut, createUiSync, EMPTY_META, type PutBody, type Remote, type SyncMeta } from '../src/sync/uiSync';
 import {
   contactsOf, countNew, groupByDay, pageLabel, paginate, probeFromHealth, toRow, statusColor,
@@ -2268,6 +2268,17 @@ async function main(): Promise<void> {
     await assert.rejects(redeemPairing(link, fakeFetch({ [`POST http://box.test:9119${REDEEM_PATH}`]: () => new Error('ECONNREFUSED') })), (e: PairingError) => e.reason === 'network');
     // a link past its own expiry never hits the network
     await assert.rejects(redeemPairing({ ...link, expires: 1 }, fakeFetch({})), (e: PairingError) => e.reason === 'expired');
+  });
+
+
+  test('pairing: a redeemed token becomes the credential, the used address the first route', () => {
+    const before = { ...DEFAULT_SETTINGS, apiKey: 'old-static', routes: [{ role: 'public', priority: 0, url: 'https://box.ts.example:10443', insecure: false }] } as Settings;
+    const patch = settingsAfterPairing(before, { baseUrl: 'http://100.64.0.2:9119', token: 'dev-tok', deviceId: 'dev_9', label: 'Pixel', createdAt: '' });
+    assert.equal(patch.apiKey, 'dev-tok');
+    assert.equal(patch.surface, 'dashboard');
+    assert.equal(patch.deviceId, 'dev_9');
+    assert.deepEqual(patch.routes!.map((r) => [r.url, r.priority]), [['http://100.64.0.2:9119', 0], ['https://box.ts.example:10443', 1]]);
+    assert.equal(patch.routes![0].insecure, true, 'tailnet http: consented by pairing over it');
   });
 
   test('wizard probe: :9119 is the dashboard, :9222 is the gateway (the correction sentence), refused is named', async () => {
