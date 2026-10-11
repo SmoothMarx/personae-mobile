@@ -13,9 +13,19 @@
 
 import type { RouteCandidate } from './routes';
 
+/**
+ * Which HTTP surface this connection speaks.
+ *   'dashboard' — `hermes dashboard` (0.0.0.0:9119): profiles, the batched rail, the WS event
+ *                 channel. This is the app's target from 0.4.0 (PLAN-UI.md §0.2).
+ *   'gateway'   — the legacy `:9222` api_server surface, kept so an existing setup keeps working.
+ */
+export type Surface = 'dashboard' | 'gateway';
+
 export type Settings = {
-  /** Gateway origin, e.g. http://100.64.0.5:9222 . Empty = not configured. */
+  /** Origin of the chosen surface, e.g. http://10.0.0.15:9119 . Empty = not configured. */
   baseUrl: string;
+  /** Which surface `baseUrl` speaks. */
+  surface: Surface;
   /** Bearer token (API_SERVER_KEY). Empty = not configured. NEVER logged or persisted in plain files. */
   apiKey: string;
   /** Extra profiles served under /p/<name>/ (multiplex_profiles). */
@@ -59,6 +69,7 @@ export const LAST_SEEN_STORE_KEY = 'personae.lastSeen.v1';
 
 export const DEFAULT_SETTINGS: Settings = {
   baseUrl: '',
+  surface: 'dashboard',
   apiKey: '',
   profiles: [],
   model: '',
@@ -84,6 +95,11 @@ export type StoredSettings = Omit<Settings, 'apiKey'>;
  */
 export function settingsForRoute(settings: Settings, url: string): Settings {
   return url && url !== settings.baseUrl ? { ...settings, baseUrl: url } : settings;
+}
+
+/** Human label for a surface (PT-PT, shown next to the URL field). */
+export function surfaceLabel(surface: Surface): string {
+  return surface === 'gateway' ? 'API do gateway (:9222)' : 'Dashboard (:9119)';
 }
 
 export function splitProfiles(raw: string): string[] {

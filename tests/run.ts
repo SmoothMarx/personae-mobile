@@ -43,7 +43,25 @@ import { __resetStoreProbe } from '../src/storage';
 import {
   contactsOf, countNew, groupByDay, pageLabel, paginate, probeFromHealth, toRow, statusColor,
 } from '../src/logic/roster';
-import { buildItems, sortMessages } from '../src/logic/thread';
+import {
+  buildItems,
+  prettyArgs,
+  reasoningText,
+  resultOk,
+  sortMessages,
+  truncate,
+} from '../src/logic/thread';
+import {
+  AVATAR_SIZE,
+  avatarKey,
+  createAvatarCache,
+  isImageDataUrl,
+  monogramFor,
+  parseAvatarDataUrl,
+  shouldProbeAvatar,
+} from '../src/logic/avatars';
+import { threadTitle } from '../src/logic/roster';
+import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
 
 type TestFn = () => void | Promise<void>;
@@ -146,6 +164,276 @@ test('sse: joins multi-line data and defaults an unnamed frame to "message"', ()
 test('sse: parseFrame rejects a frame with no data and drops unknown fields', () => {
   assert.equal(parseFrame('event: x\nretry: 100'), null);
   assert.equal(parseFrame('event: x\ndata: 1')?.event, 'x');
+});
+
+
+// ─────────────────────────────────── F3: thread details ──
+// The 0.3.0 builder produced {kind:'tools', count, names} and nothing else, so "Ver detalhes"
+// could only change a label. These tests pin the payloads now that they are carried.
+
+const PNG = `data:image/png;base64,${Buffer.from('not-really-a-png').toString('base64')}`;
+
+function msg(overrides: Record<string, unknown>): Record<string, unknown> {
+  return { role: 'assistant', timestamp: 1_700_000_000, ...overrides };
+}
+
+test('f3: a tool run joins each call to its result by tool_call_id', () => {
+  const items = buildItems([
+    msg({ id: 'a1', content: 'vou ler o ficheiro', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'read_file', arguments: '{"path":"README.md"}' } }] }),
+    msg({ id: 't1', role: 'tool', tool_call_id: 'call_1', tool_name: 'read_file', content: 'conteúdo do ficheiro' }),
+    msg({ id: 'm2', content: 'está feito', timestamp: 1_700_000_010 }),
+  ] as never);
+
+  const tools = items.find((item) => item.kind === 'tools');
+  assert.ok(tools && tools.kind === 'tools');
+  assert.equal(tools.count, 1);
+  assert.equal(tools.calls[0].id, 'call_1');
+  assert.equal(tools.calls[0].name, 'read_file');
+  assert.match(tools.calls[0].args, /"path": "README\.md"/, 'arguments are pretty-printed');
+  assert.equal(tools.calls[0].result, 'conteúdo do ficheiro');
+  assert.equal(tools.calls[0].ok, true);
+  assert.deepEqual(tools.names, ['read_file']);
+  // The surrounding bubbles are untouched.
+  assert.equal(items.filter((item) => item.kind === 'message').length, 2);
+});
+
+test('f3: reasoning-only produces a Pensamento item and no tools item', () => {
+  const items = buildItems([
+    msg({ id: 'r1', content: '', reasoning: 'O utilizador quer as horas.' }),
+    msg({ id: 'm2', content: 'São 14h', timestamp: 1_700_000_020 }),
+  ] as never);
+  const reasoning = items.find((item) => item.kind === 'reasoning');
+  assert.ok(reasoning && reasoning.kind === 'reasoning');
+  assert.equal(reasoning.text, 'O utilizador quer as horas.');
+  assert.equal(items.filter((item) => item.kind === 'tools').length, 0, 'no calls, no tools row');
+});
+
+test('f3: reasoning_content is read too (the second field the gateway sends)', () => {
+  assert.equal(reasoningText({ reasoning_content: 'pensamento' } as never), 'pensamento');
+  assert.equal(reasoningText({ reasoning: '  espaço  ' } as never), 'espaço');
+});
+
+test('f3: an orphan tool result still renders instead of vanishing', () => {
+  const items = buildItems([
+    msg({ id: 't1', role: 'tool', tool_call_id: 'call_missing', tool_name: 'orphan_tool', content: 'resultado órfão' }),
+  ] as never);
+  const tools = items.find((item) => item.kind === 'tools');
+  assert.ok(tools && tools.kind === 'tools');
+  assert.equal(tools.calls.length, 1);
+  assert.equal(tools.calls[0].id, 'call_missing');
+  assert.equal(tools.calls[0].name, 'orphan_tool');
+  assert.equal(tools.calls[0].result, 'resultado órfão');
+});
+
+test('f3: hidden scaffolding never renders — not as a bubble, not as a tool result', () => {
+  const items = buildItems([
+    msg({ id: 'h1', content: 'ruído de scaffolding', display_kind: 'hidden' }),
+    msg({
+      id: 'h2',
+      content: '',
+      display_kind: 'hidden',
+      tool_calls: [{ id: 'call_hidden', function: { name: 'internal', arguments: '{}' } }],
+    }),
+    msg({ id: 'h3', role: 'tool', tool_call_id: 'call_hidden', tool_name: 'internal', content: 'segredo', display_kind: 'hidden' }),
+    msg({ id: 'm1', content: 'visível', timestamp: 1_700_000_030 }),
+  ] as never);
+  assert.equal(items.length, 1, 'only the real bubble survives');
+  assert.equal(items[0].kind, 'message');
+  const serialized = JSON.stringify(items);
+  assert.ok(!serialized.includes('scaffolding'), 'hidden text must not leak into the render list');
+  assert.ok(!serialized.includes('call_hidden'), 'a hidden call must not become a tool row');
+});
+
+test('f3: two runs get distinct item keys — the screen keys its per-run expansion on them', () => {
+  const items = buildItems([
+    msg({ id: 'a1', tool_calls: [{ id: 'c1', function: { name: 'one', arguments: '{}' } }] }),
+    msg({ id: 'a2', content: 'meio', timestamp: 1_700_000_005 }),
+    msg({ id: 'a3', timestamp: 1_700_000_010, tool_calls: [{ id: 'c2', function: { name: 'two', arguments: '{}' } }] }),
+  ] as never);
+  const tools = items.filter((item) => item.kind === 'tools');
+  assert.equal(tools.length, 2);
+  assert.notEqual(tools[0].key, tools[1].key);
+  const keys = items.map((item) => item.key);
+  assert.equal(new Set(keys).size, keys.length, 'every key is unique, or Set-based state would collide');
+});
+
+test('f3: long arguments and results are truncated with a visible marker', () => {
+  const long = 'x'.repeat(2000);
+  const items = buildItems([
+    msg({ id: 'a1', tool_calls: [{ id: 'c1', function: { name: 'big', arguments: JSON.stringify({ body: long }) } }] }),
+    msg({ id: 't1', role: 'tool', tool_call_id: 'c1', tool_name: 'big', content: long }),
+  ] as never);
+  const tools = items.find((item) => item.kind === 'tools');
+  assert.ok(tools && tools.kind === 'tools');
+  assert.ok(tools.calls[0].args.length < long.length + 200);
+  assert.match(tools.calls[0].args, /\(\+\d+ caracteres\)/);
+  assert.match(String(tools.calls[0].result), /\(\+\d+ caracteres\)/);
+});
+
+test('f3: a failed result is marked, a normal one is not', () => {
+  assert.equal(resultOk({ content: 'Error: ficheiro não encontrado' } as never), false);
+  assert.equal(resultOk({ content: 'tudo bem' } as never), true);
+  assert.equal(resultOk({ content: { error: 'boom' } } as never), false);
+  assert.equal(resultOk({ content: '', finish_reason: null } as never), true, 'unknown is not a failure');
+});
+
+test('f3: prettyArgs survives a non-JSON argument string', () => {
+  assert.equal(prettyArgs('não é json'), 'não é json');
+  assert.equal(prettyArgs(''), '');
+  assert.match(prettyArgs({ a: 1 }), /"a": 1/);
+  assert.ok(truncate('abcdef', 3).startsWith('abc'));
+});
+
+// ─────────────────────────────────── F1: avatars ──
+
+test('f1: the cache key is profile + size, and the monogram is the fallback', () => {
+  assert.equal(avatarKey('cody', 28), 'personae.avatar.v1.28.cody');
+  assert.notEqual(avatarKey('cody', 28), avatarKey('cody', 40));
+  assert.equal(monogramFor('cody'), 'C');
+  assert.equal(monogramFor('cody', 'Beta'), 'B');
+  assert.equal(monogramFor(''), '?');
+  assert.equal(AVATAR_SIZE, 28, 'the plan fixes 28 px');
+});
+
+test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {
+  assert.equal(shouldProbeAvatar(false), false, 'a definite no is a no');
+  assert.equal(shouldProbeAvatar(null), true, 'unknown is worth one background attempt');
+  assert.equal(shouldProbeAvatar(undefined), true);
+  assert.equal(shouldProbeAvatar(true), true);
+});
+
+test('f1: a data URL is validated before it reaches <Image>', () => {
+  assert.ok(isImageDataUrl(PNG));
+  assert.equal(parseAvatarDataUrl(PNG)?.mime, 'image/png');
+  assert.equal(parseAvatarDataUrl('https://example.com/a.png'), null);
+  assert.equal(parseAvatarDataUrl('data:text/plain;base64,aGk='), null);
+  assert.equal(parseAvatarDataUrl(null), null);
+});
+
+test('f1: one fetch per profile per size per session, memory + store behind it', async () => {
+  const written: Record<string, string> = {};
+  const store = {
+    getItem: async (key: string) => written[key] ?? null,
+    setItem: async (key: string, value: string) => {
+      written[key] = value;
+    },
+  };
+  let calls = 0;
+  const cache = createAvatarCache({ store });
+  const fetchOnce = async () => {
+    calls += 1;
+    return PNG;
+  };
+
+  assert.equal(await cache.load('cody', 28, fetchOnce), PNG);
+  assert.equal(await cache.load('cody', 28, fetchOnce), PNG, 'second load is served from memory');
+  assert.equal(calls, 1, 'exactly one network call');
+  assert.equal(written[avatarKey('cody', 28)], PNG, 'and it is persisted for the next session');
+
+  // A different size is a different entry.
+  await cache.load('cody', 40, fetchOnce);
+  assert.equal(calls, 2);
+
+  // A settled miss is not retried in the same session.
+  let misses = 0;
+  const missing = createAvatarCache({});
+  assert.equal(await missing.load('beta', 28, async () => { misses += 1; return null; }), null);
+  assert.equal(await missing.load('beta', 28, async () => { misses += 1; return null; }), null);
+  assert.equal(misses, 1, 'a definitive miss is remembered for the session');
+});
+
+test('f1: warm() serves a previous session from the store without touching the network', async () => {
+  const store = {
+    getItem: async () => PNG,
+    setItem: async () => undefined,
+  };
+  let calls = 0;
+  const cache = createAvatarCache({ store });
+  await cache.warm('marv', 28);
+  assert.equal(cache.peek('marv', 28), PNG);
+  assert.equal(await cache.load('marv', 28, async () => { calls += 1; return null; }), PNG);
+  assert.equal(calls, 0, 'a warm cache never fetches');
+});
+
+test('f1: a broken fetcher or junk payload degrades to the monogram, never to an error', async () => {
+  const cache = createAvatarCache({});
+  assert.equal(await cache.load('x', 28, async () => { throw new Error('rede caiu'); }), null);
+  assert.equal(await cache.load('y', 28, async () => 'não é uma imagem'), null);
+});
+
+// ─────────────────────────────────── F4: the title chain ──
+
+test('f4: the title chain is param -> loaded -> id, and a raw id is flagged', () => {
+  assert.deepEqual(threadTitle({ param: 'Do telefonema', loaded: 'antigo', id: '20261011_122354' }), {
+    title: 'Do telefonema',
+    isId: false,
+  });
+  assert.deepEqual(threadTitle({ param: '', loaded: 'Do servidor', id: '20261011_122354' }), {
+    title: 'Do servidor',
+    isId: false,
+  });
+  assert.deepEqual(threadTitle({ param: '', loaded: '', id: '20261011_122354' }), {
+    title: '20261011_122354',
+    isId: true,
+  });
+  // The acceptance rule, stated as a test: an id is only ever rendered when no title exists.
+  const withTitle = threadTitle({ param: 'Nome', loaded: '', id: 'abc' });
+  assert.notEqual(withTitle.title, 'abc');
+  assert.equal(withTitle.isId, false);
+});
+
+
+// ─────────────────────────────────── P7: the export log ──
+
+test('p7: a known secret cannot appear in an exported log', () => {
+  const secret = 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+  addSecret(secret);
+  const log = createLog();
+  log.info('auth', `bearer ${secret} usado`);
+  log.error('api', `GET /api/profiles?ticket=${secret} → 401`);
+  log.info('ws', `Authorization: Bearer ${secret}`);
+  const doc = buildLogDocument(
+    { appVersion: '0.4.0', versionCode: '4', surface: 'dashboard', baseUrl: 'http://10.0.0.15:9119' },
+    'o rail não carrega',
+    log.entries,
+  );
+  assert.ok(!doc.includes(secret), 'the live secret must never be written');
+  assert.ok(doc.includes('[REDACTED]'));
+  assert.ok(doc.includes('o rail não carrega'), 'the description lands in the file');
+});
+
+test('p7: headers, tickets and tokens are redacted by pattern, not only by value', () => {
+  assert.match(redact('Authorization: Bearer abcdef0123456789'), /\[REDACTED\]/);
+  assert.match(redact('GET /api/ws?ticket=Zx9Yw8Vu7Tt6Ss5Rr4Qq3Pp2Oo1'), /ticket=\[REDACTED\]/);
+  assert.match(redact('{"access_token":"eyJhbGciOi.payload.sig"}'), /\[REDACTED\]/);
+  assert.match(redact('token=segredo123'), /token=\[REDACTED\]/);
+  assert.equal(redact('nada para esconder'), 'nada para esconder');
+});
+
+test('p7: the ring buffer is capped and the document carries the context', () => {
+  const log = createLog({ limit: 3, now: () => 1_700_000_000_000 });
+  for (let i = 0; i < 5; i += 1) log.info('ui', `linha ${i}`);
+  assert.equal(log.entries.length, 3, 'a capped ring buffer, not an unbounded file');
+  assert.equal(log.entries[0].message, 'linha 2');
+
+  log.call({ method: 'GET', path: '/api/sessions/abc/messages', status: 200, ms: 42 });
+  log.call({ method: 'POST', path: '/api/auth/ws-ticket', status: 401, ms: 9 });
+  const doc = buildLogDocument(
+    {
+      appVersion: '0.4.0', versionCode: '4', surface: 'dashboard',
+      baseUrl: 'http://10.0.0.15:9119', activeRoute: 'http://10.0.0.15:9119',
+      routes: [{ url: 'http://10.0.0.15:9119', role: 'lan', priority: 0 }],
+      tailscale: 'ligado', deviceOs: 'android 34', failures: ['HTTP 401 em /api/auth/ws-ticket'],
+    },
+    '', log.entries,
+  );
+  assert.match(doc, /0\.4\.0 \(versionCode 4\)/);
+  assert.match(doc, /GET \/api\/sessions\/abc\/messages → 200 em 42 ms/);
+  assert.match(doc, /\[warn\] api: POST \/api\/auth\/ws-ticket → 401 em 9 ms/);
+  assert.match(doc, /Rotas candidatas/);
+  assert.match(doc, /Últimas falhas:/);
+  assert.match(doc, /android 34/);
+  assert.ok(!/Authorization/i.test(doc), 'the header never writes an auth header of its own');
 });
 
 // ─────────────────────────────────────────────────────────── client ──
@@ -566,10 +854,15 @@ async function main(): Promise<void> {
     assert.equal(items.every((item) => item.kind === 'message'), true);
   });
 
-  test('thread: a tool call attached to an assistant row still collapses', () => {
+  test('thread: an assistant row that narrates AND calls a tool keeps its text, and the call collapses', () => {
+    // 0.4.0 (F3) changed this on purpose: 0.3.0 dropped the prose and showed only "1 chamada a
+    // ferramentas", which threw away what the agent said. The text is a bubble now, the call is
+    // still one collapsed row.
     const items = buildItems([{ id: 'a', role: 'assistant', content: 'vou ver', tool_calls: [{ id: 'x' }] }]);
-    assert.equal(items.length, 1);
-    assert.equal(items[0].kind, 'tools');
+    assert.equal(items.length, 2);
+    assert.equal(items[0].kind, 'message');
+    assert.equal((items[0] as { text: string }).text, 'vou ver');
+    assert.equal(items[1].kind, 'tools');
     assert.equal(sortMessages([{ id: '1', timestamp: 5 }, { id: '2', timestamp: 3 }]).map((m) => m.id).join(), '2,1');
   });
 

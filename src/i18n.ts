@@ -16,6 +16,7 @@ export const t = {
     title: 'Personae',
     profiles: 'Perfis',
     primary: 'Principal',
+    allProfiles: 'Tudo',
     sessions: 'Sessões',
     sessionsOf: (name: string) => `Sessões · ${name}`,
     emptyTitle: 'Ainda não há sessões',
@@ -44,6 +45,15 @@ export const t = {
     tools: (n: number) => `${n} chamada${n === 1 ? '' : 's'} a ferramentas`,
     showTools: 'Ver detalhes',
     hideTools: 'Esconder detalhes',
+    reasoning: 'Pensamento',
+    toolArgs: 'Argumentos',
+    toolResult: 'Resultado',
+    toolNoResult: 'sem resultado',
+    toolFailed: 'falhou',
+    orphanTool: 'resultado sem chamada correspondente',
+    liveActivity: 'Atividade em direto',
+    liveToolDone: 'concluída',
+    liveToolRunning: 'a correr…',
     composerPlaceholder: 'Escreve uma mensagem…',
     send: 'Enviar',
     stop: 'Parar',
@@ -57,8 +67,22 @@ export const t = {
 
   settings: {
     title: 'Definições',
-    baseUrl: 'Endereço do gateway',
-    baseUrlHelp: 'Ex.: http://100.64.0.5:8642',
+    surface: 'Tipo de ligação',
+    surfaceHelp:
+      'O dashboard (9119) usa uma credencial da app; a API do gateway (9222) usa a chave de API. É a app que fala com um deles de cada vez.',
+    baseUrl: 'Endereço do servidor',
+    baseUrlHelp: 'Ex.: http://10.0.0.5:9119',
+    baseUrlHelpGateway: 'Ex.: http://10.0.0.5:9222',
+    profilesFound: 'perfis encontrados',
+    logTitle: 'Registo de diagnóstico',
+    logHelp:
+      'Um ficheiro .txt com o que a app tentou e falhou. Nada é enviado para fora: só é partilhado quando carregas no botão.',
+    logPlaceholder: 'Escreve aqui o que se passou (opcional)…',
+    logExport: 'Partilhar registo',
+    logClear: 'Limpar',
+    logShared: 'Registo criado e enviado para a partilha.',
+    logCleared: 'Registo limpo.',
+    logFailed: 'Não foi possível partilhar o registo.',
     apiKey: 'Chave de API',
     apiKeyHelp: 'Fica guardada no armazenamento seguro do telefone. Nunca sai daqui.',
     apiKeySet: 'guardada',
@@ -192,6 +216,30 @@ export const t = {
     down: 'Sem resposta',
     unknown: 'Por testar',
     auth: 'Chave recusada',
+  },
+
+  /**
+   * Accessibility labels, PT-PT (F2): every icon-only control needs one, or it is unusable with a
+   * screen reader. Kept apart from the visible copy so a label can be longer than a caption.
+   */
+  a11y: {
+    avatar: (name: string) => `Fotografia de perfil de ${name}`,
+    contact: (label: string, hasAvatar: boolean) =>
+      `Perfil ${label}${hasAvatar ? ', com fotografia' : ''}`,
+    send: 'Enviar mensagem',
+    stop: 'Parar a resposta',
+    refresh: 'Atualizar a lista',
+    settings: 'Abrir definições',
+    newSession: 'Criar uma sessão nova',
+    expandDetails: 'Ver os detalhes desta chamada',
+    collapseDetails: 'Esconder os detalhes desta chamada',
+    expandReasoning: 'Ver o pensamento do agente',
+    collapseReasoning: 'Esconder o pensamento do agente',
+    pagePrev: 'Página anterior',
+    pageNext: 'Página seguinte',
+    toolFailed: 'a chamada falhou',
+    surface: (label: string) => `Tipo de ligação: ${label}`,
+    exportLog: 'Exportar o registo de diagnóstico',
   },
 
   common: {

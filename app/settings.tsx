@@ -7,10 +7,14 @@
  * clearing the key is a destructive action that names what it affects and asks first.
  */
 
+import { File, Paths } from 'expo-file-system';
+import { Ionicons } from '@expo/vector-icons';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
-import { createApi } from '../src/api/client';
+import { createBackend } from '../src/api/backend';
+import { buildLogDocument, log } from '../src/logging';
 import { parseErrorForDisplay } from '../src/api/display';
 import { xhrTransport } from '../src/api/transport';
 import { useConnectivity } from '../src/ConnectivityContext';
@@ -19,6 +23,7 @@ import { t } from '../src/i18n';
 import { contactsOf, probeFromHealth, statusColor, type Probe } from '../src/logic/roster';
 import {
   checkBaseUrl,
+  surfaceLabel,
   DEFAULT_SETTINGS,
   redactKey,
   splitProfiles,
@@ -130,18 +135,88 @@ export default function SettingsScreen() {
     return typed.filter((line) => !effectiveProfiles.includes(line.replace(/^\/+|\/+$/g, '')));
   }, [profilesText, effectiveProfiles]);
 
+  const [logNote, setLogNote] = useState('');
+  const [logStatus, setLogStatus] = useState<string | null>(null);
+
+  /**
+   * Export log (PLAN-UI.md §9): one .txt in the cache dir, handed to the OS share sheet. Nothing is
+   * uploaded. The description the user types lands at the top of the file, so a single file is
+   * "log + what went wrong".
+   */
+  const exportLog = useCallback(async () => {
+    const doc = buildLogDocument(
+      {
+        appVersion: '0.4.0',
+        versionCode: '4',
+        surface: surfaceLabel(form.surface),
+        baseUrl: form.baseUrl,
+        routes: form.routes.map((route, index) => ({ url: route.url, role: route.role, priority: index })),
+        deviceOs: `${Platform.OS} ${String(Platform.Version)}`,
+        failures: log.entries.filter((entry) => entry.level !== 'info').slice(-3).map((entry) => entry.message),
+      },
+      logNote,
+      log.entries,
+    );
+    try {
+      const file = new File(Paths.cache, 'personae-registo.txt');
+      if (file.exists) file.delete();
+      file.create();
+      file.write(doc);
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(file.uri, { mimeType: 'text/plain', dialogTitle: t.settings.logTitle });
+      } else {
+        await Share.share({ message: doc });
+      }
+      setLogStatus(t.settings.logShared);
+    } catch {
+      // A device without a share sheet still gets the text itself.
+      try {
+        await Share.share({ message: doc });
+        setLogStatus(t.settings.logShared);
+      } catch {
+        setLogStatus(t.settings.logFailed);
+      }
+    }
+  }, [form.baseUrl, form.routes, form.surface, logNote]);
+
   const urlCheck = checkBaseUrl(form.baseUrl);
   const contacts = useMemo(() => contactsOf({ ...form, profiles: effectiveProfiles }), [form, effectiveProfiles]);
 
   const testConnection = useCallback(async () => {
     setTesting(true);
     setResults([]);
-    const api = createApi({ ...form, profiles: effectiveProfiles }, { transport: xhrTransport, timeoutMs: 8000 });
+    // Through the Backend, so the test follows the selected surface: the dashboard answers for every
+    // profile in one call (the honest test is "can I read the roster with this credential"), while
+    // the api_server is probed per declared contact.
+    const backend = createBackend({ ...form, profiles: effectiveProfiles });
     const collected: TestResult[] = [];
+    if (backend.hasProfiles) {
+      const started = Date.now();
+      try {
+        const rows = await backend.profiles();
+        collected.push({
+          label: `${rows.length} ${t.settings.profilesFound}`,
+          probe: { status: 'ok' },
+          ms: Date.now() - started,
+          detail: rows.slice(0, 3).map((row) => row.name).join(', '),
+        });
+      } catch (error) {
+        collected.push({
+          label: t.settings.testFail,
+          probe: probeFromHealth(null, error),
+          ms: Date.now() - started,
+          detail: parseErrorForDisplay(error),
+        });
+      }
+      backend.dispose();
+      setResults(collected);
+      setTesting(false);
+      return;
+    }
     for (const contact of contacts) {
       const started = Date.now();
       try {
-        const health = await api.health(contact.profile);
+        const health = await backend.health(contact.profile);
         collected.push({
           label: contact.label,
           probe: probeFromHealth(health),
@@ -157,6 +232,7 @@ export default function SettingsScreen() {
         });
       }
     }
+    backend.dispose();
     setResults(collected);
     setTesting(false);
   }, [contacts, effectiveProfiles, form]);
@@ -184,9 +260,43 @@ export default function SettingsScreen() {
         </Text>
       ) : null}
 
+      {/* Which surface the address speaks. One choice, applied at once (single-field settings save
+          themselves), because everything else on this screen means something slightly different
+          per surface: the bearer is a dashboard app credential, or the :9222 API key. */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.settings.surface}</Text>
+        <View style={styles.segment}>
+          {(['dashboard', 'gateway'] as const).map((option) => {
+            const active = form.surface === option;
+            return (
+              <Pressable
+                key={option}
+                onPress={() => {
+                  setForm((prev) => ({ ...prev, surface: option }));
+                  update({ surface: option });
+                }}
+                style={[styles.segmentButton, active && styles.segmentButtonActive]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={t.a11y.surface(surfaceLabel(option))}
+              >
+                <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
+                  {surfaceLabel(option)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={styles.help}>{t.settings.surfaceHelp}</Text>
+        <View style={styles.effectiveRow}>
+          <Text style={styles.effectiveLabel}>{t.settings.effective}</Text>
+          <Text style={styles.effectiveValue}>{surfaceLabel(form.surface)}</Text>
+        </View>
+      </View>
+
       <Field
         label={t.settings.baseUrl}
-        help={t.settings.baseUrlHelp}
+        help={form.surface === 'dashboard' ? t.settings.baseUrlHelp : t.settings.baseUrlHelpGateway}
         value={form.baseUrl}
         onChangeText={(value) => stage({ baseUrl: value.trim() }, 400)}
         autoCapitalize="none"
@@ -212,7 +322,7 @@ export default function SettingsScreen() {
         <TextInput
           value={form.apiKey}
           onChangeText={(value) => stage({ apiKey: value.trim() }, 400)}
-          placeholder="API_SERVER_KEY"
+          placeholder={form.surface === 'dashboard' ? 'Bearer do dashboard' : 'API_SERVER_KEY'}
           placeholderTextColor={colors.faint}
           style={styles.input}
           secureTextEntry={!revealKey}
@@ -538,6 +648,43 @@ export default function SettingsScreen() {
         ))}
         {!results.length && !testing ? <Text style={styles.help}>{t.settings.testFail} → {t.retry}</Text> : null}
       </View>
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.settings.logTitle}</Text>
+        <Text style={styles.help}>{t.settings.logHelp}</Text>
+        <TextInput
+          value={logNote}
+          onChangeText={setLogNote}
+          placeholder={t.settings.logPlaceholder}
+          placeholderTextColor={colors.faint}
+          style={[styles.input, styles.logInput]}
+          multiline
+        />
+        <View style={styles.composerActions}>
+          <Pressable
+            onPress={() => void exportLog()}
+            accessibilityRole="button"
+            accessibilityLabel={t.a11y.exportLog}
+            style={({ pressed }) => [styles.primary, styles.logButton, pressed && styles.pressed]}
+          >
+            <Ionicons name="share-outline" size={16} color={colors.accentText} />
+            <Text style={styles.primaryText}>{t.settings.logExport}</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              log.clear();
+              setLogStatus(t.settings.logCleared);
+            }}
+            style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
+          >
+            <Text style={styles.secondaryText}>{t.settings.logClear}</Text>
+          </Pressable>
+        </View>
+        {logStatus ? <Text style={styles.help}>{logStatus}</Text> : null}
+        <View style={styles.effectiveRow}>
+          <Text style={styles.effectiveLabel}>{t.settings.effective}</Text>
+          <Text style={styles.effectiveValue}>{log.entries.length} linhas</Text>
+        </View>
+      </View>
     </ScrollView>
   );
 }
@@ -603,6 +750,22 @@ const styles = StyleSheet.create({
   },
   labelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   label: { color: colors.text, fontSize: font.body, fontWeight: '700' },
+  composerActions: { flexDirection: 'row', gap: space.sm },
+  logInput: { minHeight: 72, textAlignVertical: 'top' },
+  logButton: { flexDirection: 'row', gap: 6 },
+  segment: { flexDirection: 'row', gap: space.sm },
+  segmentButton: {
+    flex: 1,
+    height: 38,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  segmentButtonActive: { borderColor: colors.accent, backgroundColor: colors.panelAlt },
+  segmentText: { color: colors.muted, fontSize: font.small, fontWeight: '600' },
+  segmentTextActive: { color: colors.text },
   input: {
     borderWidth: 1,
     borderColor: colors.border,

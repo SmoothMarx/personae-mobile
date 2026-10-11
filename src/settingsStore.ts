@@ -47,8 +47,13 @@ export async function loadSettings(): Promise<Settings> {
   const storedRoutes = normalizeRoutes(parsed.routes);
   const routes = storedRoutes.length ? storedRoutes : routesFromBaseUrl(baseUrl);
 
+  // `surface` is ADDITIVE: an older blob simply has no value and lands on the default, so an
+  // existing install keeps working and a newer build reads the old shape unchanged.
+  const surface = parsed.surface === 'gateway' ? 'gateway' : parsed.surface === 'dashboard' ? 'dashboard' : 'dashboard';
+
   return {
     baseUrl: baseUrl || (routes.length ? routes[0].url : ''),
+    surface,
     profiles: Array.isArray(parsed.profiles) ? parsed.profiles.filter((p) => typeof p === 'string') : [],
     model: asString(parsed.model, ''),
     routes,
@@ -77,6 +82,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
 
   const stored: StoredSettings = {
     baseUrl,
+    surface: settings.surface,
     profiles: settings.profiles,
     model: settings.model,
     routes: settings.routes,

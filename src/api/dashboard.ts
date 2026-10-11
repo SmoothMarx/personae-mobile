@@ -31,6 +31,7 @@
 
 import { ApiError, httpError, normalizeError } from './errors';
 import { t } from '../i18n';
+import { addSecret, log } from '../logging';
 import { checkBaseUrl, joinUrl, type Settings } from '../settings';
 
 export type DashboardProfile = {
@@ -215,6 +216,10 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
   const socketFactory: (url: string) => SocketLike =
     options.socketFactory ?? ((url) => new WebSocket(url) as unknown as SocketLike);
 
+  // The live credential is registered with the redactor the moment the client exists, so it can
+  // never reach an exported log — not even through a message someone else wrote.
+  addSecret(settings.apiKey);
+
   let seq = 0;
 
   async function json<T>(
@@ -232,6 +237,7 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
     }
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
     const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    const startedAt = Date.now();
     let response: Response;
     try {
       response = await doFetch(url, {
@@ -242,14 +248,17 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
     } catch (error) {
       if (timer) clearTimeout(timer);
       if ((error as Error)?.name === 'AbortError') {
+        log.warn('net', `${init.method ?? 'GET'} ${path} → tempo esgotado (${timeoutMs} ms)`);
         throw new ApiError(t.errors.timeout(Math.round(timeoutMs / 1000)), { kind: 'timeout' });
       }
+      log.error('net', `${init.method ?? 'GET'} ${path} → ${(error as Error)?.message || 'falha de rede'}`);
       throw new ApiError(t.errors.network((error as Error)?.message || 'fetch failed'), {
         kind: 'network',
         detail: (error as Error)?.message,
       });
     }
     if (timer) clearTimeout(timer);
+    log.call({ method: String(init.method ?? 'GET'), path, status: response.status, ms: Date.now() - startedAt });
     const text = await response.text().catch(() => '');
     let parsed: unknown = null;
     if (text) {
@@ -283,7 +292,8 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
    */
   async function connect(handlers: SocketHandlers = {}): Promise<DashboardSocket> {
     const connection = resolveDashboardConnection(settings);
-    const { ticket } = await wsTicket();
+    const { ticket, ttlSeconds: ticketTtl } = await wsTicket();
+    log.info('ws', `a abrir /api/ws com um bilhete novo (${connection.baseUrl}, ttl ${ticketTtl} s)`);
     const socket = socketFactory(wsUrlOf(connection.baseUrl, '/api/ws', ticket));
     const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> | null }>();
     const listeners = new Map<string, Set<(event: GatewayEvent) => void>>();

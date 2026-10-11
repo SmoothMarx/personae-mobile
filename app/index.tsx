@@ -1,11 +1,21 @@
 /**
- * Roster — every profile as a contact, then that profile's sessions (GET /api/sessions).
+ * Roster — every profile as a contact with its **avatar** (F1) and its status dot, then the
+ * profile's sessions grouped by day.
  *
- * Layout order is deliberate and is a specification (pedro-app-defaults): one control row on one
- * baseline with fixed widths so nothing wraps, contacts as pills, sessions grouped by day, newest
- * first, 25 per page with the page label always visible.
+ * 0.4.0 changes here:
+ *   * the source is the surface-agnostic `Backend` (the dashboard by default: `/api/profiles` for
+ *     the contacts and the batched rail for the sessions), so the roster no longer assumes the
+ *     `:9222` api_server;
+ *   * **F1** — profiles carry a 28 px circular avatar, cached (memory + AsyncStorage), with the
+ *     initial monogram as the fallback and *never* blocking the paint: the list renders, the
+ *     avatars land afterwards;
+ *   * **F2** — the toolbar and pager controls are Ionicons with PT-PT accessibility labels, keeping
+ *     a visible label wherever an icon alone would be ambiguous;
+ *   * **F4** — the session's title is passed to the thread as a route param so its top bar paints
+ *     the name immediately.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -21,15 +31,16 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { createApi, type HermesApi, type HermesSession } from '../src/api/client';
+import type { HermesSession } from '../src/api/client';
+import type { ProfileInfo } from '../src/api/backend';
 import { ApiError, normalizeError } from '../src/api/errors';
-import { xhrTransport } from '../src/api/transport';
-import { useActiveUrl, useConnectivity } from '../src/ConnectivityContext';
+import { Avatar, useAvatars } from '../src/Avatar';
+import { useConnectivity } from '../src/ConnectivityContext';
 import { ConnectivityBanner } from '../src/ConnectivityBanner';
 import { t } from '../src/i18n';
 import { contactsOf, countNew, groupByDay, pageLabel, paginate, probeFromHealth, statusColor, toRow, type Contact, type Probe, type RowGroup } from '../src/logic/roster';
-import { settingsForRoute } from '../src/settings';
 import { loadLastSeen, saveLastSeen } from '../src/settingsStore';
+import { useBackend } from '../src/useBackend';
 import { useSettings } from '../src/SettingsContext';
 import { colors, font, radius, space } from '../src/theme';
 
@@ -41,18 +52,20 @@ type LoadState = {
 };
 
 const EMPTY_STATE: LoadState = { status: 'idle', sessions: [], error: null, loadedAt: null };
+/** The rail's "everything" scope on the dashboard: '' means every profile. */
+const ALL_PROFILES = '';
 
 export default function RosterScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
-  const activeUrl = useActiveUrl();
+  const { backend } = useBackend();
   const { diagnostic, busy, recheck } = useConnectivity();
 
-  const contacts = useMemo(() => contactsOf(settings), [settings]);
-  const [profile, setProfile] = useState('');
+  const [profile, setProfile] = useState(ALL_PROFILES);
   const [state, setState] = useState<LoadState>(EMPTY_STATE);
   const [probes, setProbes] = useState<Record<string, Probe>>({});
+  const [profileRows, setProfileRows] = useState<ProfileInfo[]>([]);
   const [page, setPage] = useState(1);
   const [newCounts, setNewCounts] = useState<Record<string, number>>({});
   const [creating, setCreating] = useState(false);
@@ -61,20 +74,46 @@ export default function RosterScreen() {
   const [creatingBusy, setCreatingBusy] = useState(false);
 
   const lastSeen = useRef<Record<string, number>>({});
-  // The client keeps speaking in terms of ONE origin; which candidate that is was decided by the
-  // connectivity layer, and it changes when the network does.
-  const api: HermesApi = useMemo(
-    () => createApi(settingsForRoute(settings, activeUrl), { transport: xhrTransport }),
-    [settings, activeUrl],
-  );
-
   const configured = Boolean(settings.baseUrl.trim()) && Boolean(settings.apiKey);
+
+  /** Contacts: the server's profiles when the surface has them, else the declared ones. */
+  const contacts: Contact[] = useMemo(() => {
+    if (!backend.hasProfiles || profileRows.length === 0) return contactsOf(settings);
+    return [
+      { profile: ALL_PROFILES, label: t.roster.allProfiles, isPrimary: true, prefix: '' },
+      ...profileRows.map((row) => ({ profile: row.name, label: row.label || row.name, isPrimary: false, prefix: '' })),
+    ];
+  }, [backend.hasProfiles, profileRows, settings]);
+
+  /** F1: avatars resolve after the paint; the monogram stands in until they land. */
+  const avatarUrls = useAvatars(
+    profileRows.map((row) => ({ name: row.name, label: row.label, hasAvatar: row.hasAvatar })),
+    useCallback((name: string) => backend.avatar(name), [backend]),
+  );
 
   useEffect(() => {
     loadLastSeen().then((map) => {
       lastSeen.current = map;
     });
   }, []);
+
+  const loadProfiles = useCallback(async () => {
+    if (!configured || !backend.hasProfiles) return;
+    try {
+      const rows = await backend.profiles();
+      setProfileRows(rows);
+      setProbes((prev) => {
+        const next = { ...prev };
+        for (const row of rows) {
+          if (row.gatewayRunning === true) next[row.name] = { status: 'ok' };
+          else if (row.gatewayRunning === false) next[row.name] = { status: 'down', detail: t.status.down };
+        }
+        return next;
+      });
+    } catch {
+      // A profile list that will not load is not a roster failure: the sessions still render.
+    }
+  }, [backend, configured]);
 
   const load = useCallback(
     async (which: string, options?: { silent?: boolean }) => {
@@ -84,7 +123,7 @@ export default function RosterScreen() {
       }
       if (!options?.silent) setState((prev) => ({ ...prev, status: 'loading', error: null }));
       try {
-        const response = await api.listSessions(which, 100);
+        const response = await backend.sessions(which, 200);
         const sessions = Array.isArray(response.data) ? response.data : [];
         // The count is computed against the PREVIOUS visit, so the badge stays visible for the whole
         // visit instead of vanishing the moment the list is loaded.
@@ -100,22 +139,27 @@ export default function RosterScreen() {
         setState({ status: 'error', sessions: [], error: normalizeError(error), loadedAt: Date.now() });
       }
     },
-    [api, configured],
+    [backend, configured],
   );
 
   const probeProfiles = useCallback(async () => {
-    if (!settings.baseUrl.trim()) return;
+    if (!settings.baseUrl.trim() || backend.hasProfiles) return;
     const next: Record<string, Probe> = {};
     for (const contact of contacts) {
       try {
-        const health = await api.health(contact.profile);
+        const health = await backend.health(contact.profile);
         next[contact.profile || 'default'] = probeFromHealth(health);
       } catch (error) {
         next[contact.profile || 'default'] = probeFromHealth(null, error);
       }
     }
     setProbes(next);
-  }, [api, contacts, settings.baseUrl]);
+  }, [backend, contacts, settings.baseUrl]);
+
+  useEffect(() => {
+    if (!ready) return;
+    void loadProfiles();
+  }, [ready, loadProfiles]);
 
   useEffect(() => {
     if (!ready) return;
@@ -143,12 +187,20 @@ export default function RosterScreen() {
   }, [groups, current.items]);
 
   const onRefresh = useCallback(async () => {
-    await Promise.all([load(profile, { silent: true }), probeProfiles()]);
-  }, [load, profile, probeProfiles]);
+    await Promise.all([load(profile, { silent: true }), probeProfiles(), loadProfiles()]);
+  }, [load, loadProfiles, profile, probeProfiles]);
 
+  /** F4: the title rides the route param so the thread's top bar never paints a raw id. */
   const openThread = useCallback(
-    (session: HermesSession) => {
-      router.push({ pathname: '/thread/[id]', params: { id: session.id, profile } });
+    (session: { id: string; title?: string | null }) => {
+      router.push({
+        pathname: '/thread/[id]',
+        params: {
+          id: session.id,
+          profile,
+          ...(session.title && session.title.trim() ? { title: session.title } : {}),
+        },
+      });
     },
     [profile, router],
   );
@@ -158,18 +210,18 @@ export default function RosterScreen() {
       setCreatingBusy(true);
       setCreateError(null);
       try {
-        const created = await api.createSession(title, profile);
+        const created = await backend.createSession(title, profile);
         setNewTitle('');
         setCreating(false);
         await load(profile, { silent: true });
-        if (created?.session?.id) openThread(created.session);
+        if (created?.id) openThread(created);
       } catch (error) {
         setCreateError(normalizeError(error));
       } finally {
         setCreatingBusy(false);
       }
     },
-    [api, load, openThread, profile],
+    [backend, load, openThread, profile],
   );
 
   const confirmCreate = useCallback(
@@ -188,20 +240,28 @@ export default function RosterScreen() {
 
   const renderContact = (contact: Contact) => {
     const key = contact.profile || 'default';
-    const probe = probes[key] ?? { status: 'unknown' as const };
+    const probe = probes[key] ?? (contact.isPrimary ? { status: 'ok' as const } : { status: 'unknown' as const });
     const selected = contact.profile === profile;
     const count = newCounts[contact.profile] ?? 0;
+    const avatarSource = contact.profile ? avatarUrls[contact.profile] ?? null : null;
     return (
       <Pressable
         key={key}
         onPress={() => setProfile(contact.profile)}
         onLongPress={() => confirmCreate(contact)}
         style={[styles.contact, selected && styles.contactSelected]}
+        accessibilityRole="button"
+        accessibilityLabel={t.a11y.contact(contact.label, Boolean(avatarSource))}
       >
-        <View style={[styles.dot, { backgroundColor: statusColor(probe.status, colors) }]} />
+        {contact.profile ? (
+          <Avatar name={contact.profile} label={contact.label} source={avatarSource} />
+        ) : (
+          <Ionicons name="people-outline" size={16} color={colors.muted} />
+        )}
         <Text style={[styles.contactLabel, selected && styles.contactLabelSelected]} numberOfLines={1}>
           {contact.label}
         </Text>
+        <View style={[styles.dot, { backgroundColor: statusColor(probe.status, colors) }]} />
         {count > 0 ? (
           <View style={styles.badge}>
             <Text style={styles.badgeText}>{count}</Text>
@@ -213,8 +273,8 @@ export default function RosterScreen() {
 
   const renderRow = ({ item }: { item: RowGroup['rows'][number] }) => (
     <Pressable
-      onPress={() => router.push({ pathname: '/thread/[id]', params: { id: item.id, profile } })}
-      onLongPress={() => confirmCreate(contacts.find((c) => c.profile === profile) as Contact)}
+      onPress={() => openThread({ id: item.id, title: item.title })}
+      onLongPress={() => confirmCreate(contacts.find((c) => c.profile === profile) ?? contacts[0])}
       style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
     >
       <View style={styles.avatar}>
@@ -250,15 +310,20 @@ export default function RosterScreen() {
         </Text>
         <Pressable
           onPress={() => setCreating((value) => !value)}
+          accessibilityRole="button"
+          accessibilityLabel={t.a11y.newSession}
           style={({ pressed }) => [styles.headerButton, pressed && styles.pressed]}
         >
+          <Ionicons name={creating ? 'close' : 'add'} size={16} color={colors.accent} />
           <Text style={styles.headerButtonText}>{t.roster.newSession}</Text>
         </Pressable>
         <Pressable
           onPress={() => router.push('/settings')}
+          accessibilityRole="button"
+          accessibilityLabel={t.a11y.settings}
           style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}
         >
-          <Text style={styles.headerIconText}>⚙</Text>
+          <Ionicons name="settings-outline" size={18} color={colors.text} />
         </Pressable>
       </View>
 
@@ -308,10 +373,14 @@ export default function RosterScreen() {
         </View>
       ) : null}
 
-      <View style={styles.contactsRow}>
-        {contacts.map(renderContact)}
-        <View style={styles.contactsSpacer} />
-      </View>
+      <FlatList
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        data={contacts}
+        keyExtractor={(contact) => contact.profile || 'default'}
+        renderItem={({ item }) => renderContact(item)}
+        contentContainerStyle={styles.contactsRow}
+      />
     </View>
   );
 
@@ -363,20 +432,27 @@ export default function RosterScreen() {
           <View>
             {pageLabel(current) ? (
               <View style={styles.pager}>
+                {/* Icons with a visible label: a bare chevron is ambiguous. */}
                 <Pressable
                   disabled={current.page <= 1}
                   onPress={() => setPage((value) => Math.max(1, value - 1))}
+                  accessibilityRole="button"
+                  accessibilityLabel={t.a11y.pagePrev}
                   style={({ pressed }) => [styles.pagerButton, pressed && styles.pressed, current.page <= 1 && styles.disabled]}
                 >
+                  <Ionicons name="chevron-back" size={14} color={colors.text} />
                   <Text style={styles.pagerText}>{t.roster.prev}</Text>
                 </Pressable>
                 <Text style={styles.pagerLabel}>{pageLabel(current)}</Text>
                 <Pressable
                   disabled={current.page >= current.totalPages}
                   onPress={() => setPage((value) => Math.min(current.totalPages, value + 1))}
+                  accessibilityRole="button"
+                  accessibilityLabel={t.a11y.pageNext}
                   style={({ pressed }) => [styles.pagerButton, pressed && styles.pressed, current.page >= current.totalPages && styles.disabled]}
                 >
                   <Text style={styles.pagerText}>{t.roster.next}</Text>
+                  <Ionicons name="chevron-forward" size={14} color={colors.text} />
                 </Pressable>
               </View>
             ) : null}
@@ -404,11 +480,14 @@ const styles = StyleSheet.create({
   },
   headerTitle: { flex: 1, color: colors.text, fontSize: font.large, fontWeight: '700' },
   headerButton: {
-    width: 104,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    minWidth: 104,
     height: 34,
+    paddingHorizontal: space.sm,
     borderRadius: radius.sm,
     backgroundColor: colors.panelAlt,
-    alignItems: 'center',
     justifyContent: 'center',
   },
   headerButtonText: { color: colors.accent, fontSize: font.small, fontWeight: '600' },
@@ -420,15 +499,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerIconText: { color: colors.text, fontSize: font.title },
-  contactsRow: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.md, paddingBottom: space.sm, gap: space.sm },
-  contactsSpacer: { width: space.md },
+  contactsRow: { alignItems: 'center', paddingHorizontal: space.md, paddingBottom: space.sm, gap: space.sm },
   contact: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.xs,
     paddingHorizontal: space.sm,
-    paddingVertical: 6,
+    paddingVertical: 4,
     borderRadius: radius.pill,
     backgroundColor: colors.panel,
     borderWidth: 1,
@@ -532,12 +609,15 @@ const styles = StyleSheet.create({
   errorDetail: { color: '#f0a8a2', fontSize: font.small },
   pager: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', padding: space.md, gap: space.sm },
   pagerButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
     height: 36,
     minWidth: 92,
+    paddingHorizontal: space.sm,
     borderRadius: radius.sm,
     borderWidth: 1,
     borderColor: colors.border,
-    alignItems: 'center',
     justifyContent: 'center',
   },
   pagerText: { color: colors.text, fontSize: font.small, fontWeight: '600' },

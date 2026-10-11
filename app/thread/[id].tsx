@@ -1,12 +1,23 @@
 /**
- * Thread — history (GET /api/sessions/{id}/messages), composer, streaming send
- * (POST /api/sessions/{id}/chat/stream) rendered token by token, and a real Stop button.
+ * Thread — history, the composer, a live turn, and *real* details (F3), under the session's name
+ * (F4).
  *
- * Failure policy (P6): a failed stream keeps its HTTP identity and is shown; the turn then falls
- * back to the non-streaming POST /api/sessions/{id}/chat, which is announced in the UI rather than
- * silently swapped in. A notice or an error stays on screen until the user acts on it.
+ * What changed for 0.4.0:
+ *
+ *  * **F3** — "Ver detalhes" used to toggle a boolean that only changed the label
+ *    (`app/thread/[id].tsx:175-184` in 0.3.0): there was no expanded body, `showTools` was ONE
+ *    global boolean, and reasoning was dropped before rendering. Now every run of tool/reasoning
+ *    rows is its own item with real payloads, the expansion state is a `Set` keyed by item key, a
+ *    tool result is joined to its call by `tool_call_id`, hidden scaffolding never renders, and
+ *    reasoning gets its own "Pensamento" block. Tool activity *during* a turn arrives on the WS
+ *    event channel and is shown as it happens.
+ *  * **F4** — the title comes from the route param first (instant paint, no blank bar) and then
+ *    from the session row once loaded, which is also how a rename lands while the screen is open.
+ *    A raw id is only ever shown when no title exists anywhere.
+ *  * **F2** — the composer's buttons are Ionicons with PT-PT accessibility labels.
  */
 
+import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -15,45 +26,45 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from 'react-native';
 
-import { createApi, type HermesApi, type HermesMessage } from '../../src/api/client';
+import type { HermesMessage } from '../../src/api/client';
+import type { LiveTool } from '../../src/api/backend';
 import { ApiError, normalizeError } from '../../src/api/errors';
-import { xhrTransport, type StreamHandle } from '../../src/api/transport';
-import { useActiveUrl } from '../../src/ConnectivityContext';
-import { formatAge, formatTime } from '../../src/format';
+import type { StreamHandle } from '../../src/api/transport';
+import { formatTime } from '../../src/format';
 import { t } from '../../src/i18n';
 import { buildItems, type ThreadItem } from '../../src/logic/thread';
-import { settingsForRoute } from '../../src/settings';
-import { useSettings } from '../../src/SettingsContext';
+import { threadTitle } from '../../src/logic/roster';
+import { useBackend } from '../../src/useBackend';
 import { colors, font, radius, space } from '../../src/theme';
 
 type Live = { user: string | null; text: string } | null;
 
 export default function ThreadScreen() {
-  const params = useLocalSearchParams<{ id: string; profile?: string }>();
+  const params = useLocalSearchParams<{ id: string; profile?: string; title?: string }>();
   const sessionId = String(params.id || '');
   const profile = String(params.profile || '');
-  const { settings, ready } = useSettings();
-  const activeUrl = useActiveUrl();
-
-  const api: HermesApi = useMemo(
-    () => createApi(settingsForRoute(settings, activeUrl), { transport: xhrTransport }),
-    [settings, activeUrl],
-  );
+  const paramTitle = String(params.title || '');
+  const { backend, ready } = useBackend();
 
   const [messages, setMessages] = useState<HermesMessage[]>([]);
+  const [loadedTitle, setLoadedTitle] = useState('');
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [loadError, setLoadError] = useState<ApiError | null>(null);
   const [draft, setDraft] = useState('');
   const [streaming, setStreaming] = useState(false);
   const [live, setLive] = useState<Live>(null);
+  const [liveTools, setLiveTools] = useState<LiveTool[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
-  const [showTools, setShowTools] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  /** Per-run expansion: a Set of item keys, never one global boolean (F3, cause 2). */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
 
   const handleRef = useRef<StreamHandle | null>(null);
   const liveTextRef = useRef('');
@@ -61,13 +72,28 @@ export default function ThreadScreen() {
   const errorRef = useRef<ApiError | null>(null);
   const listRef = useRef<FlatList<ThreadItem>>(null);
 
-  const loadMessages = useCallback(
+  const header = threadTitle({ param: paramTitle, loaded: loadedTitle, id: sessionId });
+
+  const toggle = useCallback((key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const loadThread = useCallback(
     async (options?: { silent?: boolean }) => {
       if (!sessionId) return;
       if (!options?.silent) setStatus('loading');
       try {
-        const response = await api.messages(sessionId, profile);
-        setMessages(Array.isArray(response.data) ? response.data : []);
+        const [rows, title] = await Promise.all([
+          backend.messages(sessionId, profile),
+          backend.sessionTitle(sessionId, profile).catch(() => null),
+        ]);
+        setMessages(Array.isArray(rows) ? rows : []);
+        if (title) setLoadedTitle(title);
         setLoadError(null);
         setStatus('ready');
       } catch (error) {
@@ -75,19 +101,20 @@ export default function ThreadScreen() {
         setStatus('error');
       }
     },
-    [api, profile, sessionId],
+    [backend, profile, sessionId],
   );
 
   useEffect(() => {
     if (!ready) return;
-    void loadMessages();
-  }, [ready, loadMessages]);
+    void loadThread();
+  }, [ready, loadThread]);
 
   useEffect(
     () => () => {
       handleRef.current?.close();
+      backend.dispose();
     },
-    [],
+    [backend],
   );
 
   const finishTurn = useCallback(
@@ -98,7 +125,15 @@ export default function ThreadScreen() {
       handleRef.current = null;
       setLive(null);
       liveTextRef.current = '';
+      setLiveTools([]);
 
+      if (error) {
+        setNotice(error.message);
+        if (text) {
+          setMessages((prev) => [...prev, { id: `local_${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now() / 1000 }]);
+        }
+        return;
+      }
       if (aborted) {
         setNotice(t.thread.stopped);
         if (text) {
@@ -106,26 +141,11 @@ export default function ThreadScreen() {
         }
         return;
       }
-      if (error) {
-        setNotice(`${error.message} — ${t.thread.fellBack}`);
-        try {
-          const fallback = await api.chatOnce(sessionId, asked, profile);
-          const content = String(fallback.message?.content ?? '');
-          if (content) {
-            setMessages((prev) => [...prev, { id: `local_${Date.now()}`, role: 'assistant', content, timestamp: Date.now() / 1000 }]);
-          }
-        } catch (fallbackError) {
-          setLoadError(normalizeError(fallbackError));
-          if (text) {
-            setMessages((prev) => [...prev, { id: `local_${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now() / 1000 }]);
-          }
-        }
-        return;
-      }
-      // Success: re-read the canonical rows so what is on screen is what the gateway stored.
-      await loadMessages({ silent: true });
+      void asked;
+      // Success: re-read the canonical rows so what is on screen is what the server stored.
+      await loadThread({ silent: true });
     },
-    [api, loadMessages, profile, sessionId],
+    [loadThread],
   );
 
   const send = useCallback(() => {
@@ -137,10 +157,11 @@ export default function ThreadScreen() {
     pendingRef.current = text;
     liveTextRef.current = '';
     errorRef.current = null;
+    setLiveTools([]);
     setLive({ user: text, text: '' });
     setStreaming(true);
 
-    handleRef.current = api.chatStream(
+    handleRef.current = backend.chatStream(
       sessionId,
       text,
       {
@@ -154,6 +175,17 @@ export default function ThreadScreen() {
             setLive((prev) => (prev ? { ...prev, text: content } : { user: text, text: content }));
           }
         },
+        onTool: (tool) => {
+          setLiveTools((prev) => {
+            const index = prev.findIndex((entry) => entry.id && entry.id === tool.id);
+            if (index >= 0) {
+              const next = [...prev];
+              next[index] = { ...next[index], ...tool, args: tool.args || next[index].args };
+              return next;
+            }
+            return [...prev, tool];
+          });
+        },
         onError: (error) => {
           errorRef.current = error;
         },
@@ -163,7 +195,7 @@ export default function ThreadScreen() {
       },
       profile,
     );
-  }, [api, draft, finishTurn, profile, sessionId, streaming]);
+  }, [backend, draft, finishTurn, profile, sessionId, streaming]);
 
   const stop = useCallback(() => {
     handleRef.current?.close();
@@ -171,24 +203,78 @@ export default function ThreadScreen() {
 
   const items = useMemo(() => buildItems(messages), [messages]);
 
+  const renderCall = (call: { id: string; name: string; args: string; result: string | null; ok: boolean }) => (
+    <View key={call.id} style={styles.call}>
+      <View style={styles.callHead}>
+        <Ionicons
+          name={call.ok ? 'checkmark-circle-outline' : 'alert-circle-outline'}
+          size={14}
+          color={call.ok ? colors.green : colors.red}
+          accessibilityLabel={call.ok ? undefined : t.a11y.toolFailed}
+        />
+        <Text style={styles.callName}>{call.name || t.thread.orphanTool}</Text>
+      </View>
+      {call.args ? (
+        <>
+          <Text style={styles.callLabel}>{t.thread.toolArgs}</Text>
+          <Text style={styles.callBody}>{call.args}</Text>
+        </>
+      ) : null}
+      <Text style={styles.callLabel}>{t.thread.toolResult}</Text>
+      <Text style={[styles.callBody, !call.ok && styles.callBodyError]}>
+        {call.result ?? t.thread.toolNoResult}
+      </Text>
+    </View>
+  );
+
   const renderItem = ({ item }: { item: ThreadItem }) => {
     if (item.kind === 'tools') {
+      const open = expanded.has(item.key);
       return (
-        <Pressable onPress={() => setShowTools((value) => !value)} style={styles.toolsRow}>
-          <Text style={styles.toolsText}>
-            {t.thread.tools(item.count)}
-            {item.names.length ? ` · ${item.names.join(', ')}` : ''}
-          </Text>
-          <Text style={styles.toolsToggle}>{showTools ? t.thread.hideTools : t.thread.showTools}</Text>
-        </Pressable>
+        <View style={styles.runCard}>
+          <Pressable
+            onPress={() => toggle(item.key)}
+            style={styles.runHead}
+            accessibilityRole="button"
+            accessibilityLabel={open ? t.a11y.collapseDetails : t.a11y.expandDetails}
+          >
+            <Ionicons name="construct-outline" size={16} color={colors.accent} />
+            <Text style={styles.runText} numberOfLines={1}>
+              {t.thread.tools(item.count)}
+              {item.names.length ? ` · ${item.names.join(', ')}` : ''}
+            </Text>
+            <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={16} color={colors.accent} />
+          </Pressable>
+          {open ? <View style={styles.runBody}>{item.calls.map(renderCall)}</View> : null}
+        </View>
       );
     }
+
+    if (item.kind === 'reasoning') {
+      const open = expanded.has(item.key);
+      return (
+        <View style={styles.reasoningCard}>
+          <Pressable
+            onPress={() => toggle(item.key)}
+            style={styles.runHead}
+            accessibilityRole="button"
+            accessibilityLabel={open ? t.a11y.collapseReasoning : t.a11y.expandReasoning}
+          >
+            <Ionicons name="bulb-outline" size={16} color={colors.amber} />
+            <Text style={[styles.runText, styles.reasoningTitle]}>{t.thread.reasoning}</Text>
+            <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={16} color={colors.amber} />
+          </Pressable>
+          {open ? <Text style={styles.reasoningBody}>{item.text}</Text> : null}
+        </View>
+      );
+    }
+
     const mine = item.role === 'user';
     const other = item.role === 'other';
     return (
       <View style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs]}>
         <View style={[styles.bubble, mine ? styles.bubbleMine : other ? styles.bubbleOther : styles.bubbleTheirs]}>
-          <Text style={styles.bubbleRole}>{mine ? t.thread.you : other ? t.thread.agent : t.thread.agent}</Text>
+          <Text style={styles.bubbleRole}>{mine ? t.thread.you : t.thread.agent}</Text>
           <Text style={styles.bubbleText}>{item.text}</Text>
           {item.at ? <Text style={styles.bubbleMeta}>{formatTime(item.at)}</Text> : null}
         </View>
@@ -206,6 +292,33 @@ export default function ThreadScreen() {
           </View>
         </View>
       ) : null}
+      {liveTools.length ? (
+        <View style={styles.runCard}>
+          <View style={styles.runHead}>
+            <Ionicons name="pulse-outline" size={16} color={colors.green} />
+            <Text style={[styles.runText, styles.reasoningTitle]}>{t.thread.liveActivity}</Text>
+          </View>
+          <View style={styles.runBody}>
+            {liveTools.map((tool) => (
+              <View key={`live-${tool.id || tool.name}-${tool.phase}`} style={styles.call}>
+                <View style={styles.callHead}>
+                  <Ionicons
+                    name={tool.phase === 'start' ? 'sync-outline' : tool.ok ? 'checkmark-circle-outline' : 'alert-circle-outline'}
+                    size={14}
+                    color={tool.phase === 'start' ? colors.amber : tool.ok ? colors.green : colors.red}
+                  />
+                  <Text style={styles.callName}>{tool.name || t.thread.liveActivity}</Text>
+                  <Text style={styles.callLabel}>
+                    {tool.phase === 'start' ? t.thread.liveToolRunning : t.thread.liveToolDone}
+                  </Text>
+                </View>
+                {tool.args ? <Text style={styles.callBody}>{tool.args}</Text> : null}
+                {tool.phase === 'complete' && tool.result ? <Text style={styles.callBody}>{tool.result}</Text> : null}
+              </View>
+            ))}
+          </View>
+        </View>
+      ) : null}
       {live ? (
         <View style={[styles.bubbleRow, styles.bubbleRowTheirs]}>
           <View style={[styles.bubble, styles.bubbleTheirs]}>
@@ -213,9 +326,7 @@ export default function ThreadScreen() {
               <Text style={styles.bubbleRole}>{t.thread.agent}</Text>
               <Text style={styles.liveTag}>{t.thread.streamed}</Text>
             </View>
-            <Text style={styles.bubbleText}>
-              {live.text || (streaming ? t.thread.thinking : '')}
-            </Text>
+            <Text style={styles.bubbleText}>{live.text || (streaming ? t.thread.thinking : '')}</Text>
           </View>
         </View>
       ) : null}
@@ -228,7 +339,8 @@ export default function ThreadScreen() {
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
-      <Stack.Screen options={{ title: sessionId }} />
+      {/* F4: title -> id, never a raw id while a title exists. */}
+      <Stack.Screen options={{ title: header.title }} />
 
       {notice ? (
         <Pressable onPress={() => setNotice(null)} style={styles.noticeCard}>
@@ -251,6 +363,16 @@ export default function ThreadScreen() {
         renderItem={renderItem}
         contentContainerStyle={styles.listContent}
         ListFooterComponent={footer}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={() => {
+              setRefreshing(true);
+              void loadThread({ silent: true }).finally(() => setRefreshing(false));
+            }}
+            tintColor={colors.accent}
+          />
+        }
         onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
         ListEmptyComponent={
           status === 'loading' ? (
@@ -276,16 +398,25 @@ export default function ThreadScreen() {
           multiline
           editable={!streaming}
         />
+        {/* F2: icon-only buttons carry a PT-PT accessibility label. */}
         <Pressable
           onPress={streaming ? stop : send}
+          accessibilityRole="button"
+          accessibilityLabel={streaming ? t.a11y.stop : t.a11y.send}
           style={({ pressed }) => [styles.sendButton, streaming && styles.stopButton, pressed && styles.pressed]}
         >
-          <Text style={styles.sendText}>{streaming ? t.thread.stop : t.thread.send}</Text>
+          <Ionicons
+            name={streaming ? 'stop-circle-outline' : 'send'}
+            size={22}
+            color={colors.accentText}
+          />
         </Pressable>
       </View>
     </KeyboardAvoidingView>
   );
 }
+
+const mono = Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' });
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.bg },
@@ -302,20 +433,54 @@ const styles = StyleSheet.create({
   bubbleMeta: { color: colors.faint, fontSize: 10, alignSelf: 'flex-end' },
   liveHead: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
   liveTag: { color: colors.green, fontSize: 10, fontWeight: '700' },
-  toolsRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: space.md,
-    paddingVertical: space.sm,
+  runCard: {
     borderRadius: radius.sm,
     backgroundColor: colors.panel,
     borderWidth: 1,
     borderColor: colors.border,
-    gap: space.sm,
+    overflow: 'hidden',
   },
-  toolsText: { color: colors.muted, fontSize: font.small, flexShrink: 1 },
-  toolsToggle: { color: colors.accent, fontSize: font.small, fontWeight: '600' },
+  runHead: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+  },
+  runText: { color: colors.muted, fontSize: font.small, flex: 1 },
+  runBody: { paddingHorizontal: space.md, paddingBottom: space.md, gap: space.sm },
+  call: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: space.sm,
+    gap: 4,
+  },
+  callHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  callName: { color: colors.text, fontSize: font.small, fontWeight: '700', flexShrink: 1 },
+  callLabel: { color: colors.faint, fontSize: 10, textTransform: 'uppercase', marginTop: 4 },
+  callBody: {
+    color: colors.muted,
+    fontSize: font.small,
+    fontFamily: mono,
+    backgroundColor: colors.bg,
+    borderRadius: radius.sm,
+    padding: 6,
+  },
+  callBodyError: { color: '#ffb3ad' },
+  reasoningCard: {
+    borderRadius: radius.sm,
+    backgroundColor: colors.panelAlt,
+    borderWidth: 1,
+    borderColor: colors.border,
+    overflow: 'hidden',
+  },
+  reasoningTitle: { color: colors.amber, fontWeight: '600' },
+  reasoningBody: {
+    color: colors.muted,
+    fontSize: font.small,
+    paddingHorizontal: space.md,
+    paddingBottom: space.md,
+  },
   composer: {
     flexDirection: 'row',
     alignItems: 'flex-end',
@@ -338,7 +503,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.bg,
   },
   sendButton: {
-    width: 96,
+    width: 52,
     height: 44,
     borderRadius: radius.md,
     backgroundColor: colors.accent,
@@ -346,7 +511,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   stopButton: { backgroundColor: colors.red },
-  sendText: { color: colors.accentText, fontWeight: '700', fontSize: font.body },
   centered: { alignItems: 'center', gap: space.sm, padding: space.xl },
   emptyBody: { color: colors.muted, fontSize: font.body, textAlign: 'center' },
   noticeCard: {

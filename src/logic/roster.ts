@@ -107,6 +107,29 @@ export function toRow(session: HermesSession, lastSeenMs: number, now = Date.now
   };
 }
 
+/**
+ * The thread's top-bar title (F4).
+ *
+ * The bug: `app/index.tsx` pushed `{id, profile}` without the title the row already had, and the
+ * thread screen set `title: sessionId` — so a raw id was shown while a title existed.
+ *
+ * The chain is title -> id, in that order, and the *source* of the title is the route param first
+ * (instant paint on a cold open, no blank bar) then the loaded row (authoritative — that is how a
+ * rename lands while the screen is open, since `PATCH /api/sessions/{id}` returns the new title
+ * and `GET /api/sessions/{id}` re-reads it).
+ */
+export function threadTitle(input: { param?: string | null; loaded?: string | null; id: string }): {
+  title: string;
+  /** True when nothing but the id was available — the screen may style it as a placeholder. */
+  isId: boolean;
+} {
+  const param = (input.param || '').trim();
+  if (param) return { title: param, isId: false };
+  const loaded = (input.loaded || '').trim();
+  if (loaded) return { title: loaded, isId: false };
+  return { title: input.id, isId: true };
+}
+
 export function countNew(sessions: HermesSession[], lastSeenMs: number): number {
   let count = 0;
   for (const session of sessions) {
