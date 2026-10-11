@@ -1,0 +1,31 @@
+You are cody. the user has handed you a complete build: turn the Personae concept into a mobile app and deliver an APK he can install on his Android phone.
+
+READ FIRST, in this order — they are the contract, not suggestions:
+1. ~/Projects/personae-mobile/SPEC.md   (authoritative brief, written by Crabby)
+2. skill_view('pedro-app-defaults')     (the user's product rules)
+3. skill_view('android-apk-builds')     (the build lane Crabby just copied into your skills)
+
+DELIVERABLE — definition of done, nothing less:
+  ~/Projects/personae-mobile/dist/personae-<version>.apk
+release-signed, measured, installable on Android. Plus the Expo project stays iOS-capable.
+
+WORKING RULES
+- Work only in ~/Projects/personae-mobile. ~/Projects/hermes-desktop-plugins/personae is READ-ONLY: no edits, no commits, no pushes.
+- Derive every API request/response shape from ~/.hermes/hermes-agent/gateway/platforms/api_server.py (route table at lines 81-102; handlers via `grep -n _handle_`). Never invent a shape. Genuine unknowns go in QUESTIONS.md, and you keep building around them.
+- No secrets anywhere: no key in the repo, the APK, or any log. The API key is typed by the user into Settings at runtime and kept in expo-secure-store.
+- Log every phase to PROGRESS.md as you go, with measured numbers (byte sizes, counts, exit codes) — not adjectives. If your turn budget ends mid-build, PROGRESS.md must be accurate enough for the next run to continue.
+- Never present mock-server output as live-gateway evidence. You have no key, so you cannot test the live gateway; say exactly that.
+- Don't stop to ask a human. Choose the safest reversible default, record the choice, continue.
+- Do not push to any remote. Do not touch ~/.hermes config, the gateway, state.db, or any running service. No screenshots in reports.
+
+PHASES (order is the plan; adapt to reality but do not skip the last two)
+P1  Scaffold: Expo + TypeScript + expo-router, deps pinned, lockfile committed, one screen renders.
+P2  API client module: auth header, base URL config, session list, session messages, SSE stream parser (+ a local Node mock gateway to exercise it).
+P3  Roster screen: profiles as contacts, status dot, unread count, session list, empty + error states.
+P4  Thread screen: history bubbles, composer, send, live streaming tokens, stop while streaming.
+P5  Settings screen: base URL, API key, multiplex prefix, model override — secure store, single-field autosave, visible effective values.
+P6  Error handling: wrong URL/key gives a specific visible error, never a silent failure. Nothing disappears on its own.
+P7  Android: `npx expo prebuild -p android`, then a Docker gradle build on this host (Node 22 + Docker present; NO Java, NO Android SDK locally — that's why Docker). keytool keystore, release-signed.
+P8  Measure and prove the APK: package id, versionCode, minSdk, exact byte size, sha256. Final PROGRESS.md entry.
+
+FINAL REPORT (short): APK absolute path · bytes · sha256 · package · versionCode · minSdk · exit codes of the build · what you could NOT verify (live gateway, pending the user's key) · next step if the APK install fails.

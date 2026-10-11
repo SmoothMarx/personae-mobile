@@ -1,0 +1,23 @@
+node_modules/
+.expo/
+dist/
+web-build/
+android/
+ios/
+*.log
+logs/
+*.keystore
+*.jks
+*.p12
+*.p8
+*.key
+*.mobileprovision
+.env
+.env.*
+secrets/
+local.properties
+.idea/
+.vscode/
+.DS_Store
+# never commit a real key
+api-key.txt
