@@ -1,14 +1,17 @@
 /**
- * Transport layer for the session chat SSE stream.
+ * Transport layer for the session chat SSE stream (client side).
  *
- * Two implementations of one interface:
- *   - `xhrTransport`  — used by the app on Android/iOS. XMLHttpRequest delivers the SSE body
- *                       incrementally at readyState 3; this is the same technique every RN SSE
- *                       client uses, and it lets `close()` abort the request (the Stop button).
- *   - `nodeTransport` — used by `npm test` against the local mock gateway (Node has no XHR).
+ * One implementation ships to the device: `xhrTransport`. XMLHttpRequest delivers the SSE body
+ * incrementally at readyState 3; this is the same technique every RN SSE client uses, and it lets
+ * `close()` abort the request — that is the Stop button.
  *
- * Both feed the SAME `SSEParser` (src/api/sse.ts), so the framing logic exercised by the offline
- * tests is the framing logic that runs on the phone.
+ * The Node implementation used by the offline tests lives in `./transportNode.ts` and is imported
+ * ONLY by `tests/`. Metro resolves requires statically, so a `node:http` import anywhere in this
+ * file — even inside a function that is never called on a device — fails the release bundle
+ * ("Unable to resolve module node:http from /work/src/api/transport.ts").
+ *
+ * Both transports feed the SAME `SSEParser` (./sse.ts), so the framing logic exercised by the
+ * offline tests is the framing logic the phone runs.
  */
 
 import { SSEParser, decodeFramePayload, type RawSSEFrame } from './sse';
@@ -108,73 +111,6 @@ export const xhrTransport: StreamTransport = (request, callbacks) => {
         xhr.abort();
       } catch {
         /* already finished */
-      }
-      finish({ aborted: true });
-    },
-  };
-};
-
-/** Test transport: plain node:http POST, streaming the body as it arrives. */
-export const nodeTransport: StreamTransport = (request, callbacks) => {
-  // Required lazily so the RN bundle never tries to resolve node: modules.
-  const http = require('node:http') as typeof import('node:http');
-  const url = new URL(request.url);
-  const parser = new SSEParser();
-  let aborted = false;
-  let closed = false;
-  const finish = (info: { aborted: boolean }) => {
-    if (closed) return;
-    closed = true;
-    callbacks.onClose(info);
-  };
-
-  const req = http.request(
-    {
-      method: 'POST',
-      hostname: url.hostname,
-      port: url.port || '80',
-      path: `${url.pathname}${url.search}`,
-      headers: { ...request.headers, 'Content-Length': Buffer.byteLength(request.body) },
-    },
-    (res) => {
-      callbacks.onOpen?.();
-      if (res.statusCode !== 200) {
-        let raw = '';
-        res.setEncoding('utf8');
-        res.on('data', (chunk: string) => {
-          raw += chunk;
-        });
-        res.on('end', () => {
-          callbacks.onError(new StreamHttpError(res.statusCode ?? 0, raw.slice(0, 4000)));
-          finish({ aborted });
-        });
-        return;
-      }
-      res.setEncoding('utf8');
-      res.on('data', (chunk: string) => {
-        for (const frame of parser.push(chunk)) emit(frame, callbacks);
-      });
-      res.on('end', () => finish({ aborted }));
-      res.on('error', (error: Error) => {
-        callbacks.onError(error);
-        finish({ aborted });
-      });
-    },
-  );
-  req.on('error', (error: Error) => {
-    callbacks.onError(error);
-    finish({ aborted });
-  });
-  req.write(request.body);
-  req.end();
-
-  return {
-    close: () => {
-      aborted = true;
-      try {
-        req.destroy();
-      } catch {
-        /* already closed */
       }
       finish({ aborted: true });
     },

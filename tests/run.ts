@@ -14,7 +14,7 @@ import assert from 'node:assert/strict';
 import { createMockGateway } from '../mock/server.mjs';
 import { SSEParser, parseFrame } from '../src/api/sse';
 import { createApi } from '../src/api/client';
-import { nodeTransport } from '../src/api/transport';
+import { nodeTransport } from '../src/api/transportNode';
 import { ApiError } from '../src/api/errors';
 import { checkBaseUrl, splitProfiles, profilePrefix, type Settings } from '../src/settings';
 import { loadSettings, saveSettings, loadLastSeen, saveLastSeen } from '../src/settingsStore';

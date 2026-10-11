@@ -11,10 +11,6 @@
     "skipLibCheck": true,
     "resolveJsonModule": true,
     "noEmit": true,
-    "baseUrl": ".",
-    "paths": {
-      "@/*": ["src/*"]
-    },
     "types": ["node", "react"]
   },
   "include": ["src/**/*", "app/**/*", "tests/**/*", "expo-env.d.ts"],

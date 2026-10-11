@@ -5,7 +5,6 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "scheme": "personae",
-    "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.personae.mobile",
@@ -18,7 +17,6 @@
     "android": {
       "package": "com.personae.mobile",
       "versionCode": 1,
-      "usesCleartextTraffic": true,
       "adaptiveIcon": {
         "backgroundColor": "#0b0f14"
       },
@@ -29,7 +27,15 @@
     "plugins": [
       "expo-router",
       "expo-secure-store",
-      "expo-status-bar"
+      "expo-status-bar",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true
+          }
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": false
