@@ -1,18 +1,17 @@
-Phase A falsifiability probe — run 2026-10-11 in the 0.7.0 session, against the commit BEFORE
-Phase A (c23aa00 Phase A (0.7.0): avatars at the reference size — 54 dp face, 70 dp row, 16 dp gap, inset divider).
+Phase A falsifiability probe — run 2026-10-11 in the 0.7.0 session against the commit BEFORE Phase A
+(da58fa5 2026-10-11 0.6.1 verified: PROGRESS.md record, verifier hardening, saved transcript).
 
-$ git show c23aa00^:src/logic/avatars.ts   | grep -o 'AVATAR_SIZE = [0-9]*'
-  ['AVATAR_SIZE = 54']
+$ git show c23aa00^:src/logic/avatars.ts    | grep -o 'AVATAR_SIZE = [0-9]*'
+  ['AVATAR_SIZE = 28']
 $ git show c23aa00^:src/roster/components.tsx | grep -o 'props.size ?? [0-9]*'
-  []
-$ git show c23aa00^:src/roster/components.tsx | grep -c 'paddingLeft: 60'
-  0
-$ git show c23aa00^:src/roster/components.tsx | grep -c 'width: 84'
-  0
+  ['props.size ?? 32']
+$ git show c23aa00^:src/roster/components.tsx | grep -c 'paddingLeft: 60'   -> 1
+$ git show c23aa00^:src/roster/components.tsx | grep -c 'width: 84'        -> 1
+$ git show c23aa00^:src/roster/components.tsx | grep -c 'marginLeft: 60'   -> 1
 
-The two tests Phase A adds assert `AVATAR_SIZE === 54` and that
-`src/roster/components.tsx` no longer contains `size ?? 32`, `width: 84`,
-`paddingLeft: 60` or `marginLeft: 60` — exactly the literals the probe above
-finds in the pre-change tree. Both tests therefore FAIL on c23aa00^ and PASS on
-c23aa00 and after. (The geometry module they exercise did not exist before the
-commit, so on the old tree they fail at import, which is the same verdict.)
+The two tests Phase A adds assert `AVATAR_SIZE === 54`, that the row geometry is
+54 / 16 / 70, and that src/roster/components.tsx no longer contains `size ?? 32`,
+`width: 84`, `paddingLeft: 60` or `marginLeft: 60` — exactly the literals this probe
+finds in the pre-change tree. So both tests fail on c23aa00^ and pass on c23aa00 and
+after. (src/roster/geometry.ts does not exist before the commit, so on the old tree
+they fail at import — the same verdict, reached earlier.)
