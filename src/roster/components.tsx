@@ -11,11 +11,27 @@ import React from 'react';
 import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { t } from '../i18n';
+import { AVATAR_SIZE } from '../logic/avatars';
 import type { DotState, Rollup } from '../logic/lights';
 import { dotColorKey, showBadge } from '../logic/lights';
 import type { RosterProfileRow, SessionRowModel } from '../logic/rosterFeed';
+import { rosterRowGeometry } from './geometry';
 import { SWATCHES } from '../rosterPrefs';
 import { colors, font, radius, space } from '../theme';
+
+/** The row's numbers, derived from the reference and asserted in `tests/run.ts`. */
+const G = rosterRowGeometry();
+
+/** One profile row's shared metrics, used by the profile row AND the sessions under it. */
+export const ROW_METRICS = {
+  /** 54: the face the reference draws, and what `avatarKey()` caches. */
+  avatar: AVATAR_SIZE,
+  height: G.height,
+  inset: G.inset,
+  avatarGap: G.avatarGap,
+  textX: G.textX,
+  dividerInset: G.dividerInset,
+};
 
 export function dotColour(state: DotState): string {
   const key = dotColorKey(state);
@@ -53,9 +69,9 @@ export function Dot({ rollup, size = 8 }: { rollup: Rollup; size?: number }) {
   );
 }
 
-/** 28 px face, monogram until the avatar lands — never blocking the paint (F1, unchanged). */
+/** 54 dp face, monogram until the avatar lands — never blocking the paint (F1; 0.7.0 size). */
 export function Face(props: { url: string | null; monogram: string; size?: number; tint?: string | null }) {
-  const size = props.size ?? 32;
+  const size = props.size ?? AVATAR_SIZE;
   const round = { width: size, height: size, borderRadius: size / 2 };
   return (
     <View style={[styles.face, round, props.tint ? { borderColor: props.tint, borderWidth: 2 } : null]}>
@@ -148,7 +164,7 @@ export function ProfileRow(props: {
   const { row } = props;
   const tint = row.color;
   return (
-    <View style={[styles.profileRow, tint ? { borderLeftColor: tint, borderLeftWidth: 3 } : null]}>
+    <View style={tint ? { borderLeftColor: tint, borderLeftWidth: 3 } : null}>
       <Pressable
         onPress={props.onToggle}
         onLongPress={props.onMenu}
@@ -194,6 +210,8 @@ export function ProfileRow(props: {
           </Text>
         </Pressable>
       ) : null}
+      {/* The divider clears the avatar (inset 78 > 16 + 54), so the row reads as a 70 dp cell. */}
+      <View style={styles.divider} />
     </View>
   );
 }
@@ -453,12 +471,20 @@ const styles = StyleSheet.create({
   },
   sectionCount: { color: colors.faint, fontSize: 11, fontVariant: ['tabular-nums'] },
   iconButton: { padding: 4, borderRadius: radius.sm },
-  profileRow: { borderBottomWidth: 1, borderBottomColor: colors.border },
-  profileBody: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingHorizontal: space.md, paddingVertical: space.md },
+  /** A row's divider: full width, inset past the avatar (the reference's x = 78). */
+  divider: { height: 1, backgroundColor: colors.border, marginLeft: ROW_METRICS.dividerInset },
+  profileBody: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: ROW_METRICS.avatarGap,
+    minHeight: ROW_METRICS.height,
+    paddingHorizontal: ROW_METRICS.inset,
+    paddingVertical: G.paddingVertical,
+  },
   rowPressed: { backgroundColor: colors.panel },
   profileText: { flex: 1, gap: 2 },
   profileTitleLine: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
-  profileName: { color: colors.text, fontSize: 15, fontWeight: '600', flexShrink: 1 },
+  profileName: { color: colors.text, fontSize: G.titleSize, lineHeight: G.linePitch, fontWeight: '600', flexShrink: 1 },
   hiddenName: { color: colors.muted, fontStyle: 'italic' },
   defaultChip: {
     color: colors.faint,
@@ -471,10 +497,10 @@ const styles = StyleSheet.create({
   },
   newPill: { paddingHorizontal: 5, paddingVertical: 1, borderRadius: radius.pill, backgroundColor: colors.accent },
   newPillText: { color: colors.accentText, fontSize: 10, fontWeight: '700' },
-  profilePreview: { color: colors.muted, fontSize: font.small },
-  age: { color: colors.faint, fontSize: 11, width: 84, textAlign: 'right' },
+  profilePreview: { color: colors.muted, fontSize: G.previewSize, lineHeight: G.linePitch },
+  age: { color: colors.faint, fontSize: 11, width: G.ageWidth, textAlign: 'right' },
   openLast: {
-    marginLeft: 60,
+    marginLeft: ROW_METRICS.textX,
     marginRight: space.md,
     marginBottom: space.sm,
     paddingHorizontal: space.sm,
@@ -489,7 +515,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
-    paddingLeft: 60,
+    paddingLeft: ROW_METRICS.textX,
     paddingRight: space.md,
     paddingVertical: space.sm,
     borderBottomWidth: 1,

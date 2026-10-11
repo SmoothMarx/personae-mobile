@@ -20,7 +20,13 @@ export type AvatarStore = {
   setItem(key: string, value: string): Promise<void>;
 };
 
-export const AVATAR_SIZE = 28;
+/**
+ * 0.7.0: 28 → **54**, matching Telegram's own chat row (reference measured 2026-10-11: avatar slot
+ * 58 × 58 holding a 54 × 54 circle, on a 360 × 70 row). `avatarKey()` carries the size, so this one
+ * number also retires every 28 px blob sitting in AsyncStorage — no `AVATAR_VERSION` bump needed.
+ * The row geometry that goes with it lives in `src/roster/geometry.ts`.
+ */
+export const AVATAR_SIZE = 54;
 export const AVATAR_VERSION = 'v1';
 
 /** Cache key: profile + size, versioned so a format change cannot serve a stale blob. */

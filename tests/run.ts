@@ -67,6 +67,7 @@ import {
   shouldProbeAvatar,
 } from '../src/logic/avatars';
 import { threadTitle } from '../src/logic/roster';
+import { ROW_CHROME, ROW_WIDTH, estimatedTextWidth, rosterRowGeometry, titleFits } from '../src/roster/geometry';
 import {
   UNASSIGNED,
   addSection,
@@ -350,7 +351,59 @@ test('f1: the cache key is profile + size, and the monogram is the fallback', ()
   assert.equal(monogramFor('cody'), 'C');
   assert.equal(monogramFor('cody', 'Beta'), 'B');
   assert.equal(monogramFor(''), '?');
-  assert.equal(AVATAR_SIZE, 28, 'the plan fixes 28 px');
+  assert.equal(AVATAR_SIZE, 54, '0.7.0 A: the reference row draws a 54 dp face');
+  assert.equal(
+    avatarKey('cody'),
+    'personae.avatar.v1.54.cody',
+    'the default size IS the row size, so a 28 px blob in AsyncStorage can never be served again',
+  );
+});
+
+// ─────────────────────────────── 0.7.0 A: the roster row's measured geometry ──
+
+test('0.7.0 A: the row is 54 / 16 / 70, the divider clears the avatar, and a long name fits', () => {
+  const g = rosterRowGeometry();
+  assert.equal(g.avatar, 54, 'the reference ellipse 8:4776 is 54 × 54');
+  assert.equal(g.avatarGap, 16, 'the reference gap between avatar and text');
+  assert.equal(g.inset, 16, 'the reference inset');
+  assert.equal(g.textX, g.inset + g.avatar + g.avatarGap, 'textX is DERIVED — it cannot drift from the three measured numbers');
+  assert.equal(g.height, 70, 'the reference chat row 8:4771 is 360 × 70');
+  assert.equal(g.height, g.linePitch * 2 + g.paddingVertical * 2, 'two 27 dp lines + padding make the height');
+  assert.equal(g.dividerInset, 78, "the reference divider's own inset");
+  assert.ok(g.dividerInset > g.inset + g.avatar, 'and it clears the avatar, which is why it is inset at all');
+  assert.equal(g.titleSize, 19);
+  assert.equal(g.previewSize, 18);
+  // The widest profile name on this box is 15 characters (`design-guardian`, measured 2026-10-11).
+  // The assertion keeps room for 20, i.e. five more than any profile that exists.
+  const LONG = 'personae-mobile-cody';
+  assert.equal(LONG.length, 20);
+  assert.ok(titleFits('design-guardian', g), 'the longest real profile name fits');
+  assert.ok(titleFits(LONG, g), `20 characters at ${g.titleSize} dp must fit ${g.titleMaxWidth} dp`);
+  // Falsifiable: the 26 dp the avatar took (28 → 54) had to come out of the CHROME. At the
+  // reference's 19 dp title, the pre-0.7.0 age column (84 dp) would not have held this name.
+  const withOldChrome = 360 - (16 + 54 + 16) - 6 - 84 - 4 - 12;
+  assert.ok(
+    estimatedTextWidth(LONG, g.titleSize) > withOldChrome,
+    'the trimmed age column is load-bearing, not decoration',
+  );
+  assert.equal(ROW_CHROME.ageWidth, 56);
+  assert.equal(ROW_WIDTH, 360);
+  // A narrow phone is still not a truncation: the geometry is width-parametric.
+  assert.ok(rosterRowGeometry(320).titleMaxWidth < g.titleMaxWidth);
+  assert.ok(rosterRowGeometry(320).titleMaxWidth >= 156, 'even at 320 dp the column holds 16 characters');
+});
+
+test('0.7.0 A: the row is built from geometry.ts — no pre-0.7.0 magic numbers survive', () => {
+  const src = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+  assert.match(src, /rosterRowGeometry/, "the row's numbers come from the measured geometry module");
+  assert.match(src, /props\.size \?\? AVATAR_SIZE/, 'Face defaults to the 54 dp avatar');
+  assert.match(src, /marginLeft: ROW_METRICS\.dividerInset/, 'the divider is inset past the avatar');
+  assert.match(src, /paddingLeft: ROW_METRICS\.textX/, 'the sessions under a row align to the text column');
+  assert.match(src, /minHeight: ROW_METRICS\.height/, 'the row cannot collapse below 70 dp');
+  assert.ok(
+    !/size \?\? 32|width: 84|paddingLeft: 60|marginLeft: 60/.test(src),
+    'the 32 dp face, the 84 dp age column and the 60 dp text offsets are gone',
+  );
 });
 
 test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {
