@@ -539,3 +539,155 @@ registered path is answered by the bearer-**only** seam (measured: the seam's 40
 `POST /api/auth/ws-ticket` **with cookies** — registering either would take that route away from
 the user's browser. Everything else the app needs, including the ticket route, rides `verify_session`.
 
+---
+
+# P1 / P2 / P7 — the four defects, the connection surface, the export log
+
+`npm test` **93/93** (was 74), `tsc --noEmit` clean. One commit (`0cd29a6`) because the defects and
+the transport they ride are the same diff; the phases are listed separately below.
+
+## F1 — avatars
+
+`src/logic/avatars.ts` (policy, pure) + `src/Avatar.tsx` (28 px circular + monogram fallback).
+One fetch per profile per size per session; memory then AsyncStorage, keyed `profile+size`; the
+rail paints first and the avatar lands later.
+
+**The plan's premise was wrong, and the measurement is in `logs/p0.2-live-check.txt`:** the "cheap
+existence flag" is `has_avatar: null` on the live `/api/profiles` for **every** profile, even the
+one whose asset exists. A roster that trusted the flag would never fetch a single avatar, so
+`false` means "definitely none" and `null`/absent means "unknown — try it in the background".
+`profiles.get_asset` also takes **`name`**, not `profile` (RPC 4063 "name required"), which the
+client now sends.
+
+## F2 — icon buttons
+
+`@expo/vector-icons` (Ionicons) added; the composer's send/stop, the roster toolbar
+(new session / settings) and the pager are icons, each with a PT-PT `accessibilityLabel`
+(`src/i18n.ts` `a11y`), and the pager keeps its visible word because a bare chevron is ambiguous.
+Release-bundle check: the Ionicons glyph font must be **in the APK** (`unzip -l` on the artifact,
+below) — an icon that renders in dev and is a blank box in the release build fails this goal.
+
+## F3 — "Ver detalhes" showed nothing
+
+Three causes, three fixes, all in `src/logic/thread.ts` + `app/thread/[id].tsx`:
+
+| Cause (0.3.0) | Fix |
+|---|---|
+| The `tools` branch only flipped a label — there was no expanded body | items carry `calls:[{id,name,args,result,ok}]`, rendered in an expandable body |
+| `showTools` was ONE global boolean | expansion is a `Set<string>` of item keys, so each run expands alone |
+| `reasoning`/`reasoning_content` were never read | `reasoningText()` feeds its own collapsed **Pensamento** block |
+
+Plus: results are joined to their call by `tool_call_id`; an orphan result still renders; every row
+with `display_kind === 'hidden'` is dropped *before* joining, so scaffolding can neither render nor
+masquerade as a result; arguments/results are pretty-printed and truncated with a visible marker;
+the live half (`tool.start` / `tool.complete`) arrives on the WS channel and is shown while the turn
+runs. One deliberate behaviour change, called out in the suite: an assistant row that narrates AND
+calls a tool now keeps its prose as a bubble instead of dropping it (0.3.0 showed only
+"1 chamada a ferramentas").
+
+## F4 — the top bar showed the session id
+
+`app/index.tsx` passes the row's title as a route param; `app/thread/[id].tsx` paints it
+immediately and then treats `GET /api/sessions/{id}` as authoritative (which is also how a rename
+lands while the screen is open, since `PATCH` returns the stored title). The chain is
+**title → id**, and `threadTitle()` flags the id case so the screen can style it: a raw id is only
+ever rendered when no title exists anywhere. Unit-tested.
+
+## P7 — connections, state card, export log
+
+* **Surface**: one setting (`dashboard` :9119 | `gateway` :9222) with a segmented control; the
+  whole data layer goes through `src/api/backend.ts`, so screens never learn which surface they are
+  on. The dashboard is the default; the legacy `:9222` path is kept working, not deleted.
+* **Export log** (`src/logging.ts`): capped 500-entry ring buffer; one line per call
+  (method, path, status, duration, attempt); header with app version + versionCode, surface,
+  address, candidate routes with priorities, OS, and the last three failures; a description box
+  whose text lands at the top of the file; `.txt` in the cache dir → OS share sheet (never upload).
+  **Redaction is unit-tested**: the live bearer is registered with the redactor and a test asserts a
+  known secret cannot appear in an exported document, on top of the pattern rules for
+  `Authorization`, `?ticket=`/`?token=` and JSON credential fields.
+* The state card is the existing "Estado da ligação" panel, now also fed by the dashboard's real
+  profile reads (`Testar ligação` reads the roster when the surface has one).
+
+---
+
+# Build — 0.4.0, release-signed, measured
+
+```
+npx expo prebuild -p android --no-install         # regenerated: versionCode 4 / versionName "0.4.0"
+bash scripts/patch-android-signing.sh             # > prebuild restores the DEBUG signing config
+docker run --rm --env-file ~/.personae-android/build.env \
+  -e GRADLE_OPTS='-Dorg.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=768m' \
+  -v ~/Projects/personae-mobile:/work -v ~/.personae-android/gradle:/root/.gradle \
+  -v ~/.personae-android:/signing:ro -w /work/android personae-android:1 \
+  bash -lc './gradlew :app:assembleRelease --no-daemon --console=plain --no-parallel --max-workers=1'
+# BUILD SUCCESSFUL in 6m 2s · 449 actionable tasks: 421 executed, 28 up-to-date
+sudo cp android/app/build/outputs/apk/release/app-release.apk dist/personae-0.4.0.apk
+```
+
+**Lesson worth keeping:** the container runs as root, so `android/.kotlin`, `android/build`,
+`android/.gradle` end up root-owned and a later `npx expo prebuild` *aborts half-way* with
+`EACCES: permission denied, rmdir android/.kotlin/sessions` — which leaves a partially generated
+project (no `android/app/build.gradle`). Recovery, exactly as done here:
+`sudo rm -rf android/{.kotlin,build,.gradle} android/app/{build,.cxx}`, then `rm -rf android`, then
+prebuild again, then re-apply the signing patch.
+
+| Measured fact | Value | Command |
+|---|---|---|
+| Path | `~/Projects/personae-mobile/dist/personae-0.4.0.apk` | `ls` |
+| Bytes | **88,226,733** | `stat -c %s` |
+| sha256 | **ca5f5ac6e88dc760a017fd5856bcdd237a10ea4ef2fda56a8c377074ee7e45bd** | `sha256sum` |
+| Package | `com.personae.mobile` | `aapt2 dump badging` |
+| versionCode / versionName | **4** / **0.4.0** | `apkanalyzer apk summary` |
+| minSdk / targetSdk / compileSdk | **24** / 36 / 36 | `apkanalyzer manifest min-sdk` / `target-sdk` |
+| Native ABIs | arm64-v8a, armeabi-v7a, x86, x86_64 — 18 libs each | `unzip -Z1 \| grep ^lib/` |
+| Signer | `CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT`, SHA-256 `bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26` — **the same Personae release key as 0.1.0/0.2.0/0.3.0** | `apksigner verify --print-certs` |
+| Cleartext HTTP for the LAN route | `usesCleartextTraffic="true"` in the shipped manifest | `aapt2 dump xmltree` |
+| Our native bridge | `TailscaleTriggerModule` strings in `classes3.dex`; `com.tailscale.ipn.CONNECT_VPN` / `DISCONNECT_VPN` present | `logs/verify-dex.sh` |
+
+**F2's release-bundle footgun, checked on the artifact (not in dev):**
+
+```
+$ aapt2 dump resources dist/personae-0.4.0.apk | grep -io 'ionicons[a-z_0-9]*' | sort -u
+ionicons                      <- the glyph font IS a packaged resource of the shipped APK
+$ unzip -p $APK assets/index.android.bundle | grep -c Ionicons
+1                             <- and the bundle references the family it must load at runtime
+```
+
+New 0.4.0 code confirmed inside the shipped bundle (2,679,892 bytes): `/api/auth/ws-ticket` 1 ·
+`profiles.get_asset` 1 · `api/profiles/sessions/sidebar` 1 · `session.interrupt` 1 ·
+`personae.avatar` 1 · `Ionicons` 1 · `Pensamento` 1. Environment facts still absent:
+`100.64.0.11` 0 · `personae` 0 · `API_SERVER_KEY=` 0. (A literal containing a non-ASCII
+character lives in a UTF-16 string table: `WireGuard` reads 0 in a byte grep and 2 in UTF-16LE —
+measured this run, so the audit script no longer reports that as a failure.)
+
+## Acceptance on the device — NOT DONE, and why
+
+The Pixel 8 is **offline right now** and this host has no adb:
+
+```
+$ tailscale status | grep pixel-8
+100.64.0.12  pixel-8  demo-user@  android  offline, last seen 1h ago
+$ ping -c2 100.64.0.12          -> 100% packet loss
+$ ssh win-desktop "where adb"      -> (nothing; win-desktop has no adb either)
+```
+
+So no install, no launch, no screenshot. What *is* verified is the offline suite (93/93), the
+live-dashboard shapes below, and the artifact forensics. **The four defects were not judged by
+pixels this run.**
+
+## For the user — install and the five checks worth running
+
+1. Put `dist/personae-0.4.0.apk` on the phone and tap it (same Personae release key as 0.3.0, so it
+   **installs over** the existing app: no uninstall, no data loss).
+2. Definições → **Tipo de ligação** = `Dashboard (:9119)`, endereço
+   `http://10.0.0.15:9119` (at home) or `https://personae-sk.tail0000demo.ts.net:10443` (anywhere),
+   and the credential — the bearer. *If the app was installed before 0.4.0 the field still holds the
+   old `:9222` API key; switch the toggle to `API do gateway (:9222)` to keep using it instead.*
+3. Check 1 — the rail renders with **avatars** (28 px circles on the profile pills; the monogram is
+   the fallback when a profile has no picture).
+4. Check 2 — open a session and press **Ver detalhes**: each tool row expands **on its own** and
+   shows the call's arguments and its result; a **Pensamento** block appears when the agent thought.
+5. Check 3 — the top bar shows the session **name**, never a raw id.
+6. Check 4 — Definições → **Registo de diagnóstico** → type what happened → **Partilhar registo**:
+   the `.txt` opens in the share sheet, with `[REDACTED]` where any credential would be.
+
