@@ -42,6 +42,8 @@ import {
   SwatchPicker,
 } from '../src/roster/components';
 import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
+import { plusMenuEntries, profileFromPickerKey, profilePickerEntries } from '../src/roster/plusMenu';
+import { useSettings } from '../src/SettingsContext';
 import { useRoster, type RosterListRow } from '../src/roster/useRoster';
 import { colors, font, radius, space } from '../src/theme';
 
@@ -51,7 +53,7 @@ type MenuState =
   | { kind: 'session'; profile: string; id: string; title: string }
   | { kind: 'section'; id: string; name: string };
 
-type PromptMode = 'none' | 'group' | 'group-rename' | 'profile-label' | 'session-title' | 'new-session';
+type PromptMode = 'none' | 'group' | 'group-rename' | 'profile-label' | 'session-title' | 'new-session' | 'new-profile';
 
 export default function RosterScreen() {
   const router = useRouter();
@@ -60,7 +62,11 @@ export default function RosterScreen() {
   // Re-render (and refresh the list cells) when the interface language changes.
   const language = useLanguage();
 
+  const { settings } = useSettings();
   const [menu, setMenu] = useState<MenuState>({ kind: 'none' });
+  /** 0.7.0: the single "+" at the top — its dropdown, and the profile picker it can open. */
+  const [plusOpen, setPlusOpen] = useState(false);
+  const [profilePickOpen, setProfilePickOpen] = useState(false);
   const [colourFor, setColourFor] = useState<{ kind: 'profile' | 'session'; profile: string; sessionId?: string } | null>(null);
   const [filing, setFiling] = useState<{ profile: string; label: string } | null>(null);
   const [sortSheetOpen, setSortSheetOpen] = useState(false);
@@ -82,6 +88,10 @@ export default function RosterScreen() {
     switch (key) {
       case 'newSession':
         return t.roster.menu.newSession;
+      case 'newGroup':
+        return t.plus.newGroup;
+      case 'newProfile':
+        return t.plus.newProfile;
       case 'rename':
         return t.roster.menu.rename;
       case 'colour':
@@ -211,13 +221,15 @@ export default function RosterScreen() {
     <View>
       <View style={styles.headerRow}>
         <Text style={styles.headerTitle}>{t.roster.title}</Text>
+        {/* 0.7.0 — ONE "+" for everything that creates something (Telegram puts this action in a
+            bottom-right FAB; the user asked for the top, and that departure is the requirement). */}
         <Pressable
-          onPress={() => askFor('group', '')}
+          onPress={() => setPlusOpen(true)}
           accessibilityRole="button"
-          accessibilityLabel={t.roster.groups.new}
+          accessibilityLabel={t.plus.title}
           style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}
         >
-          <Ionicons name="folder-outline" size={16} color={colors.text} />
+          <Ionicons name="add" size={20} color={colors.text} />
         </Pressable>
         {/* One control, two states: it opens everything when nothing is open, and closes the open
             set otherwise. A separate pair would be two buttons for one idea. */}
@@ -359,6 +371,49 @@ export default function RosterScreen() {
             {roster.notice ? <Text style={styles.notice}>{roster.notice}</Text> : null}
           </View>
         }
+      />
+
+      {/* ── the "+" (0.7.0): New group · New profile · New session ─────────────── */}
+      <ActionSheet
+        visible={plusOpen}
+        title={t.plus.title}
+        entries={plusMenuEntries({ surface: settings.surface, refusal: roster.profileRefusal })}
+        labelOf={menuLabel}
+        onClose={() => setPlusOpen(false)}
+        onPick={(key: string) => {
+          setPlusOpen(false);
+          if (key === 'new-group') {
+            askFor('group', '');
+          } else if (key === 'new-profile') {
+            // A disabled entry still has to explain itself if it is picked anyway.
+            const entry = plusMenuEntries({ surface: settings.surface, refusal: roster.profileRefusal }).find(
+              (item) => item.key === 'new-profile',
+            );
+            if (entry?.disabled) {
+              roster.say(entry.reason ?? '');
+              return;
+            }
+            askFor('new-profile', '');
+          } else if (key === 'new-session') {
+            setProfilePickOpen(true);
+          }
+        }}
+      />
+
+      {/* ── New session: a session needs an owner, so pick one first ────────────── */}
+      <ActionSheet
+        visible={profilePickOpen}
+        title={t.plus.pickProfile}
+        entries={profilePickerEntries(roster.contacts)}
+        labelOf={(key: string) => key}
+        onClose={() => setProfilePickOpen(false)}
+        onPick={(key: string) => {
+          setProfilePickOpen(false);
+          const name = profileFromPickerKey(key);
+          if (!name) return;
+          pendingProfile.current = name;
+          askFor('new-session', '');
+        }}
       />
 
       {/* ── the profile menu ─────────────────────────────────────────────────── */}
@@ -568,10 +623,16 @@ export default function RosterScreen() {
       <PromptSheet
         visible={prompt !== 'none'}
         title={promptTitle(prompt)}
-        placeholder={prompt === 'group' || prompt === 'group-rename' ? t.roster.groups.namePlaceholder : t.roster.newSessionPlaceholder}
+        placeholder={
+          prompt === 'group' || prompt === 'group-rename'
+            ? t.roster.groups.namePlaceholder
+            : prompt === 'new-profile'
+              ? t.plus.profileNamePlaceholder
+              : t.roster.newSessionPlaceholder
+        }
         value={promptValue}
         onChangeText={setPromptValue}
-        submitLabel={prompt === 'group' ? t.roster.groups.create : t.roster.menu.rename}
+        submitLabel={prompt === 'group' ? t.roster.groups.create : prompt === 'new-profile' ? t.plus.create : t.roster.menu.rename}
         onClose={() => {
           setPrompt('none');
           pendingSection.current = null;
@@ -588,6 +649,8 @@ export default function RosterScreen() {
             if (value) void roster.renameSession(pendingSession.current.profile, pendingSession.current.id, value);
           } else if (prompt === 'new-session' && pendingProfile.current) {
             void roster.createSession(pendingProfile.current, value);
+          } else if (prompt === 'new-profile') {
+            void roster.createProfile(value);
           }
           setPrompt('none');
           pendingSection.current = null;
@@ -599,6 +662,7 @@ export default function RosterScreen() {
 
 function promptTitle(mode: PromptMode): string {
   if (mode === 'group') return t.roster.groups.new;
+  if (mode === 'new-profile') return t.plus.newProfile;
   if (mode === 'group-rename') return t.roster.groups.rename;
   if (mode === 'profile-label') return `${t.roster.menu.rename} · ${t.roster.menu.localOnly}`;
   if (mode === 'session-title') return t.roster.menu.renamePrompt;

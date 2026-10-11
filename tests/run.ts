@@ -118,6 +118,7 @@ import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
 import { getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
 import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
+import { PLUS_KEYS, profileFromPickerKey, profilePickerEntries, profileSlug, plusMenuEntries } from '../src/roster/plusMenu';
 
 // Most assertions below were written against the Portuguese copy, so the suite runs in PT
 // explicitly. The language tests switch on purpose and always restore 'pt' afterwards.
@@ -2530,6 +2531,102 @@ async function main(): Promise<void> {
       assert.equal(peersState(parsed), 'unavailable');
     } finally {
       await offline.close();
+    }
+  });
+
+  // ═══════════════ 0.7.0 C: ONE "+" at the top of the roster ═══════════════
+
+  test('0.7.0 C: the "+" offers exactly three verbs', () => {
+    const entries = plusMenuEntries({ surface: 'dashboard', refusal: null });
+    assert.deepEqual(entries.map((entry) => entry.key), ['new-group', 'new-profile', 'new-session']);
+    assert.deepEqual(entries.map((entry) => entry.label), ['newGroup', 'newProfile', 'newSession']);
+    assert.ok(entries.every((entry) => entry.icon && !entry.disabled), 'nothing is disabled when it can work');
+    assert.ok(entries.every((entry) => !entry.reason));
+    assert.equal(PLUS_KEYS.length, 3);
+  });
+
+  test('0.7.0 C: the profile picker lists EVERY profile from /api/profiles', () => {
+    const profiles = [
+      { name: 'default', label: 'Main' },
+      { name: 'cody', label: 'cody' },
+      { name: 'design-guardian', label: 'Design Guardian' },
+    ];
+    const rows = profilePickerEntries(profiles);
+    assert.equal(rows.length, profiles.length, 'no profile is left out of the modal');
+    assert.deepEqual(rows.map((row) => profileFromPickerKey(row.key)), ['default', 'cody', 'design-guardian']);
+    assert.equal(rows[0].label, 'Main · default', 'a label that differs from the name shows both');
+    assert.equal(rows[1].label, 'cody');
+    assert.equal(profileFromPickerKey('new-group'), '', 'a key that is not a profile resolves to nothing');
+  });
+
+  test('0.7.0 C: a refused POST /api/profiles disables the entry WITH the reason', () => {
+    const refused = plusMenuEntries({
+      surface: 'dashboard',
+      refusal: { status: 403, message: 'This credential may not create profiles.' },
+    });
+    const profileEntry = refused.find((entry) => entry.key === 'new-profile');
+    assert.ok(profileEntry, 'the entry is shown, not removed');
+    assert.equal(profileEntry.disabled, true);
+    assert.match(profileEntry.reason ?? '', /may not create profiles/, 'the server\'s own reason is visible');
+    // the other two verbs are untouched by a profile refusal
+    assert.ok(!refused.find((entry) => entry.key === 'new-group')?.disabled);
+    assert.ok(!refused.find((entry) => entry.key === 'new-session')?.disabled);
+
+    // the legacy :9222 surface has no profile route at all — same treatment, different reason
+    const legacy = plusMenuEntries({ surface: 'gateway', refusal: null });
+    const legacyProfile = legacy.find((entry) => entry.key === 'new-profile');
+    assert.equal(legacyProfile?.disabled, true);
+    assert.equal(legacyProfile?.reason, t.plus.createUnavailable);
+    assert.ok(!legacy.find((entry) => entry.key === 'new-session')?.disabled, 'sessions still work on :9222');
+  });
+
+  test('0.7.0 C: a typed profile name becomes the dashboard\'s own name shape', () => {
+    assert.equal(profileSlug('Research Notes'), 'research-notes');
+    assert.equal(profileSlug('  Beta  '), 'beta');
+    assert.equal(profileSlug('Zé das Couves'), 'ze-das-couves');
+    assert.equal(profileSlug('a'.repeat(50))?.length, 32, 'capped like the group ids');
+    assert.equal(profileSlug('!!!'), null, 'nothing usable means no request is made');
+    assert.equal(profileSlug(''), null);
+  });
+
+  test('0.7.0 C: the roster header is wired to the "+" — one control, three verbs, no leftovers', () => {
+    const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+    assert.match(src, /name="add"/, 'the header control is a "+"');
+    assert.match(src, /plusMenuEntries\(/, 'and it opens the three-verb dropdown');
+    assert.match(src, /profilePickerEntries\(roster\.contacts\)/, 'New session picks an owner from every profile');
+    assert.match(src, /roster\.createProfile\(/, 'New profile calls the real endpoint through the roster hook');
+    assert.match(src, /profileFromPickerKey/, 'the picked row resolves to a profile name');
+    assert.ok(
+      !/name="folder-outline" size=\{16\} color=\{colors\.text\}/.test(src),
+      'the old standalone group button is gone — its verb lives in the dropdown now',
+    );
+  });
+
+  test('0.7.0 C: New profile posts to /api/profiles and the roster refreshes from it', async () => {
+    const before = dashboard.createdProfiles.length;
+    const created = await dash.createProfile({ name: 'gate-probe' });
+    assert.equal(created.ok, true);
+    assert.equal(created.name, 'gate-probe');
+    assert.match(String(created.path), /profiles\/gate-probe$/);
+    assert.deepEqual(dashboard.createdProfiles.slice(before), ['gate-probe'], 'exactly one POST, with the name asked for');
+    const post = dashboard.calls.filter((call) => call.path === '/api/profiles' && call.method === 'POST').at(-1);
+    assert.equal(post?.body?.clone_from_default, true, 'the documented ProfileCreate body');
+    assert.equal(post?.body?.name, 'gate-probe');
+    // the roster's source of truth now carries it, which is what "refresh the roster" means
+    const profiles = await dash.profiles();
+    assert.ok(profiles.some((row) => row.name === 'gate-probe'));
+
+    // a refusal travels through the shared error ladder with its status, so the UI can explain it
+    const refusing = createMockDashboard({ port: 0, profileCreateStatus: 403 });
+    await refusing.listen();
+    try {
+      const client = createDashboardClient(settingsFor(refusing.url, { apiKey: refusing.config.bearer }), { timeoutMs: 4000 });
+      await expectApiError(() => client.createProfile({ name: 'nope' }), (error) => {
+        assert.equal(error.status, 403);
+        assert.match(String(error.detail ?? error.message), /may not create profiles/);
+      });
+    } finally {
+      await refusing.close();
     }
   });
 

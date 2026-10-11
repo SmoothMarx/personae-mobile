@@ -166,6 +166,7 @@ const en = {
     created: (name: string) => `Profile "${name}" created.`,
     createRefused: (reason: string) => `This phone cannot create profiles: ${reason}`,
     createUnavailable: 'Only on the Dashboard connection.',
+    invalidName: 'That name cannot be used for a profile.',
   },
 
   settings: {
@@ -647,6 +648,7 @@ const pt: Strings = {
     created: (name: string) => `Perfil "${name}" criado.`,
     createRefused: (reason: string) => `Este telemóvel não pode criar perfis: ${reason}`,
     createUnavailable: 'Só na ligação ao Dashboard.',
+    invalidName: 'Esse nome não pode ser usado num perfil.',
   },
 
   settings: {

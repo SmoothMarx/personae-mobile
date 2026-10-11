@@ -293,7 +293,11 @@ export function SwatchPicker(props: { value: string | null; onPick: (colour: str
 export function ActionSheet(props: {
   visible: boolean;
   title: string;
-  entries: { key: string; label: string; icon: string; destructive?: boolean }[];
+  /**
+   * `disabled` + `reason` exist for 0.7.0's "+": a verb that cannot work right now is shown, dimmed,
+   * with the sentence explaining why — never hidden and never a silent no-op.
+   */
+  entries: { key: string; label: string; icon: string; destructive?: boolean; disabled?: boolean; reason?: string }[];
   labelOf: (key: string) => string;
   onPick: (key: string) => void;
   onClose: () => void;
@@ -310,14 +314,32 @@ export function ActionSheet(props: {
             <Pressable
               key={entry.key}
               onPress={() => props.onPick(entry.key)}
+              disabled={entry.disabled}
               accessibilityRole="button"
-              accessibilityLabel={props.labelOf(entry.label)}
-              style={({ pressed }) => [styles.sheetRow, pressed && styles.rowPressed]}
+              accessibilityState={{ disabled: Boolean(entry.disabled) }}
+              accessibilityLabel={
+                entry.reason ? `${props.labelOf(entry.label)} — ${entry.reason}` : props.labelOf(entry.label)
+              }
+              style={({ pressed }) => [styles.sheetRow, pressed && styles.rowPressed, entry.disabled && styles.disabledRow]}
             >
-              <Ionicons name={entry.icon as never} size={18} color={entry.destructive ? colors.red : colors.text} />
-              <Text style={[styles.sheetLabel, entry.destructive && styles.sheetLabelDanger]} numberOfLines={1}>
-                {props.labelOf(entry.label)}
-              </Text>
+              <Ionicons
+                name={entry.icon as never}
+                size={18}
+                color={entry.disabled ? colors.faint : entry.destructive ? colors.red : colors.text}
+              />
+              <View style={styles.sheetLabelWrap}>
+                <Text
+                  style={[styles.sheetLabel, entry.destructive && styles.sheetLabelDanger, entry.disabled && styles.sheetLabelOff]}
+                  numberOfLines={1}
+                >
+                  {props.labelOf(entry.label)}
+                </Text>
+                {entry.reason ? (
+                  <Text style={styles.sheetReason} numberOfLines={2}>
+                    {entry.reason}
+                  </Text>
+                ) : null}
+              </View>
             </Pressable>
           ))}
           {props.children}
@@ -386,6 +408,10 @@ const styles = StyleSheet.create({
   sheetRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md, borderRadius: radius.sm },
   sheetLabel: { color: colors.text, fontSize: font.body, flex: 1 },
   sheetLabelDanger: { color: colors.red },
+  sheetLabelWrap: { flex: 1, gap: 2 },
+  sheetLabelOff: { color: colors.faint },
+  sheetReason: { color: colors.amber, fontSize: font.small, lineHeight: 16 },
+  disabledRow: { opacity: 0.85 },
   promptInput: {
     borderWidth: 1,
     borderColor: colors.border,

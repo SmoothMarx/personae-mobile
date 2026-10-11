@@ -87,7 +87,12 @@ export function httpError(status: number, body: unknown, profile?: string): ApiE
     rawError && typeof rawError === 'object'
       ? (rawError as { message?: string; type?: string; code?: string })
       : undefined;
-  const serverMessage = envelope?.message || (typeof rawError === 'string' ? rawError : '');
+  // FastAPI's own refusal shape is `{"detail": "..."}` — what `HTTPException` and the profile
+  // routes return for a bad name or a refusal — and it is the ONLY place the human sentence lives.
+  // The OpenAI-shaped envelopes above carry no `detail` at all, so this is additive.
+  const fastapiDetail =
+    typeof (body as { detail?: unknown } | null)?.detail === 'string' ? String((body as { detail?: unknown }).detail) : '';
+  const serverMessage = envelope?.message || (typeof rawError === 'string' ? rawError : '') || fastapiDetail;
   const code = envelope?.code;
   const type = envelope?.type;
 

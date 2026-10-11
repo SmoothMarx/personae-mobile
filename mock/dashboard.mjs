@@ -386,10 +386,9 @@ export function createMockDashboard(options = {}) {
       // web_routers/profiles.py:803 → `{ok, name, path, model_set, model_error, …}`.
       if (path === '/api/profiles' && req.method === 'POST') {
         if (config.profileCreateStatus !== 200) {
-          return json(config.profileCreateStatus, {
-            error: 'forbidden',
-            detail: 'This credential may not create profiles.',
-          });
+          // FastAPI's HTTPException shape — `{"detail": "..."}` — which is what the dashboard
+          // returns for a refusal, and the only place the human sentence lives.
+          return json(config.profileCreateStatus, { detail: 'This credential may not create profiles.' });
         }
         const name = String(body.name ?? '').trim();
         if (!name) return json(422, { detail: [{ loc: ['body', 'name'], msg: 'field required' }] });

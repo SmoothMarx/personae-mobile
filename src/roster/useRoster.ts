@@ -51,6 +51,7 @@ import {
   type SectionsModel,
   type SortMode,
 } from '../logic/sections';
+import { profileSlug } from './plusMenu';
 import { loadLastSeen, saveLastSeen } from '../settingsStore';
 import {
   EMPTY_PREFS,
@@ -104,6 +105,8 @@ export function useRoster() {
   const [bodyHits, setBodyHits] = useState<SearchResult | null>(null);
   const [searching, setSearching] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  /** The last refusal from POST /api/profiles, so the "+" can explain itself (0.7.0). */
+  const [profileRefusal, setProfileRefusal] = useState<{ status: number; message: string } | null>(null);
 
   const configured = Boolean(settings.baseUrl.trim()) && Boolean(settings.apiKey);
   const loadToken = useRef(0);
@@ -408,6 +411,36 @@ export function useRoster() {
     [backend, loadAll, openSession],
   );
 
+  /**
+   * 0.7.0's "New profile": POST /api/profiles, then refresh the roster so the new face appears.
+   *
+   * A refusal is NOT swallowed: the error is remembered (`profileRefusal`) and the "+" renders the
+   * entry disabled with that reason, because a control that does nothing when tapped is the one
+   * outcome the brief forbids. Returns false so the caller can keep the prompt open and say so.
+   */
+  const createProfile = useCallback(
+    async (rawName: string) => {
+      const name = profileSlug(rawName);
+      if (!name) {
+        setNotice(t.plus.invalidName);
+        return false;
+      }
+      try {
+        const created = await backend.createProfile({ name });
+        setProfileRefusal(null);
+        await loadAll({ silent: true });
+        setNotice(t.plus.created(created?.name || name));
+        return true;
+      } catch (error) {
+        const normalized = normalizeError(error);
+        setProfileRefusal({ status: normalized.status ?? 0, message: normalized.message });
+        setNotice(t.plus.createRefused(normalized.message));
+        return false;
+      }
+    },
+    [backend, loadAll],
+  );
+
   const renameSession = useCallback(
     async (profile: string, id: string, title: string) => {
       try {
@@ -470,6 +503,8 @@ export function useRoster() {
 
   const notice_ = notice;
   const clearNotice = useCallback(() => setNotice(null), []);
+  /** Say something in the roster's own notice line — how a disabled verb explains itself (0.7.0). */
+  const say = useCallback((text: string) => setNotice(text), []);
 
   // ── preferences the menus write ─────────────────────────────────────────────
   const setColour = useCallback(
@@ -530,15 +565,20 @@ export function useRoster() {
     sections: sectionModel,
     sectionActions: sections,
     prefs,
+    /** Every profile from the server, in roster order — the "New session" picker's content. */
+    contacts,
     avatarUrls,
     lastSeen,
     notice: notice_,
     clearNotice,
+    say,
     openSession,
     openProfile,
     toggleProfile,
     refresh,
     createSession,
+    createProfile,
+    profileRefusal,
     renameSession,
     archiveSession,
     deleteSession,
