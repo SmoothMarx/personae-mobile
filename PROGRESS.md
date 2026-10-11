@@ -726,3 +726,253 @@ P8 layout export/import · P9 iOS/EAS · P10 the gateway layout blob.
 5. The live **chat streaming** path (dashboard `prompt.submit` + events) is proven against the mock
    and against the real socket handshake, but no real turn was driven from the phone.
 
+
+---
+
+# 0.5.0 — the roster becomes the plugin's roster (F5 · F6 · F7, no F1–F4 regression)
+
+Brief: `GOAL-UI2.md`. Reference of record: `~/Projects/hermes-desktop-plugins/personae/` (`README.md`
+capability table + `plugin.js`, 8 365 lines) — **read, never written**. The brief won on scope; the
+plugin won on behaviour.
+
+Commits, one per phase: `42462ca` (P1, the pure half) · `4c0e270` (P2, the screen) · `f4299af` (P3,
+the connection surface) · `435cc21` (P4, the live corrections + evidence) · *(this commit)* P5, the
+artifact.
+
+## The shape, before and after
+
+| | 0.4.0 (what the user's screenshot showed) | 0.5.0 |
+|---|---|---|
+| main view | flat session feed | **vertical roster, one row per profile** |
+| profiles | a horizontal chip scroller, and only a synthetic `Principal` | one row each: face, name, latest-conversation preview, age, light, unread count |
+| a profile's sessions | not reachable as a group | **tapping the row expands them in place** (per-profile set, several open, persisted) |
+| cron runs | in the main list | **out of the feed**; reachable under their own profile, marked `Automático` |
+| groups | none | named groups, collapsible, + an implicit ungrouped section |
+| search | none | profiles **and** sessions, incl. message bodies; a hit auto-expands its profile |
+| colour | none | profile tints its row and its sessions; a session colour overrides |
+| lights | a single `Principal` dot | amber / emerald / neutral, badge at 2+, loudest-state rollup |
+| menus | none | long-press menus for profile / session / group |
+
+## P1 — the pure half (`42462ca`)
+
+Everything that *decides* what the screen draws, so the shape is pinned offline before a pixel:
+
+| Module | What it owns | Reference |
+|---|---|---|
+| `src/logic/sections.ts` | groups in the plugin's own shape and keys (`sections/members/collapsed/order/sort`); deletes are structurally incapable of touching a session | `plugin.js:1240-1307`, `:1600-1640` |
+| `src/logic/lights.ts` | amber/emerald/neutral, loudest-state rollup, badge at 2+, `working` excluded, a missing watermark stays quiet | `plugin.js:1781-1900`, README "Status lights" |
+| `src/logic/rosterFeed.ts` | conversations vs job runs, `rosterContacts` (the F7 rule), the search sweep + auto-expand, `coloursFor`, `attributeBodyHits` | `plugin.js:179`, `:1996` |
+| `src/rosterPrefs.ts` | **every** roster preference behind one module (§4), keys named after the plugin's so the future server store maps 1:1 | `messenger-sections-v1`, `messenger-expanded-v1` |
+
+Transport additions: `Backend.sidebar()` (batched recents/cron slices) and
+`Backend.searchMessages()` (`GET /api/plugins/messenger/search`); rows now carry
+`profile` / `last_read_at`. The mock splits `recents` from `cron` the way the live box does, serves
+the FTS route, can make `/api/profiles` fail, and takes `port: 0` so the suite cannot collide.
+
+## P2 — the screen (`4c0e270`)
+
+`app/index.tsx` was 627 lines and about to grow; it is now composition, and the pieces live in
+`src/roster/` (`components.tsx`, `menus.ts`, `useRoster.ts`). R1–R9 as built:
+
+* **R1** one row per profile — face (32 px, monogram until the avatar lands: F1 unchanged), name,
+  a preview of its **latest conversation**, age, light, unread count. **The chip scroller is gone.**
+* **R2** tapping a row expands **its** sessions underneath (dot, title, preview, age), newest first;
+  tapping a session opens `/thread/[id]`. Expansion is a per-profile set, persisted.
+* **R3/F6** the feed is the sidebar's `recents` slice **and** is filtered on `source` (see P4 — the
+  filter is load-bearing, not belt-and-braces). Cron runs render under their own profile, `Automático`.
+* **R4** named groups with collapsible headers, an implicit ungrouped section only when it holds
+  something, an empty group that explains how to fill it, and a delete that cannot reach a session.
+* **R5** search: the local metadata sweep (title/preview/id/profile name) plus server FTS. A hit
+  inside a profile **auto-expands that profile and shows the matching sessions under it**. Debounced
+  (320 ms), cancellable, and **one request per settled query**.
+* **R6** `coloursFor()` is the single alias; a session colour beats its profile's; an absent model
+  yields `null` — never a hue invented, never a crash.
+* **R7** amber = needs-input, emerald = unread (from `last_read_at`), neutral = nothing, numbered at
+  2+; `lastSeen` remains the separate "new since my last visit" ticks.
+* **R8** long-press menus, icons + PT-PT labels, inventory in `src/roster/menus.ts` (so a verb that
+  disappears is a failing test). Copy id is a real clipboard (`expo-clipboard` 57.0.2, SDK-matched).
+* **R9** `FlatList` virtualisation; ONE profiles call + ONE batched sidebar call on first paint; a
+  lazily fetched page per profile only when its row is opened; avatars still probe in the background.
+
+**Profile rename is a LOCAL label, on purpose, and the sheet says "só neste telefone".** Read from
+the serving code before wiring it: `PATCH /api/profiles/{name}` (`web_routers/profiles.py:951`) stops
+the running gateway, **renames the profile's directory on disk** and regenerates its wrapper script.
+That is not a verb to put behind a long-press. Recorded in `src/rosterPrefs.ts`.
+
+## P3 — the connection surface (`f4299af`)
+
+Under **Tipo de ligação** the screen now names the one required pair — `Dashboard (:9119)` + the
+bearer — with a tick/alert beside it and the last **Testar ligação** result (dot, message, latency)
+on the same row. Choosing the `:9222` api_server says **in the UI** that that surface has no profile
+list, so the roster will be empty of profiles and groups: exactly the state a 0.4.0 upgrade lands in
+when its stored credential is the old `:9222` key. The export log header reports 0.5.0 / code 5.
+
+## P4 — the live box corrected two of the brief's assumptions (`435cc21`)
+
+Probed the running dashboard with the app's own bearer, read-only. Every request and response is in
+`logs/roster-2026-10-11.txt` (**no bearer, no secret**; `scripts/verify-secrets.sh` is clean).
+
+| Probe | Measured |
+|---|---|
+| `GET /api/profiles`, no auth | **401** `{"error":"unauthenticated",…,"reason":"no_cookie"}` — the gate is intact |
+| `GET /api/profiles`, bearer | **200 · 22 profiles · 12 389 bytes**; `gateway_running: true` ×22 |
+| `has_avatar` | **the key is not present at all** (not `null`) — F1 already treats anything ≠ `false` as unknown and probes in the background |
+| `GET /api/profiles/sessions/sidebar` | **200 · 403 049 bytes**; `recents` **36** rows, `cron` **50**, `messaging` **109** |
+| …`recents` sources | `{desktop 22, cli 6, **cron 6**, api_server 1, tui 1}` |
+| `GET /api/profiles/sessions?limit=8` | **200**, `total 1772`, **25** rows → `limit` is **per profile** |
+| `?limit=200` | **208** rows, sources `{cron 135, desktop 41, oneshot 15, cli 7, webhook 4, tui 2, telegram 2, api_server 1, webui 1}` |
+| `last_read_at` on every sample | **`None`** → the emerald dot stays quiet rather than inventing an unread state |
+| `…/messenger/search?q=plugin&profile=all` | **404** `{"detail":"Profile 'all' does not exist."}` |
+| `…/messenger/search?q=plugin&profile=cody` | **200** with `results:[{session_id, role, snippet}]` |
+| `…/messenger/search?q=plugin` (no profile) | **200** — an omitted profile serves the whole box |
+
+**The two corrections, both load-bearing:**
+
+1. **`recents` DOES contain cron runs** on this box (6 of 36), although both the brief and the
+   plugin's own comment say it does not. So `conversations()` filtering on `source` is load-bearing
+   on the recents path too. The roster's behaviour is unchanged (it was already filtered at the model
+   level) and the code now says why.
+2. **`profile=all` is a 404 and an omitted profile serves everything**, so the search plan is **ONE
+   server-wide request per settled query** (`bodySearchPlan`), with each hit attributed to its
+   profile locally from the feed in hand (`attributeBodyHits`). A hit that cannot be placed is
+   *counted and dropped*, never guessed at. That is a stronger answer to R5's "must not fire 22
+   requests per keystroke" than per-profile batching was.
+
+## P5 — the artifact, measured
+
+```
+npx expo prebuild -p android --no-install            # versionCode 5 / versionName "0.5.0"
+bash scripts/patch-android-signing.sh                # prebuild restores the DEBUG signing config
+docker run --rm --env-file ~/.personae-android/build.env \
+  -e GRADLE_OPTS='-Dorg.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=768m' \
+  -v ~/Projects/personae-mobile:/work -v ~/.personae-android/gradle:/root/.gradle \
+  -v ~/.personae-android:/signing:ro -w /work/android personae-android:1 \
+  bash -lc './gradlew :app:assembleRelease --no-daemon --console=plain --no-parallel --max-workers=1'
+# BUILD SUCCESSFUL in 6m 49s · 449 actionable tasks: 449 executed   (logs/gradle-v050b.log)
+cp android/app/build/outputs/apk/release/app-release.apk dist/personae-0.5.0.apk
+```
+
+| Measured fact | Value | How |
+|---|---|---|
+| Path | `~/Projects/personae-mobile/dist/personae-0.5.0.apk` | `ls` |
+| Bytes | **88 313 093** | `stat -c %s` |
+| sha256 | **215d007147ae22e0f1f813422e724fa87b516d079b96c95d52d253882ce3f7b4** | `sha256sum` |
+| Package | `com.personae.mobile` | `apkanalyzer apk summary` |
+| versionCode / versionName | **5** / **0.5.0** | `apkanalyzer apk summary` |
+| minSdk / targetSdk | **24** / **36** | `apkanalyzer manifest min-sdk` / `target-sdk` |
+| Native ABIs | arm64-v8a, armeabi-v7a, x86, x86_64 — **22 libs each** | `unzip -Z1 \| grep ^lib/` |
+| Signer | `CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT`, SHA-256 `bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26` — **the same Personae release key as 0.1.0–0.4.0, so it installs OVER 0.4.0** | `apksigner verify --print-certs` |
+| Cleartext HTTP (LAN route) | `usesCleartextTraffic=true` in the shipped manifest | `aapt2 dump xmltree` |
+| JS bundle | **2 749 448 bytes**, 1275 zip entries | `unzip -p … \| wc -c` |
+| Our native bridge | `TailscaleTriggerModule` in `classes3.dex`; `CONNECT_VPN` + `DISCONNECT_VPN` present | `logs/verify-dex.sh` |
+
+Artifact forensics (`logs/verify-0.5.0.sh` → `logs/verify-0.5.0.txt`, `logs/verify-dex-0.5.0.txt`,
+both exit 0):
+
+| Check | Result |
+|---|---|
+| **F2's release-bundle footgun** | `aapt2 dump resources` resolves **`ionicons`** as a packaged resource, and the bundle references **`Ionicons`** — the glyph font is in the shipped APK |
+| 0.5.0 markers in the shipped bundle | `personae.sections.v1` 1 · `personae.expanded.v1` 1 · `personae.labels.v1` 1 · `personae.colours.v1` 1 · `api/plugins/messenger/search` 1 · `profiles/sessions/sidebar` 1 · `ExpoClipboard` 1 · `session.interrupt` 1 · `Pensamento` 1 (F3's block survived) |
+| Non-ASCII PT-PT strings | `Sem grupo` found in the **UTF-16LE** string table (the Hermes behaviour recorded in the 0.4.0 section) |
+| Environment facts | `100.64.0.11` **0** · `personae` **0** · `10.0.0.15` **0** · `API_SERVER_KEY=` **0** |
+| **The live bearer** | **0 occurrences** in the shipped bundle (checked against the real value) |
+| Permissions | `INTERNET`, `ACCESS_NETWORK_STATE`, `ACCESS_WIFI_STATE` (from `expo-network`) — no new dangerous permission from `expo-clipboard` |
+
+## Acceptance, line by line (§5)
+
+1. **`dist/personae-0.5.0.apk` exists, 0.5.0 / code 5, release-signed with the Personae key.** ✅ —
+   table above; `logs/verify-0.5.0.sh` + `logs/verify-dex.sh` summaries are the two forensics tables.
+2. **`npm test` ≥ 93, 0 failing, `tsc --noEmit` clean, on the final commit.** ✅ — **125/125 passed,
+   0 failed**; `npx tsc --noEmit` exit 0 (both re-run after the last edit and after the artifact was
+   copied). The 0.4.0 floor was 93.
+3. **Tests, offline on `mock/`, pinning:** cron absent from the roster feed ✅ (3 tests, incl. one
+   built from the live sidebar shape); a failed profile list → banner + **no** fabricated contact ✅
+   (pure + end-to-end against a mock that answers 500); expansion is per-profile ✅; search
+   auto-expands a matching profile ✅ (metadata and body-hit variants); a deleted group deletes no
+   session ✅; group shapes round-trip ✅ (`sections/members/collapsed/order/sort`).
+4. **`logs/roster-2026-10-11.txt`** ✅ — status, counts and one sample row per `source`, from the live
+   box, no bearer.
+5. **One commit per phase, `PROGRESS.md` current, honest gaps below** ✅.
+
+## NOT DONE IF — checked against the artifact and the code
+
+| Condition | Verdict |
+|---|---|
+| main view is still a flat feed, or a chip scroller survives | **no** — no horizontal `FlatList` remains in `app/index.tsx`; `RosterScreen` is a vertical roster |
+| cron runs still in the roster feed | **no** — `conversations()` on every path; pinned by tests |
+| tapping a profile does not expand in place | **no** — `openProfile`/`buildRoster`; pinned by tests |
+| search matches sessions but does not reveal them | **no** — `autoExpand` + the row renders them; pinned by two tests |
+| a failed profile list still shows one invented `Principal` | **no** — `rosterContacts` returns `{contacts: [], error}` |
+| any of F1–F4 regressed, or tests below 93 | **no** — 125/125; F2's font re-proved on the artifact; F3's `Pensamento` still in the bundle; F4's title chain untouched |
+| a secret reached a file, a commit, a log tail or the repo | **no** — `verify-secrets.sh` clean over tracked + untracked-unignored files, and the live bearer is 0 occurrences in the shipped bundle |
+
+## What is still NOT pixel-verified (the honest part)
+
+**There is still no device test.** No adb exists on this host and the Pixel 8 is offline
+(`tailscale status` → `pixel-8 … offline`). Nothing was installed or launched; **no pixel of the new
+roster has been seen on a phone**. Everything above is: the offline suite (125), the live dashboard's
+own shapes, and forensics on the built artifact. Specifically unverified on hardware:
+
+1. the roster's geometry (row height, the expand caret, the face size, the sheet presentation);
+2. the long-press gesture and the bottom sheets (they are new UI, exercised by no test);
+3. `expo-clipboard`'s native module on a real device (its JS is in the bundle; the module is new this
+   release);
+4. search's on-device feel — the 320 ms debounce, and whether the auto-expand reads as helpful or as
+   the list jumping;
+5. whether the Android system back gesture closes a sheet rather than the screen (`onRequestClose` is
+   wired, but nothing proves it on a phone).
+
+## For the user — install and the checks worth running
+
+1. Put `dist/personae-0.5.0.apk` on the phone and tap it. Same Personae release key as 0.4.0, so it
+   **installs over** the existing app: no uninstall, no data loss.
+2. Definições → **Tipo de ligação** = `Dashboard (:9119)`, endereço `http://10.0.0.15:9119` (at home)
+   or `https://personae-sk.tail0000demo.ts.net:10443` (anywhere), and the bearer. Press
+   **Testar ligação**: it should report **22 perfis encontrados**.
+3. **Check 1 — the roster**: you should see a **vertical list of your profiles with faces**, each with
+   a one-line preview of its last conversation and an age. Not a row of pills, and no cron jobs in
+   the list.
+4. **Check 2 — expand in place**: tap a profile. Its conversations open underneath it, newest first.
+   Tap another profile: it opens too, and the first stays open. Close the app and reopen it — they
+   are still open.
+5. **Check 3 — cron is elsewhere**: scroll to a profile that runs scheduled jobs (Scholes, Dobbs) and
+   expand it. Its runs appear marked **Automático**, below its conversations.
+6. **Check 4 — search**: type a word you know is in a conversation (not the title). The profile that
+   holds it should **open by itself** with the matching conversation shown under it, and the line
+   above the list should say how many results.
+7. **Check 5 — groups**: the folder button (top bar) creates a group. Long-press a profile →
+   **Mover para grupo**. Long-press the group heading → **Apagar grupo**: the group goes, and every
+   conversation is still there.
+8. **Check 6 — the lights**: a profile with something unread or waiting shows amber/emerald, and a
+   number from 2 upwards. If nothing is waiting, they stay grey — that is not a bug (measured:
+   every `last_read_at` on this box is `None`, so the app is honest rather than inventing one).
+9. **Check 7 — nothing regressed**: avatars on the faces, an icon send button, **Ver detalhes** still
+   expanding one tool run at a time with its **Pensamento**, and the thread's top bar still showing
+   the session **name**.
+10. If it installs but the roster is empty of profiles: Definições → **Tipo de ligação** — if it is on
+    `API do gateway (:9222)` the screen now says why there are no profiles. Also **Registo de
+    diagnóstico** → type what happened → **Partilhar registo**.
+
+## Pitfalls worth keeping from this run
+
+* **Never blanket-delete `build/` directories under `node_modules`.** They look like build output;
+  for many npm packages (e.g. `@expo/vector-icons/build`, `expo-router/build`) they are the
+  **published code**. Removing them silently breaks the dependency tree (tsc then reports
+  "Cannot find module '@expo/vector-icons'"). Recovery here was `npm ci --legacy-peer-deps`
+  (`npm ci` alone hits an ERESOLVE peer conflict on this lock, so the flag is required).
+* **Clean only the trees the container owns as root**: `android/{.kotlin,build,.gradle}`,
+  `android/app/{build,.cxx}` and `modules/*/android/build`. Nothing else.
+* **A `build/`-shaped grep can lie**: the Ionicons font files are obfuscated to `res/*.ttf`, so
+  `unzip -Z1 | grep ionicons` finds nothing even when the font is packaged. The check that works is
+  `aapt2 dump resources | grep -io ionicons` (what 0.4.0 used, and what
+  `logs/verify-0.5.0.sh` now does).
+* **`expo-doctor` went 21/21 → 20/21 after the node_modules restore** because `expo-font` is a *peer*
+  of `@expo/vector-icons` and must be declared directly for native autolinking. Adding it
+  (`~57.0.4`, already the resolved version) took it back to **21/21** — and the APK was **rebuilt**
+  afterwards, so the artifact matches its source.
+
+## Deferred on purpose (not started, per §4)
+
+Multi-select · Apropos · iOS/EAS · the gateway-side state store and layout sync (**P11**: every
+roster preference already lives behind `src/rosterPrefs.ts`, so the server store can replace the
+backing without touching a screen) · layout export/import · right-click parity.
