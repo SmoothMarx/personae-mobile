@@ -12,6 +12,8 @@
 
 import assert from 'node:assert/strict';
 import { createMockGateway } from '../mock/server.mjs';
+import { createMockDashboard } from '../mock/dashboard.mjs';
+import { createDashboardClient, type GatewayEvent } from '../src/api/dashboard';
 import { SSEParser, parseFrame } from '../src/api/sse';
 import { createApi } from '../src/api/client';
 import { nodeTransport } from '../src/api/transportNode';
@@ -65,6 +67,43 @@ async function expectApiError(fn: () => Promise<unknown>, check: (error: ApiErro
     return;
   }
   assert.fail('expected the call to reject, it resolved');
+}
+
+
+/** Open a bare WebSocket (no client wrapper) — used to prove the ticket rules on the wire. */
+async function openRawSocket(url: string): Promise<{ send: (data: string) => void; close: () => void }> {
+  const socket = new WebSocket(url);
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('socket did not open')), 3000);
+    socket.onopen = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    socket.onerror = () => {
+      clearTimeout(timer);
+      reject(new Error('socket errored before opening'));
+    };
+  });
+  return { send: (data: string) => socket.send(data), close: () => socket.close() };
+}
+
+async function expectRawSocketFailure(url: string): Promise<void> {
+  const socket = new WebSocket(url);
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('a refused upgrade must not open a socket')), 3000);
+    socket.onopen = () => {
+      clearTimeout(timer);
+      reject(new Error('the socket opened with a spent ticket'));
+    };
+    socket.onerror = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    socket.onclose = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+  });
 }
 
 // ─────────────────────────────────────────────────────────── SSE parser ──
@@ -1002,6 +1041,155 @@ async function main(): Promise<void> {
     assert.equal(deterministic.isReachable(b), false);
   });
 
+
+  // ────────────────────────────────── dashboard transport (0.4.0 / P0.2) ──
+  // The app targets the gated dashboard, not the :9222 api_server. Every shape asserted here comes
+  // from the serving code (see src/api/dashboard.ts for the file:line map) and is reproduced by
+  // mock/dashboard.mjs, including a real WebSocket upgrade with a fake JSON-RPC dispatch.
+  const DASH_BEARER = 'test-bearer-0123456789abcdef0123456789abcdef';
+  const dashboard = createMockDashboard({ port: 8792, bearer: DASH_BEARER });
+  await dashboard.listen();
+  const dash = createDashboardClient(settingsFor(dashboard.url, { apiKey: DASH_BEARER }), {
+    timeoutMs: 4000,
+    rpcTimeoutMs: 4000,
+  });
+
+  async function waitFor(predicate: () => boolean, timeoutMs = 3000): Promise<void> {
+    const started = Date.now();
+    while (!predicate()) {
+      if (Date.now() - started > timeoutMs) throw new Error('timed out waiting for the condition');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  }
+
+  test('dashboard: /api/profiles lists profiles and flags the ones that have an avatar', async () => {
+    const profiles = await dash.profiles();
+    assert.equal(profiles.length, 2);
+    assert.equal(profiles[0].name, 'default');
+    assert.equal(profiles[0].has_avatar, true);
+    assert.equal(profiles[1].has_avatar, false, 'the cheap existence flag drives the monogram fallback');
+  });
+
+  test('dashboard: a wrong bearer is a 401 through the shared error ladder', async () => {
+    const wrong = createDashboardClient(settingsFor(dashboard.url, { apiKey: 'nope' }), { timeoutMs: 4000 });
+    await expectApiError(() => wrong.profiles(), (error) => {
+      assert.equal(error.status, 401);
+      assert.equal(error.kind, 'http');
+    });
+  });
+
+  test('dashboard: settings with no bearer fail before any request is made', async () => {
+    const unconfigured = createDashboardClient(settingsFor(dashboard.url, { apiKey: '' }), { timeoutMs: 4000 });
+    await expectApiError(() => unconfigured.profiles(), (error) => {
+      assert.equal(error.kind, 'config');
+    });
+  });
+
+  test('dashboard: a registered token route answers the seam body; an unregistered one the gate body', async () => {
+    const gate = await fetch(`${dashboard.url}/api/profiles`);
+    const seam = await fetch(`${dashboard.url}/api/profiles/sessions/sidebar`);
+    assert.equal(gate.status, 401);
+    assert.equal(seam.status, 401);
+    const gateBody = (await gate.json()) as Record<string, unknown>;
+    const seamBody = (await seam.json()) as Record<string, unknown>;
+    assert.equal(gateBody.reason, 'no_cookie');
+    assert.equal(gateBody.login_url, '/login');
+    // The token seam owns the whole path and never consults a cookie — the distinction measured on
+    // the live dashboard (logs/p0.1-spike.txt §4) and the reason the app only registers paths the
+    // dashboard SPA itself never calls.
+    assert.equal(seamBody.reason, undefined);
+    assert.equal(seamBody.login_url, undefined);
+  });
+
+  test('dashboard: the rail returns every profile\'s sessions with profile_totals in one call', async () => {
+    const rail = await dash.rail('all');
+    assert.equal(rail.sessions.length, 2);
+    assert.equal(rail.total, 2);
+    assert.equal((rail.profile_totals as Record<string, number>).beta, 1);
+  });
+
+  test('dashboard: the sidebar slices wrap their sessions (the live shape, not bare arrays)', async () => {
+    const side = await dash.sidebar('all', { recentsLimit: 5 });
+    assert.equal(side.recents?.sessions.length, 2);
+    assert.equal(side.cron?.sessions.length, 0);
+    assert.equal(side.messaging?.total, 0);
+  });
+
+  test('dashboard: GET /api/sessions/{id}/messages returns `messages`, not the api_server\'s `data`', async () => {
+    const page = await dash.messages('sess-1', 'default');
+    assert.equal(page.session_id, 'sess-1');
+    assert.equal(page.messages.length, 9);
+    assert.equal((page as unknown as Record<string, unknown>).data, undefined);
+  });
+
+  test('dashboard: PATCH returns the title the server stored', async () => {
+    const renamed = await dash.rename('sess-1', 'Título novo', 'default');
+    assert.equal(renamed.ok, true);
+    assert.equal(renamed.title, 'Título novo');
+    const detail = await dash.session('sess-1', 'default');
+    assert.equal(detail.title, 'Título novo', 'GET /api/sessions/{id} is authoritative (F4)');
+  });
+
+  test('dashboard: a 404 for an unknown session keeps its HTTP identity', async () => {
+    await expectApiError(() => dash.session('missing-session', 'default'), (error) => {
+      assert.equal(error.status, 404);
+    });
+  });
+
+  // ── the WS leg: one fresh ticket per connection, then JSON-RPC + events ──
+  const allEvents: GatewayEvent[] = [];
+  const deltas: string[] = [];
+  const toolActivity: string[] = [];
+  const live = await dash.connect({
+    onEvent: (event) => allEvents.push(event),
+  });
+  live.on('message.delta', (event) => deltas.push(String(event.payload.text ?? '')));
+  live.on('tool.start', (event) => toolActivity.push(`start:${String(event.payload.name ?? '')}`));
+  live.on('tool.complete', (event) => toolActivity.push(`complete:${String(event.payload.name ?? '')}`));
+
+  test('dashboard: the WS authenticates with a minted ticket and reports gateway.ready', () => {
+    assert.equal(live.closed, false);
+    assert.ok(
+      allEvents.some((event) => event.type === 'gateway.ready'),
+      'the gateway sends gateway.ready right after accept',
+    );
+  });
+
+  test('dashboard: profiles.get_asset returns a data URL, and null when there is no asset', async () => {
+    const withAvatar = await dash.asset(live, 'default');
+    assert.ok(withAvatar?.startsWith('data:image/png;base64,'), 'rendered straight into <Image>, no new route');
+    const withoutAvatar = await dash.asset(live, 'beta');
+    assert.equal(withoutAvatar, null, 'found:false is a normal answer, not an error');
+  });
+
+  test('dashboard: prompt.submit streams deltas and live tool activity over the same socket', async () => {
+    deltas.length = 0;
+    toolActivity.length = 0;
+    const sent = await live.rpc<{ ok: boolean }>('prompt.submit', { session_id: 'sess-1', text: 'Olá' });
+    assert.equal(sent.ok, true);
+    await waitFor(() => deltas.join('').length > 0 && toolActivity.length >= 2);
+    assert.equal(deltas.join(''), 'Pronto: feito.');
+    assert.deepEqual(toolActivity, ['start:read_file', 'complete:read_file']);
+    const withSession = allEvents.filter((event) => event.sessionId === 'sess-1');
+    assert.ok(withSession.length >= 4, 'events carry the session they belong to');
+    assert.ok(allEvents.some((event) => event.type === 'message.complete'));
+  });
+
+  test('dashboard: an unknown RPC method comes back as an ApiError, not a hang', async () => {
+    await expectApiError(() => live.rpc('nope.method'), (error) => {
+      assert.equal(error.kind, 'http');
+      assert.match(String(error.detail), /unknown method/);
+    });
+  });
+
+  test('dashboard: a spent ticket cannot open a second socket (single use)', async () => {
+    const { ticket } = await dash.wsTicket();
+    const first = await openRawSocket(`${dashboard.wsUrl}?ticket=${ticket}`);
+    await first.send(JSON.stringify({ jsonrpc: '2.0', id: 'x', method: 'session.interrupt' }));
+    first.close();
+    await expectRawSocketFailure(`${dashboard.wsUrl}?ticket=${ticket}`);
+  });
+
   // ─────────────────────────────────────────────────────── report ──
   let index = 0;
   for (const item of tests) {
@@ -1015,6 +1203,8 @@ async function main(): Promise<void> {
       process.stdout.write(`  ${(error as Error).message.split('\n').join('\n  ')}\n`);
     }
   }
+  live.close?.();
+  await dashboard.close();
   await gateway.close();
   process.stdout.write(`\n${tests.length - failures}/${tests.length} passed, ${failures} failed\n`);
   process.exit(failures === 0 ? 0 : 1);

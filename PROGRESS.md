@@ -499,3 +499,43 @@ reaches the ticket route, where a token-route-only registration answers 401.
    body and the fact that the cookie-signing secret is unchanged across the restart.
 3. The bearer is root-equivalent on this dashboard (same as the desktop app's token mode): it is
    a 256-bit owner-held secret, and the app's copy lives in `expo-secure-store`.
+
+---
+
+# P0.2 — the dashboard adapter (`src/api/dashboard.ts`) + a WS-capable mock
+
+The app speaks the **dashboard** now, not `:9222`. New client + new mock + 14 new offline tests.
+Full evidence in `logs/p0.2-live-check.txt`.
+
+| Piece | What it does |
+|---|---|
+| `src/api/dashboard.ts` | REST (profiles / rail / sidebar / sessions / session / messages / PATCH) with `Authorization: Bearer`, plus `/api/ws` over a **freshly minted single-use ticket per connection**, JSON-RPC request/response, and a typed event channel (`message.delta`, `tool.start`, `tool.complete`, …) |
+| `profiles.get_asset` | over the socket: the avatar as a data URL, rendered straight into `<Image>` — no new route |
+| `mock/dashboard.mjs` | the dashboard's REST routes + a **real WebSocket upgrade** (RFC 6455 handshake + frame codec, no dependencies) with a fake JSON-RPC dispatch |
+| `npm test` | **74/74** (was 60), `tsc --noEmit` clean |
+
+**Validated against the LIVE dashboard** (read-only, this host, the real bearer): 22 profiles; the
+rail's 22-session page with `profile_totals` (total 1770); a real message page — **20/20 rows carry
+`tool_calls`/`tool_name` and 10 carry `reasoning`**, which is exactly the payload F3 needs; a WS that
+opens on the minted ticket and receives `gateway.ready`; `profiles.get_asset(default)` returning a
+real `data:image/png;base64,…`.
+
+**Three plan assumptions were wrong; the code now carries the measured truth:**
+
+1. `profiles.get_asset` takes **`name`**, not `profile` (`methods_profiles.py:71-83`); `{asset,profile}`
+   answers RPC **4063 "name required"** (measured).
+2. "`profiles.list` carries a cheap existence flag" is **not true on the REST route**: `GET /api/profiles`
+   returns `has_avatar: null` for **all 22** profiles while the asset exists. F1 therefore treats
+   `false` as a definite no and `null` as unknown, and probes unknown ones **in the background** —
+   one fetch per profile per session, cached, never blocking the rail paint.
+3. The sidebar's slices are **objects wrapping `sessions`**, not bare arrays (corrected in the type
+   and the mock).
+
+### Token routes — one path, and why
+
+`/api/profiles/sessions/sidebar` is the only path registered with `register_token_route`, because a
+registered path is answered by the bearer-**only** seam (measured: the seam's 401 body carries no
+`reason`/`login_url`, the gate's does) and the dashboard SPA calls `/api/profiles` and
+`POST /api/auth/ws-ticket` **with cookies** — registering either would take that route away from
+the user's browser. Everything else the app needs, including the ticket route, rides `verify_session`.
+
