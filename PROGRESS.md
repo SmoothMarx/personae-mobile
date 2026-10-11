@@ -691,3 +691,38 @@ pixels this run.**
 6. Check 4 — Definições → **Registo de diagnóstico** → type what happened → **Partilhar registo**:
    the `.txt` opens in the share sheet, with `[REDACTED]` where any credential would be.
 
+---
+
+# Final state (end of the run)
+
+* The temporary `50-restart-safety.conf` drop-in (`KillMode=process`) added for the one provider
+  restart is **removed**; `systemctl --user show hermes-serve.service -p KillMode` reads
+  `control-group` again, the dashboard is `active (running)` on the same PID it was restarted to,
+  and no other unit/port was touched.
+* Re-verified cross-machine **after** all the app work, from win-desktop with the bearer:
+  `GET /api/profiles` → **200, 12 407 bytes**; `POST /api/auth/ws-ticket` → **200** (`ttl=30`,
+  ticket length 43); `ws://10.0.0.15:9119/api/ws?ticket=…` → **Open**. Nothing regressed.
+* `GET /login` → 200, `GET /api/profiles` without credentials → 401 (the gate is intact).
+* `scripts/verify-secrets.sh` → clean over every tracked and untracked-unignored file.
+
+## Deferred on purpose (not started, per GOAL-UI.md §2)
+
+P3 search/scope filters · P4 groups/colours/manual sort · P5 multi-select · P6 Apropos ·
+P8 layout export/import · P9 iOS/EAS · P10 the gateway layout blob.
+
+## Honest gaps, in one place
+
+1. **No device test.** The Pixel 8 is offline and no adb exists on either host, so nothing was
+   installed or launched; the four defects are verified by the offline suite (93/93), by the live
+   dashboard's own shapes, and by artifact forensics — not by pixels.
+2. The dashboard's login page lists one **inert extra entry** ("Personae Mobile (app credential)")
+   because the provider is session-capable by design; pressing it answers 503 with an explanation
+   and it cannot authenticate anything. the user's username/password form is untouched.
+3. The bearer is **root-equivalent** on the dashboard (the whole gated surface accepts it, since
+   that is what makes `POST /api/auth/ws-ticket` work) — the same posture as the desktop app's
+   token mode. It is a 256-bit owner-held secret; the phone keeps it in `expo-secure-store`.
+4. `has_avatar` is `null` for every profile on the live box, so the roster probes avatars in the
+   background (one fetch per profile per session) instead of trusting the flag.
+5. The live **chat streaming** path (dashboard `prompt.submit` + events) is proven against the mock
+   and against the real socket handshake, but no real turn was driven from the phone.
+
