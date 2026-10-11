@@ -415,3 +415,87 @@ API key, and read **Estado da ligação**: it names which of Tailscale-installed
 gateway is the one that is not working, which is exactly what could not be determined before.
 The three device checks worth running are listed in QUESTIONS Q13.
 
+---
+
+# P0.1 — the bearer seam on the dashboard, proven cross-machine (GOAL-UI.md §1)
+
+**Verdict: PASS, both legs. `logs/p0.1-spike.txt` holds the full evidence (verbatim commands and
+responses). The §0.4 option-C fallback was NOT used.** The LAN dashboard on `0.0.0.0:9119` stays
+the single transport; `:9222` stays out of the design.
+
+## What was built (out of tree, no edit inside the hermes-agent checkout)
+
+`~/.hermes/plugins/personae-mobile-auth/` — a **user-level** dashboard auth provider, modelled on
+the bundled `plugins/dashboard_auth/drain/` (constant-time compare, fail-closed >=256-bit entropy
+gate, audit line). Registered through the sanctioned seam `ctx.register_dashboard_auth_provider`
+(`hermes_cli/plugins.py:766`).
+
+| Fact | Value |
+|---|---|
+| Provider name | `personae-mobile` |
+| Capabilities | `supports_token=True` (`verify_token`), `supports_session=True` (`verify_session`), `supports_password=False` |
+| Secret | env-only `HERMES_PERSONAE_BEARER` = `openssl rand -hex 32` (64 chars, 16 distinct, 247 Shannon bits) |
+| Fail-closed | unset/weak secret -> skip registration, no provider, no route opened |
+| Enabled | `HERMES_HOME=~/.hermes hermes plugins enable personae-mobile-auth` -> `config.yaml` `plugins.enabled` |
+| Plugin edits need no restart | authenticated `POST /api/dashboard/agent-plugins/activate` re-loads it in-process |
+
+### Secret mechanism — a deliberate, smaller deviation from §1.1
+
+The goal asked for a systemd drop-in with `EnvironmentFile=`. The unit **already** has
+`EnvironmentFile=~/.hermes/.env` (mode 600, owner-only) and that file already
+carries the live dashboard's own basic-auth variables, so the secret went **there** — the same
+mechanism the live basic-auth uses, with no new drop-in, and it still survives a restart. No file
+mode, owner or unit `Environment=` was changed.
+
+### The restart, and the one host-level safeguard it needed
+
+`hermes-serve.service` is a **user** unit (`systemctl --user`, `~/.config/systemd/user/`) with
+`KillMode=control-group` — and this agent session lives inside that unit's cgroup
+(`/proc/self/cgroup` -> `.../hermes-serve.service`), so a plain restart would SIGTERM the run
+doing the work. A **temporary** drop-in
+`~/.config/systemd/user/hermes-serve.service.d/50-restart-safety.conf` (`KillMode=process`)
+protected the session for the restart; it is **removed again before this run ends** and is not
+part of the delivered configuration. Measured: dashboard down 13:30:17, `/login` 200 by 13:30:22
+(~5 s), agent session alive throughout.
+
+### Token routes — the list, and why it is one path long
+
+`register_token_route` is **exact-path set membership**; a registered path is handed to the
+bearer-**only** seam, which answers 401 *before* the cookie gate is consulted (measured: a
+registered path returns `{"error":"unauthenticated","detail":"Unauthorized"}` with no
+`reason`/`login_url`, while an unregistered one returns the gate's `"reason":"no_cookie"` body).
+The dashboard SPA itself calls `/api/profiles` and `POST /api/auth/ws-ticket` **with cookies**
+(measured by grepping the shipped bundle), so registering either would take that route away from
+the user's browser.
+
+**Registered list (exactly one path): `/api/profiles/sessions/sidebar`** — the only route the app
+needs that the SPA never calls — registered by
+`~/.hermes/plugins/personae-mobile-auth/__init__.py :: _register_token_routes()` (constant
+`TOKEN_ROUTE_PATHS`). Everything else the app needs, including `POST /api/auth/ws-ticket`,
+is carried by the provider's `verify_session` capability — the documented token-mode-client
+bearer leg (`dashboard_auth/middleware.py`), which sets `request.state.session` and therefore
+reaches the ticket route, where a token-route-only registration answers 401.
+
+## Evidence (all measured 2026-10-11)
+
+| Check | Result |
+|---|---|
+| `GET /api/profiles` with bearer, **from win-desktop (10.0.0.16)** | **200**, 12 407 bytes of profile JSON |
+| same, no `Authorization` / wrong 64-char bearer | **401** / **401** |
+| `POST /api/auth/ws-ticket` with bearer, from win-desktop | **200** `{"ticket":…,"ttl_seconds":30}` |
+| `ws://10.0.0.15:9119/api/ws?ticket=…` from win-desktop | **Open**; first frame 2 109 bytes, `gateway.ready` |
+| ticket replay | refused (single-use confirmed) |
+| `GET /login` after the restart | **200**; `/api/profiles` no cookie -> gate 401 unchanged |
+| Existing browser session | survives (signing secret `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is env-stable, so no re-login) |
+
+**Honest gaps in this phase:**
+
+1. The provider is session-capable by design, so the login page lists **one additional, inert
+   entry** ("Personae Mobile (app credential)"); pressing it answers 503 with an explanation. It
+   cannot authenticate anything. the user's own username/password form is untouched.
+2. A real browser password login could not be replayed end-to-end by me:
+   `dashboard.basic_auth` stores only a scrypt `password_hash` (not recoverable by design, and it
+   must not be changed). What was verified is the login page, the provider list, the gate's 401
+   body and the fact that the cookie-signing secret is unchanged across the restart.
+3. The bearer is root-equivalent on this dashboard (same as the desktop app's token mode): it is
+   a 256-bit owner-held secret, and the app's copy lives in `expo-secure-store`.

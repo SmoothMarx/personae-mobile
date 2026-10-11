@@ -1,0 +1,17 @@
+name: personae-mobile-auth
+version: 1.0.0
+kind: backend
+author: cody (Personae Mobile)
+description: >-
+  Dashboard auth provider for the Personae Mobile Android app: a non-interactive
+  shared-bearer credential (HERMES_PERSONAE_BEARER, env-only, >=256-bit, fail-closed
+  entropy gate) registered through the sanctioned
+  PluginContext.register_dashboard_auth_provider seam. Implements both non-interactive
+  capabilities the dashboard documents: verify_token (token-auth seam, constant-time
+  compare) and verify_session (the native-app bearer seam the DashboardAuthProvider base
+  documents for token-mode remote clients, which the gate honours on every route and which
+  sets request.state.session so POST /api/auth/ws-ticket can mint a WS ticket). Never
+  mints an interactive cookie session; the login page entry is inert by design. No-op when
+  HERMES_PERSONAE_BEARER is unset.
+requires_env:
+  - HERMES_PERSONAE_BEARER
