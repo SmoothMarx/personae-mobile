@@ -1,0 +1,263 @@
+# PLAN-UI — Personae Mobile: replicate the messenger pane
+
+**Reference (source of truth):** `~/Projects/hermes-desktop-plugins/personae/`
+— `README.md` = the feature spec, `plugin.js` (8,365 lines) = the implementation.
+**Target:** `~/Projects/personae-mobile/` (Expo/RN, TypeScript, expo-router).
+**Status:** REV 3 — transport question answered from source (§0), connection-UI rebuild (§5) and
+export log (§6) designed, open items listed (§8). **Plan for approval; no build started.**
+
+---
+
+## 0. The transport question — answered
+
+**Finding 1 — the plugin is not a client of the HTTP API.** It runs *inside* the Electron app and
+speaks the app's own RPC surface (`profiles.list`, `profiles.get_asset`, `profiles.configure`,
+`session.{list,active_list,history,title,create,close,delete,archive,branch_stored}`,
+`display.status`, `display.thumbnail`, `cron.manage`, `projects.list`), with pane state in the app
+store under `messenger-*-v1` keys. "Replicate the pane" = rebuild that information architecture on
+the phone and source each feature from whichever surface actually has it.
+
+**Finding 2 — those RPC methods have an HTTP/WS home: `/api/ws` on the dashboard.**
+`hermes_cli/web_routers/chat_ws.py:595` mounts `@router.websocket("/api/ws")` and hands it to
+`tui_gateway.ws.handle_ws`, under the in-code comment *"Drives the same `tui_gateway.dispatch` surface
+Ink uses over stdio so the dashboard can render structured metadata"*. That is the plugin's protocol.
+Alongside it the dashboard already serves `GET /api/profiles`, `GET /api/profiles/sessions`,
+`GET /api/profiles/sessions/sidebar` (batched rail payload incl. `profile_totals`),
+`PATCH /api/sessions/{id}` `{unread}`, `/api/cron/*`, and `/api/display/ws`.
+
+**Finding 3 — but it is gated, and the cheap token does not open it.**
+`should_require_auth()` (`web_server.py:517`) is `host not in {localhost,127.0.0.1,::1}` — **any**
+non-loopback bind is gated, and `allow_public`/`--insecure` has been ignored since the June 2026
+hermes-0day campaign. In gated mode the in-process `_SESSION_TOKEN` is **explicitly rejected**
+("a leaked `_SESSION_TOKEN` must not grant access", `web_server_chat.py:261`), and the
+`X-Hermes-Session-Token` header path is loopback-only (`web_server.py:459`). The per-path bearer
+mechanism (`register_token_route`, `token_auth.py:31`) is opt-in and currently covers exactly one
+path in the whole tree: `/api/gateway/drain`.
+
+**Finding 4 — a non-loopback dashboard *is* reachable by a native client, but it costs a login.**
+`dashboard_auth/middleware.py:162-173` accepts a bearer access token on **every** REST route and
+stamps `request.state.session`. The live provider set is `[{"name":"basic","supports_password":true}]`;
+the flow is RFC 8252 for native apps — `/auth/native/authorize` → `/auth/native/token` (access +
+refresh), `/auth/native/refresh` (rotation **with reuse detection** → refresh must be single-flight),
+plus `/auth/password-login`. The WS leg additionally needs `POST /api/auth/ws-ticket` (auth-required)
+→ single-use ticket, **30 s TTL**.
+
+### Options
+
+| | Phone needs | Parity | Cost |
+|---|---|---|---|
+| **A. Stay on `:9222`** (`platforms.api_server`) | one static api key | partial — 4 reads missing | cheapest today, you own parity forever |
+| **B. Gated `:9119`, RFC 8252 native flow** | login + token store + single-flight refresh + per-connection WS tickets + 401-retry | **full** | one auth subsystem |
+| **C. Loopback dashboard `:9118` + pinned token + Serve** ⭐ | **one static token** | **full** | one systemd unit + one Serve entry + the adapter |
+| **D. Hybrid (both, mandatory)** | two auth systems | full | most — rejected |
+
+**Recommendation: C.** Run a *second, dedicated* dashboard bound to loopback
+(`hermes dashboard --host 127.0.0.1 --port 9118`) with `HERMES_DASHBOARD_SESSION_TOKEN` pinned, and
+publish it on the tailnet with `tailscale serve --bg --https=10444 http://127.0.0.1:9118`.
+Loopback ⇒ `auth_required` is False ⇒ the *simple* credential works everywhere again: the
+`X-Hermes-Session-Token` header (or the legacy Bearer form) for REST, and the `token` query param for
+the WS upgrade (`web_server_chat.py:366-371`). The app then speaks `/api/ws` — **the same protocol the
+pane speaks** — and gets `profiles.list`, `profiles.get_asset` (avatars), `display.status` (the
+live/blocked dot), `session.active_list`, `cron.manage`, `projects.list` as-is, plus REST for the rail.
+
+This is the same shape Desktop uses for its own private loopback backend
+(`_desktop_loopback_auth_exempt`, `web_server.py:541-560`). Nothing is hacked; the awkward login flow
+only exists for non-loopback binds.
+
+Leave the existing `0.0.0.0:9119` dashboard alone — that is the browser-login one. Keep option **A**
+in the connectivity list as a *fallback candidate* (that code exists and is tested), not as primary.
+
+**What this changes:** D2 (`/api/profiles`) and D3 (unread read-back) stop being upstream work —
+they are consumed. The genuinely missing pieces shrink to: the exact amber semantics
+(`display.status` vs the sidebar's "recently active" heuristic) and whether a session payload carries
+the `last_read_at` watermark.
+**What it does not change:** groups / colours / manual order / read markers stay phone-local — there
+is no server-side `messenger-*` state at all, so D1(a) is the only option, not a preference.
+
+---
+
+## 1. What the app has today (the delta)
+
+Roster (profile rows + day-grouped session rows, 25/page) · Thread (history, composer, SSE token
+stream, working Stop) · Settings (base URL, key, extra profiles, model) · connectivity layer (ordered
+route candidates by role+priority, Tailscale trigger module, honest failure taxonomy) · PT-PT
+throughout · **60 offline tests** + `mock/` gateway (a build loop that runs with no phone and no key).
+Shipped: `dist/personae-0.3.0.apk`, versionCode 3, same release key (upgrades in place over
+0.1.0/0.2.0).
+
+Everything below is what the plugin does and the app does **not**.
+
+---
+
+## 2. Parity matrix
+
+### Bucket A — served; mobile just renders/acts
+
+| Plugin feature | Endpoint |
+|---|---|
+| Profile → that profile's sessions, newest first | `GET /api/sessions` (`/p/<profile>/` prefix for extra profiles) |
+| Open session, full history | `GET /api/sessions/{id}/messages` |
+| Compose + streamed reply, **Stop** | `POST .../chat/stream` · `/chat` · `POST /v1/runs/{id}/stop` |
+| New session with a profile | `POST /api/sessions` |
+| Rename / pin / archive / hide | `PATCH /api/sessions/{id}` (title, pinned, archived, hidden) |
+| Delete | `DELETE /api/sessions/{id}` |
+| Fork / branch | `POST /api/sessions/{id}/fork` |
+| Parent↔child links, ↳ / ↩ markers | `parent_session_id`, `_lineage_root_id` |
+| Mark read/unread (**write**) | `PATCH {unread}` → `db.set_session_read` |
+| Row body: preview, age, counts, tokens, cost | `preview`, `last_active`, `message_count`, `tool_call_count`, cost fields |
+| Per-session model lock | `POST /api/sessions/{id}/model` · `GET /api/model/options` |
+| Bell / cron surface | `/api/cron/jobs*` · `/api/cron/fire` |
+
+### Bucket B — the gaps, re-sized by option C
+
+| Feature | Before | Under C |
+|---|---|---|
+| **Profiles list** | no route → upstream | ✅ `profiles.list` / `GET /api/profiles` |
+| **Cross-profile rail** | hand-typed | ✅ `GET /api/profiles/sessions/sidebar` (batched, with totals) |
+| **Avatars / thumbnails** | RPC-only | ✅ `profiles.get_asset` over `/api/ws` |
+| **Running / "blocked on you" dot** | RPC-only | ✅ `display.status` via `/api/display/ws` — verify on a live run whether it distinguishes *pending approval* from *recently active* |
+| **Unread read-back** | write-only | ⚠️ confirm the session payload carries `last_read_at`; if not, a 3-line read-back |
+| **Groups / colours / manual order / Apropos / Bots identity** | client store | ❌ phone-local (D1a) — desktop and phone will differ until a shared opaque blob exists |
+
+### Bucket C — mobile builds it (no server question)
+
+Expand/collapse a profile into its sessions · row geometry · long-press context menus (Open, Rename,
+Colour, File into group, Sort, Copy id, Apropos, Delete) · multi-select + selection bar (bulk archive
+/ delete / Apropos) · groups as drop targets · toolbar chrome (bell, **+**, folder+, search, filters)
+· day grouping and pagination · status-dot aggregation (profile dot = aggregate of its sessions,
+never its own) · PT-PT strings · theme.
+
+**Search & filter is a trap:** the pane searches server-side over *profiles and sessions*. The REST
+API takes only `source`, exact `title`, `include_children`, `include_hidden` — no text search, no
+activity/kind/profile-set filters. Either filter client-side over the fetched page (say so in the UI)
+or add one RPC method on `/api/ws`.
+
+---
+
+## 3. Touch mapping — the plugin's affordances are mouse-shaped
+
+| Plugin (mouse) | Phone |
+|---|---|
+| Right-click context menu | Long-press → action sheet |
+| Hover states | None — affordance always visible |
+| Drag row between groups / reorder groups | Long-press to lift, drop targets highlight |
+| Ctrl/Cmd-click multi-select | "Selecionar" from the toolbar; tap rows to tick |
+| Scroll + 25/page pagination | `FlatList` (virtualised) |
+
+In scope — without it, "all features" is not actually reachable on a phone.
+
+---
+
+## 4. Decisions
+
+**Answered by you (2026-10-11):** D1 = (a) phone-local pane state · D2 = `/api/profiles` ·
+D3 = close the gaps.
+
+- **D4 — transport: option C** (dedicated loopback dashboard + pinned token + Serve). `:9222` demoted
+  to a fallback candidate. Rejected: hybrid (two auth systems, zero benefit), gated `:9119` as-is
+  (inherits a login/token/refresh/ticket subsystem).
+- **D5 — avatars:** free under C (`profiles.get_asset`). Recommend taking them; initials monogram only
+  if the WS asset path misbehaves.
+- **D6 — keep the `:9222` path?** Yes, as an optional advanced fallback (code exists, tested). Not a
+  second mandatory adapter.
+
+---
+
+## 5. Connection settings — rebuild it around "am I connected?"
+
+Today Settings is a form: base URL, key, extra profiles, model, an insecure-route consent switch, a
+route list with role+priority, four failure codes. That is the engineer's view. Replace with:
+
+- **One state card**, three states: `Sem ligação` / `A ligar…` / `Ligado a personae-sk`.
+- **A four-step checklist in plain PT-PT**, each row green/red and actionable:
+  1. Rede — o telemóvel tem internet?
+  2. Tailscale — está ligado? (button triggers the tunnel via the existing local module; on iOS the
+     honest note stays, D7)
+  3. Gateway — o dashboard responde?
+  4. Autorização — o token foi aceite?
+- **One primary button that fixes the first failing step** — deep-link to Tailscale, or retry, or ask
+  for the token only when it is genuinely the problem. No dead ends.
+- **"Testar ligação"** runs all four and prints a copyable result — the same payload the export log
+  carries.
+- **Advanced, collapsed by default:** route list, roles, priorities, timeouts, the insecure-route
+  consent, the `:9222` fallback. A fresh install must need **zero** of it: host + token → connected.
+- The honest failure reasons stay — below the friendly line, not instead of it.
+
+---
+
+## 6. Export log — one file, log + your description
+
+- **Records:** a capped ring buffer (≈500 events) of structured entries — UTC timestamp, level,
+  category (`net|auth|api|ws|ui|error`), message; per network call: method, path, status, duration,
+  chosen route, attempt #.
+- **Header block:** app version + versionCode, build id, device model + OS, active route + candidate
+  list, dashboard host (host only), Tailscale state, last 3 failures.
+- **A description box on the export screen** — what you type lands at the top of the file, so one
+  file *is* "log + what went wrong" (your ask).
+- **Share, don't upload:** write a `.txt` to the app cache dir and open the OS share sheet
+  (`expo-sharing`) → WhatsApp / Gmail / Drive, plus copy-to-clipboard. Reachable from Settings **and**
+  from the failure banner, where you would actually want it.
+- **Redaction is mandatory and tested:** strip auth headers, api keys, access/refresh tokens, and
+  `token`/`ticket`/`internal` query values → `[REDACTED]`. Never log request bodies carrying
+  credentials. A unit test must assert a known secret cannot appear in an exported log — this rule
+  rots silently otherwise.
+- Local only. No telemetry, no auto-send.
+
+---
+
+## 7. Phases (each ends in a verifiable artifact)
+
+- **P0 — transport.** Dashboard adapter (REST + `/api/ws`) behind the existing `src/api` interface;
+  token in `expo-secure-store`; the loopback instance + Serve entry documented as setup. Extend
+  `mock/` to serve the dashboard routes **and** a fake WS dispatch. `verify:` rail renders from
+  `/api/profiles` + `/sidebar`; a scripted RPC call returns a profile asset; `:9118`-down falls back
+  to the `:9222` candidate.
+- **P1** expand/collapse the rail into per-profile sessions. `verify:` rows come from the API and the
+  profile dot is an aggregate of its sessions.
+- **P2** session actions via long-press + the Bucket-A write calls; `verify:` each against the mock,
+  incl. 409/404 paths.
+- **P3** toolbar, search/scope filters with the honest client-side boundary.
+- **P4** groups + colours + manual sort on local state (D1a).
+- **P5** multi-select bulk actions.
+- **P6** Apropos (scoped).
+- **P7** connection screen rebuild (§5) + export log (§6).
+- **P8** iOS parity pass via EAS.
+
+Every phase: git commit, `npm test` green (the 60 existing tests must stay green), `tsc --noEmit`
+clean. Android first, then iOS.
+
+---
+
+## 8. Open items to settle before the brief
+
+1. **Cody's Q8** — "was `:9119` a typo?" **Answered:** neither typo nor as-is; it is the parity
+   surface, reachable via option C. D8's conclusion (the phone cannot authenticate to *gated* 9119
+   with the bearer key) stays true — needs one line of correction so it isn't re-litigated.
+2. **Q13 — nothing has ever been device-tested.** No Android device/emulator on the host; 0.3.0 has
+   never been installed. The Pixel 8 fixes this; the three checks are in the question. Make it the
+   brief's closing acceptance test.
+3. **Q9** — bind `:9222` to loopback now that Serve fronts it? (affects any other machine dialling it)
+4. **Q10** — seed first-run route templates (LAN placeholder + this host's tailnet name), or keep the
+   default-empty rule?
+5. **Q11** — add an explicit "probe by IP" override per route if the MagicDNS route settles slowly.
+6. **Q12** — keep `insecureRouteAck` OFF by default (explicit consent for the no-TLS route)?
+7. **Security pass, one sitting:** rotate the api key, rotate the dashboard token, `:9118` loopback +
+   Serve `:10444`, confirm Funnel's Pharmacy entry stays as-is.
+8. **Serve state:** `:10443` currently proxies `:9222` (Cody's change); `:443 → :8100` unchanged.
+   Under C, add `:10444 → :9118`; optionally restore `:10443 → :9119`.
+9. **Versioning:** UI work ships as 0.4.0, same release key.
+10. **Scope discipline for Cody:** one goal doc, phases P0→P8, per-phase verify commands, no
+    regression of the 60 tests, no hardcoded tailnet IP, no secrets in the repo.
+
+---
+
+## 9. Sequencing and gates
+
+- ✅ **No collision.** Cody's remote-access run **finished** (48m 8s, pid gone, `logs/CODY-DONE.txt`).
+  Wait-vs-worktree is moot — build in the **main tree**, where the Android toolchain is already warm
+  (docker image, keystore, gradle cache). A worktree would force a fresh `npm install` + native
+  prebuild for zero benefit.
+- You asked for a **frontier model on planning/gates**. This document *is* the gate artifact — it can
+  go to Step5/Opus/Fable for review before Cody builds; Cody builds on deepseek-flash.
+- Android first (the v0.1.0 freeze skips straight to the new UI), then iOS via EAS.
+- Deliverable = a working APK **installed on the Pixel 8**, not "ships".

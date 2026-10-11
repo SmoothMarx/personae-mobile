@@ -15,8 +15,27 @@ import { createMockGateway } from '../mock/server.mjs';
 import { SSEParser, parseFrame } from '../src/api/sse';
 import { createApi } from '../src/api/client';
 import { nodeTransport } from '../src/api/transportNode';
+import { xhrTransport } from '../src/api/transport';
+import { installRnXhr, SSE_OK } from './rnXhr';
 import { ApiError } from '../src/api/errors';
-import { checkBaseUrl, splitProfiles, profilePrefix, type Settings } from '../src/settings';
+import { attemptWithPolicy, classifyStatus, nextDelayMs, parseRetryAfter, retryDelayMs, shouldRetry } from '../src/api/failures';
+import { connectThrough, createProbeCache } from '../src/connectivity';
+import {
+  checkRoute,
+  effectiveRoutes,
+  inferRole,
+  isCgnatHost,
+  moveRoute,
+  normalizeRoutes,
+  orderRoutes,
+  pickByPriority,
+  renumberRoutes,
+  routesFromBaseUrl,
+  selectRoute,
+  transportSecurityNote,
+  type RouteCandidate,
+} from '../src/routes';
+import { checkBaseUrl, DEFAULT_SETTINGS, splitProfiles, profilePrefix, type Settings } from '../src/settings';
 import { loadSettings, saveSettings, loadLastSeen, saveLastSeen } from '../src/settingsStore';
 import { __resetStoreProbe } from '../src/storage';
 import {
@@ -95,7 +114,7 @@ const KEY = 'test-key-123';
 const BAD_URL_PORT = 8799;
 
 function settingsFor(url: string, overrides: Partial<Settings> = {}): Settings {
-  return { baseUrl: url, apiKey: KEY, profiles: [], model: '', ...overrides };
+  return { ...DEFAULT_SETTINGS, baseUrl: url, apiKey: KEY, profiles: [], model: '', routes: [], ...overrides };
 }
 
 async function main(): Promise<void> {
@@ -329,6 +348,93 @@ async function main(): Promise<void> {
     assert.match(String(fallback.message?.content), /Resposta em bloco a: provoca erro de stream/);
   });
 
+  // ─────────────────────────────── xhr transport (the one the phone actually runs) ──
+  // Regression tests for the spurious-error / double-send defect.
+  //
+  // The stream closes itself after the `done` frame, and react-native's abort() resets status to 0
+  // and fires readystatechange SYNCHRONOUSLY at readyState 4. Without the `!aborted` guard in
+  // src/api/transport.ts, that self-inflicted abort was reported as `HTTP 0` and the thread's error
+  // branch re-sent the user's message through chatOnce() on EVERY successful turn.
+  //
+  // nodeTransport's abort() does not behave that way, so the three tests below drive a stubbed
+  // XMLHttpRequest (tests/rnXhr.ts) instead. That transport difference is exactly why 40/40 tests,
+  // tsc and expo-doctor all missed it.
+
+  test('xhr: a completed stream raises NO error on its own abort', async () => {
+    const restore = installRnXhr({ chunks: SSE_OK });
+    try {
+      const xhrApi = createApi(settingsFor('http://gateway.invalid:8642'), { transport: xhrTransport });
+      const errors: ApiError[] = [];
+      let final = '';
+      let closed: { aborted: boolean } | null = null;
+      await new Promise<void>((resolve) => {
+        xhrApi.chatStream('sess-1', 'olá', {
+          onFinal: (content) => {
+            final = content;
+          },
+          onError: (error) => {
+            errors.push(error);
+          },
+          onClose: (info) => {
+            closed = info;
+            resolve();
+          },
+        });
+      });
+      assert.equal(final, 'Olá');
+      assert.equal(errors.length, 0, `spurious stream error: ${errors[0]?.message}`);
+      assert.deepEqual(closed, { aborted: false });
+    } finally {
+      restore();
+    }
+  });
+
+  test('xhr: a non-200 response still raises a real HTTP error', async () => {
+    const restore = installRnXhr({ status: 500, body: 'boom' });
+    try {
+      const xhrApi = createApi(settingsFor('http://gateway.invalid:8642'), { transport: xhrTransport });
+      const error = await new Promise<ApiError>((resolve, reject) => {
+        xhrApi.chatStream('sess-1', 'olá', {
+          onError: (e) => resolve(e),
+          onClose: () => reject(new Error('closed without raising on a 500')),
+        });
+      });
+      assert.equal(error.kind, 'http');
+      assert.equal(error.status, 500);
+    } finally {
+      restore();
+    }
+  });
+
+  test('xhr: the Stop button closes without raising an error', async () => {
+    const restore = installRnXhr({ chunks: SSE_OK });
+    try {
+      const xhrApi = createApi(settingsFor('http://gateway.invalid:8642'), { transport: xhrTransport });
+      const errors: ApiError[] = [];
+      let closedAborted: boolean | null = null;
+      let handle: { close: () => void } | null = null;
+      await new Promise<void>((resolve, reject) => {
+        handle = xhrApi.chatStream('sess-1', 'olá', {
+          onDelta: () => {
+            handle?.close();
+          },
+          onError: (error) => {
+            errors.push(error);
+          },
+          onClose: (info) => {
+            closedAborted = info.aborted;
+            resolve();
+          },
+        });
+        setTimeout(() => reject(new Error('stop did not close the stream')), 4000);
+      });
+      assert.equal(errors.length, 0, `unexpected error on stop: ${errors[0]?.message}`);
+      assert.equal(closedAborted, true);
+    } finally {
+      restore();
+    }
+  });
+
   // ─────────────────────────────────────────────────────── roster ──
   test('roster: contacts are the gateway profile plus the ones from Settings', () => {
     const contacts = contactsOf(settingsFor('http://x', { profiles: ['cody', 'vintage'] }));
@@ -473,7 +579,15 @@ async function main(): Promise<void> {
 
   test('settings: round-trips through storage with the key in its own slot', async () => {
     __resetStoreProbe();
-    const settings: Settings = { baseUrl: 'http://127.0.0.1:8791', apiKey: 'k-1', profiles: ['cody'], model: 'm' };
+    const settings: Settings = {
+      ...DEFAULT_SETTINGS,
+      baseUrl: 'http://127.0.0.1:8791',
+      apiKey: 'k-1',
+      profiles: ['cody'],
+      model: 'm',
+      routes: [{ role: 'lan', priority: 0, url: 'http://127.0.0.1:8791', insecure: false }],
+    };
+
     await saveSettings(settings);
     const loaded = await loadSettings();
     assert.deepEqual(loaded, settings);
@@ -487,7 +601,405 @@ async function main(): Promise<void> {
     __resetStoreProbe();
     const { storeSet } = await import('../src/storage');
     await storeSet('personae.settings.v1', '{not json');
-    assert.deepEqual(await loadSettings(), { baseUrl: '', apiKey: '', profiles: [], model: '' });
+    assert.deepEqual(await loadSettings(), { ...DEFAULT_SETTINGS, apiKey: '' });
+  });
+
+  // ───────────────────────────────────────────── routes: inference (§2) ──
+  test('routes: role inference covers tailnet (incl. 100.64.0.0/10), LAN and public', () => {
+    // MagicDNS name -> tailscale
+    assert.equal(inferRole('https://personae-sk.tail0000demo.ts.net:10443'), 'tailscale');
+    // 100.64.0.0/10, including both boundaries
+    assert.equal(inferRole('http://100.64.0.0:9222'), 'tailscale');
+    assert.equal(inferRole('http://100.64.0.11:9222'), 'tailscale');
+    assert.equal(inferRole('http://100.127.255.255:9222'), 'tailscale');
+    assert.equal(isCgnatHost('100.64.0.11'), true);
+    // just outside the CGNAT block
+    assert.equal(inferRole('http://100.63.255.255:9222'), 'public');
+    assert.equal(inferRole('http://100.128.0.0:9222'), 'public');
+    // RFC1918
+    assert.equal(inferRole('http://10.0.0.15:9222'), 'lan');
+    assert.equal(inferRole('http://172.16.0.1:9222'), 'lan');
+    assert.equal(inferRole('http://172.31.255.255:9222'), 'lan');
+    assert.equal(inferRole('http://192.168.1.50:9222'), 'lan');
+    assert.equal(inferRole('http://172.32.0.1:9222'), 'public');
+    // documented refinement: loopback is private, never "public"
+    assert.equal(inferRole('http://127.0.0.1:9222'), 'lan');
+    // everything else
+    assert.equal(inferRole('https://gateway.example.com:443'), 'public');
+    assert.equal(inferRole('nonsense'), 'public');
+  });
+
+  // ────────────────────────────────────── routes: priority (§1, §2) ──
+  const route = (url: string, priority: number, role = inferRole(url)): RouteCandidate =>
+    ({ role, priority, url, insecure: false });
+
+  test('routes: orderRoutes is a stable sort by strict priority', () => {
+    const ordered = orderRoutes([route('http://c', 2), route('http://a', 0), route('http://b', 0)]);
+    assert.deepEqual(ordered.map((r) => r.url), ['http://a', 'http://b', 'http://c']);
+  });
+
+  test('routes: reachability breaks ties but NEVER promotes a lower priority over a higher one', () => {
+    const high = route('http://10.0.0.1:9222', 0);
+    const low = route('http://10.0.0.2:9222', 10);
+    const reachable = (url: string) => (candidate: RouteCandidate) => candidate.url === url;
+
+    // The higher-priority route answers -> it wins, even though the lower one also answers.
+    assert.equal(pickByPriority([high, low], () => true)?.url, high.url);
+    assert.equal(pickByPriority([high, low], reachable(high.url))?.url, high.url);
+
+    // The higher-priority route is dead -> failover to the lower group (this is NOT promotion: the
+    // higher group was exhausted first, which is exactly the DNS SRV contract).
+    assert.equal(pickByPriority([high, low], reachable(low.url))?.url, low.url);
+
+    // Only ties are broken by reachability: same priority, first dead, second alive.
+    const first = route('http://10.0.0.3:9222', 5);
+    const second = route('http://10.0.0.4:9222', 5);
+    assert.equal(pickByPriority([first, second], reachable(second.url))?.url, second.url);
+
+    // Nothing reachable -> null, never a guess.
+    assert.equal(pickByPriority([high, low], () => false), null);
+  });
+
+  test('routes: a manual pin is honoured, and bypassing it is reported out loud', () => {
+    const lan = route('http://10.0.0.15:9222', 0, 'lan');
+    const ts = route('http://100.64.0.11:9222', 1, 'tailscale');
+
+    // Pin asks for tailscale and tailscale answers -> the pin is honoured (priority is irrelevant to
+    // a pin: that is the whole point of pinning).
+    const honoured = selectRoute([lan, ts], () => true, { insecureAck: true, preferredRole: 'tailscale' });
+    assert.equal(honoured.reason, 'selected');
+    assert.equal(honoured.route?.url, ts.url);
+
+    // Pin asks for tailscale and it is unreachable -> fall back, and SAY that the pin was bypassed
+    // rather than silently ignoring the user's choice.
+    const pinned = selectRoute([lan, ts], (r) => r.url === lan.url, { insecureAck: true, preferredRole: 'tailscale' });
+    assert.equal(pinned.reason, 'pin-bypassed');
+    assert.equal(pinned.route?.url, lan.url);
+
+    // Nothing reachable at all: still no fallback, and the pin is not "honoured" by inventing one.
+    const none = selectRoute([lan, ts], () => false, { insecureAck: true, preferredRole: 'tailscale' });
+    assert.equal(none.reason, 'none-reachable');
+    assert.equal(none.route, null);
+
+    const auto = selectRoute([lan, ts], () => true, { insecureAck: true, preferredRole: null });
+    assert.equal(auto.route?.url, lan.url); // strict priority wins in Auto
+  });
+
+  test('routes: security policy — public http is refused, private http needs the ack', () => {
+    // A public origin must be https.
+    assert.deepEqual(
+      checkRoute(route('http://gateway.example.com:9222', 0, 'public'), { insecureAck: true }),
+      { ok: false, reason: 'public-http' },
+    );
+    assert.equal(checkRoute(route('https://gateway.example.com:9222', 0, 'public'), { insecureAck: false }).ok, true);
+
+    // A private overlay over plain http is permitted only with explicit consent.
+    assert.deepEqual(
+      checkRoute(route('http://100.64.0.11:9222', 0, 'tailscale'), { insecureAck: false }),
+      { ok: false, reason: 'needs-ack' },
+    );
+    assert.equal(checkRoute(route('http://100.64.0.11:9222', 0, 'tailscale'), { insecureAck: true }).ok, true);
+
+    // Loopback needs no consent (nothing leaves the machine).
+    assert.equal(checkRoute(route('http://127.0.0.1:9222', 0, 'lan'), { insecureAck: false }).ok, true);
+
+    // A mislabelled role cannot talk its way past the https rule for public origins: the role is
+    // re-inferred from the URL, never taken from the stored field.
+    assert.deepEqual(
+      checkRoute({ role: 'tailscale', priority: 0, url: 'http://gateway.example.com:9222', insecure: false }, { insecureAck: true }),
+      { ok: false, reason: 'public-http' },
+    );
+
+    assert.deepEqual(checkRoute(route('not-a-url', 0), { insecureAck: true }), { ok: false, reason: 'bad-url' });
+
+    // Violating routes are skipped, and named, rather than silently used or silently dropped.
+    const decision = selectRoute(
+      [route('http://gateway.example.com:9222', 0, 'public'), route('http://10.0.0.15:9222', 1, 'lan')],
+      () => true,
+      { insecureAck: true },
+    );
+    assert.equal(decision.route?.url, 'http://10.0.0.15:9222');
+    assert.deepEqual(decision.rejected.map((r) => r.reason), ['public-http']);
+  });
+
+  test('routes: a tailnet http route is WireGuard-encrypted, never "public plaintext"', () => {
+    const raw = transportSecurityNote(route('http://100.64.0.11:9222', 0, 'tailscale'));
+    assert.ok(raw.includes('WireGuard'), `expected a WireGuard note, got: ${raw}`);
+    assert.equal(/público|plaintext|claro/i.test(raw), false, `must not read as public plaintext: ${raw}`);
+
+    const serve = transportSecurityNote(route('https://host.tail0000demo.ts.net:10443', 0, 'tailscale'));
+    assert.ok(serve.includes('TLS'), serve);
+
+    const lan = transportSecurityNote(route('http://10.0.0.15:9222', 0, 'lan'));
+    assert.ok(lan.includes('local'), lan);
+  });
+
+  test('routes: migration derives candidates from a legacy baseUrl, and renumbering re-packs order', () => {
+    assert.deepEqual(routesFromBaseUrl('http://10.0.0.15:9222/'), [
+      { role: 'lan', priority: 0, url: 'http://10.0.0.15:9222', insecure: false },
+    ]);
+    assert.deepEqual(routesFromBaseUrl(''), []);
+
+    // A settings object that only knows baseUrl still yields one candidate.
+    assert.equal(effectiveRoutes({ baseUrl: 'https://a.ts.net:10443' }).length, 1);
+    assert.equal(effectiveRoutes({ baseUrl: 'x', routes: [route('http://10.0.0.1:9222', 3)] }).length, 1);
+
+    // Storage rows that are malformed are dropped, never guessed at.
+    assert.deepEqual(normalizeRoutes([{ url: 'nonsense' }, { url: 'http://10.0.0.1:9222' }, null, 7]), [
+      { role: 'lan', priority: 0, url: 'http://10.0.0.1:9222', insecure: false },
+    ]);
+    assert.deepEqual(normalizeRoutes('not an array'), []);
+
+    const moved = moveRoute([route('http://a', 0), route('http://b', 1), route('http://c', 2)], 0, 2);
+    assert.deepEqual(moved.map((r) => r.url), ['http://b', 'http://c', 'http://a']);
+    assert.deepEqual(moved.map((r) => r.priority), [0, 1, 2]);
+    assert.deepEqual(renumberRoutes([route('http://a', 40), route('http://b', 7)]).map((r) => r.priority), [0, 1]);
+  });
+
+  // ─────────────────────────────────────── failures: taxonomy (§4) ──
+  test('failures: the taxonomy maps each condition to its documented class', () => {
+    assert.equal(classifyStatus(401), 'permanent');
+    assert.equal(classifyStatus(403), 'permanent');
+    assert.equal(classifyStatus(429), 'backoff');
+    assert.equal(classifyStatus(500), 'server');
+    assert.equal(classifyStatus(502), 'server');
+    assert.equal(classifyStatus(404), 'route');
+    assert.equal(classifyStatus(408), 'transient');
+    assert.equal(classifyStatus(400), 'permanent');
+
+    // Retry permission follows from the class.
+    assert.equal(shouldRetry('permanent'), false);
+    assert.equal(shouldRetry('route'), false);
+    assert.equal(shouldRetry('transient'), true);
+    assert.equal(shouldRetry('server'), true);
+    assert.equal(shouldRetry('backoff'), true);
+
+    assert.equal(nextDelayMs('permanent', 0), null);
+    assert.equal(nextDelayMs('route', 0), null);
+    assert.equal(typeof nextDelayMs('transient', 0), 'number');
+  });
+
+  test('failures: a rejected key is permanent and is NEVER retried', async () => {
+    let calls = 0;
+    const sleepCalls: number[] = [];
+    const result = await attemptWithPolicy(
+      async () => {
+        calls += 1;
+        throw new ApiError('chave recusada', { kind: 'http', status: 401 });
+      },
+      { maxAttempts: 5, sleep: async (ms) => { sleepCalls.push(ms); } },
+    );
+    assert.equal(calls, 1, 'a 401 must be attempted exactly once');
+    assert.equal(sleepCalls.length, 0, 'a 401 must never back off and retry');
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'permanent');
+    assert.equal(result.cls, 'permanent');
+
+    // 403 behaves the same way.
+    let forbidden = 0;
+    await attemptWithPolicy(async () => { forbidden += 1; throw new ApiError('x', { kind: 'http', status: 403 }); }, { maxAttempts: 4 });
+    assert.equal(forbidden, 1);
+  });
+
+  test('failures: timeouts back off with jitter, and the delay stays under the cap', async () => {
+    const sleeps: number[] = [];
+    let calls = 0;
+    const result = await attemptWithPolicy(
+      async () => {
+        calls += 1;
+        if (calls < 3) throw new ApiError('timeout', { kind: 'timeout' });
+        return 'ok';
+      },
+      { maxAttempts: 5, baseMs: 100, capMs: 10_000, random: () => 0.5, sleep: async (ms) => { sleeps.push(ms); } },
+    );
+    assert.deepEqual(result, { ok: true, value: 'ok', tries: 3, cls: null });
+    assert.equal(sleeps.length, 2, 'two waits between three tries');
+    assert.ok(sleeps.every((ms) => ms > 0 && ms <= 10_000), `delays out of range: ${sleeps}`);
+
+    // Equal jitter: half the raw value is fixed, the other half is random, so 0 gives raw/2 and 1
+    // gives raw. Without jitter every device waking from doze would retry in lockstep.
+    assert.equal(retryDelayMs(0, { baseMs: 1000, capMs: 8000, random: () => 0 }), 500);
+    assert.equal(retryDelayMs(0, { baseMs: 1000, capMs: 8000, random: () => 1 }), 1000);
+    assert.ok(
+      retryDelayMs(4, { baseMs: 100, capMs: 10_000, random: () => 0.9 }) >
+        retryDelayMs(4, { baseMs: 100, capMs: 10_000, random: () => 0.1 }),
+    );
+
+    // Capped, and safe against 2**n overflow at large attempt numbers.
+    assert.equal(retryDelayMs(3, { baseMs: 1000, capMs: 4000, random: () => 1 }), 4000);
+    assert.equal(retryDelayMs(200, { baseMs: 1000, capMs: 4000, random: () => 1 }), 4000);
+
+    // A 429 waits the server's own period rather than our backoff.
+    assert.equal(parseRetryAfter('12', 0), 12_000);
+    assert.equal(parseRetryAfter(null, 0), null);
+    assert.equal(parseRetryAfter('not a date', 0), null);
+    assert.equal(nextDelayMs('backoff', 0, { retryAfterMs: 1500, capMs: 20_000, random: () => 1 }), 1500);
+    assert.equal(nextDelayMs('backoff', 5, { retryAfterMs: 300_000, capMs: 20_000, random: () => 1 }), 20_000);
+  });
+
+  test('failures: nothing is retried once the app is backgrounded', async () => {
+    let foreground = true;
+    let calls = 0;
+    const result = await attemptWithPolicy(
+      async () => {
+        calls += 1;
+        throw new ApiError('timeout', { kind: 'timeout' });
+      },
+      {
+        maxAttempts: 6,
+        isForeground: () => foreground,
+        sleep: async () => { foreground = false; },
+      },
+    );
+    assert.equal(calls, 1);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'backgrounded');
+
+    // And a call that starts while already backgrounded never runs at all.
+    let never = 0;
+    const backgrounded = await attemptWithPolicy(async () => { never += 1; return 'x'; }, { isForeground: () => false });
+    assert.equal(never, 0);
+    assert.equal(backgrounded.ok, false);
+    assert.equal(backgrounded.reason, 'backgrounded');
+  });
+
+  // ─────────────────────────────────────── connect engine (§1, §4) ──
+  function fakeClock(start = 1_000) {
+    let value = start;
+    return { now: () => value, advance: (ms: number) => { value += ms; } };
+  }
+
+  test('connect: re-evaluates on a network change and hops LAN -> Tailscale', async () => {
+    // Same gateway, two routes. On Wi-Fi the LAN one answers; off Wi-Fi it is gone and the tailnet
+    // route takes over. This is the mechanism that replaces "open Tailscale first, then the app".
+    const lan = route('http://10.0.0.15:9222', 0, 'lan');
+    const ts = route('http://100.64.0.11:9222', 1, 'tailscale');
+    const clock = fakeClock();
+
+    const onLan = await connectThrough({
+      routes: [lan, ts], insecureAck: true, probeTimeoutMs: 50, deadlineMs: 5_000,
+      now: clock.now, sleep: async (ms) => clock.advance(ms), random: () => 1,
+      probe: async (candidate) => (candidate.url === lan.url ? { ok: true, ms: 4 } : { ok: false, failure: 'transient' }),
+    });
+    assert.equal(onLan.route?.url, lan.url);
+    assert.equal(onLan.reason, 'selected');
+
+    // Network changed: a fresh run with a fresh cache, LAN now unreachable.
+    const offLan = await connectThrough({
+      routes: [lan, ts], insecureAck: true, probeTimeoutMs: 50, deadlineMs: 5_000,
+      now: clock.now, sleep: async (ms) => clock.advance(ms), random: () => 1,
+      probe: async (candidate) => (candidate.url === ts.url ? { ok: true, ms: 12 } : { ok: false, failure: 'transient' }),
+    });
+    assert.equal(offLan.route?.url, ts.url);
+    assert.equal(offLan.reason, 'selected');
+  });
+
+  test('connect: a 401 stops the whole run and never probes another route', async () => {
+    const ts = route('https://host.tail0000demo.ts.net:10443', 0, 'tailscale');
+    const lan = route('http://10.0.0.15:9222', 1, 'lan');
+    const probed: string[] = [];
+    const clock = fakeClock();
+
+    const result = await connectThrough({
+      routes: [ts, lan], insecureAck: true, probeTimeoutMs: 50, deadlineMs: 10_000,
+      now: clock.now, sleep: async (ms) => clock.advance(ms),
+      probe: async (candidate) => {
+        probed.push(candidate.url);
+        return { ok: false, failure: 'permanent', detail: 'HTTP 401' };
+      },
+    });
+
+    assert.equal(result.reason, 'permanent');
+    assert.equal(result.route, null);
+    assert.deepEqual(probed, [ts.url], 'a rejected credential must stop everything, immediately');
+    assert.equal(result.attempts.length, 1);
+    assert.deepEqual(result.permanent, { failure: 'permanent', detail: 'HTTP 401' });
+  });
+
+  test('connect: a 404 kills only that route, and the next candidate is still tried', async () => {
+    const wrong = route('http://10.0.0.15:9999', 0, 'lan');
+    const right = route('http://10.0.0.15:9222', 1, 'lan');
+    const clock = fakeClock();
+
+    const result = await connectThrough({
+      routes: [wrong, right], insecureAck: true, probeTimeoutMs: 50, deadlineMs: 5_000,
+      now: clock.now, sleep: async (ms) => clock.advance(ms), random: () => 1,
+      probe: async (candidate) =>
+        candidate.url === wrong.url ? { ok: false, failure: 'route', detail: 'HTTP 404' } : { ok: true, ms: 3 },
+    });
+
+    assert.equal(result.route?.url, right.url);
+    assert.equal(result.cache.get(wrong.url)?.dead, true, 'a 404 is dead for this run');
+    assert.equal(
+      result.attempts.filter((attempt) => attempt.url === wrong.url).length,
+      1,
+      'a wrong route is not retried',
+    );
+  });
+
+  test('connect: polling never happens while backgrounded, and stops mid-run', async () => {
+    const lan = route('http://10.0.0.15:9222', 0, 'lan');
+    const clock = fakeClock();
+    let probes = 0;
+
+    const alreadyAway = await connectThrough({
+      routes: [lan], insecureAck: true, probeTimeoutMs: 10, deadlineMs: 1_000,
+      isForeground: () => false, now: clock.now, sleep: async () => undefined,
+      probe: async () => { probes += 1; return { ok: true, ms: 1 }; },
+    });
+    assert.equal(alreadyAway.reason, 'backgrounded');
+    assert.equal(probes, 0, 'nothing may be probed in the background');
+
+    let foreground = true;
+    const halfway = await connectThrough({
+      routes: [lan], insecureAck: true, probeTimeoutMs: 10, deadlineMs: 60_000,
+      isForeground: () => foreground, now: clock.now, sleep: async (ms) => clock.advance(ms),
+      probe: async () => { probes += 1; foreground = false; return { ok: false, failure: 'transient' }; },
+    });
+    assert.equal(halfway.reason, 'backgrounded');
+    assert.equal(probes, 1, 'backgrounding mid-run cancels the loop');
+  });
+
+  test('connect: gives up at the deadline instead of polling forever', async () => {
+    const ts = route('http://100.64.0.11:9222', 0, 'tailscale');
+    const clock = fakeClock();
+    const result = await connectThrough({
+      routes: [ts], insecureAck: true, probeTimeoutMs: 50, deadlineMs: 3_000,
+      now: clock.now, sleep: async (ms) => clock.advance(ms), random: () => 1,
+      probe: async () => ({ ok: false, failure: 'transient', detail: 'sem resposta' }),
+    });
+    assert.equal(result.reason, 'deadline');
+    assert.equal(result.route, null);
+    assert.ok(result.elapsedMs <= 3_000, `overran the deadline: ${result.elapsedMs}`);
+    assert.ok(result.attempts.length >= 1);
+  });
+
+  test('connect: the probe cache is per candidate, so one dead route cannot poison a healthy one', () => {
+    const cache = createProbeCache();
+    const a = route('http://10.0.0.1:9222', 0, 'lan');
+    const b = route('http://10.0.0.2:9222', 0, 'lan');
+
+    cache.record(a.url, { ok: false, failure: 'transient' }, 0);
+    assert.equal(cache.isReachable(a), false);
+    assert.equal(cache.isReachable(b), false, 'an unprobed route is not reachable either');
+
+    cache.record(b.url, { ok: true, ms: 2 }, 0);
+    assert.equal(cache.isReachable(b), true);
+    assert.equal(cache.isReachable(a), false, 'b answering must not mark a reachable');
+
+    // A transient failure backs off on its own schedule, per candidate: it becomes retryable at
+    // `at + delay`, not immediately, and not because of anything another route did.
+    const deterministic = createProbeCache({ random: () => 1 });
+    deterministic.record(a.url, { ok: false, failure: 'transient' }, 1_000);
+    assert.equal(deterministic.get(a.url)?.retryAt, 1_500, 'base 500ms backoff, jitter at its ceiling');
+    assert.equal(deterministic.get(a.url)?.dead, false);
+
+    // A 404 means "this URL is not the route": dead for this run, never retried, and still only
+    // that candidate is affected.
+    deterministic.record(a.url, { ok: false, failure: 'route', detail: 'HTTP 404' }, 2_000);
+    assert.equal(deterministic.get(a.url)?.retryAt, Infinity);
+    assert.equal(deterministic.get(a.url)?.dead, true);
+    assert.equal(deterministic.isReachable(b), false);
   });
 
   // ─────────────────────────────────────────────────────── report ──

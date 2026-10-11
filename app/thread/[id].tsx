@@ -24,9 +24,11 @@ import {
 import { createApi, type HermesApi, type HermesMessage } from '../../src/api/client';
 import { ApiError, normalizeError } from '../../src/api/errors';
 import { xhrTransport, type StreamHandle } from '../../src/api/transport';
+import { useActiveUrl } from '../../src/ConnectivityContext';
 import { formatAge, formatTime } from '../../src/format';
 import { t } from '../../src/i18n';
 import { buildItems, type ThreadItem } from '../../src/logic/thread';
+import { settingsForRoute } from '../../src/settings';
 import { useSettings } from '../../src/SettingsContext';
 import { colors, font, radius, space } from '../../src/theme';
 
@@ -37,8 +39,12 @@ export default function ThreadScreen() {
   const sessionId = String(params.id || '');
   const profile = String(params.profile || '');
   const { settings, ready } = useSettings();
+  const activeUrl = useActiveUrl();
 
-  const api: HermesApi = useMemo(() => createApi(settings, { transport: xhrTransport }), [settings]);
+  const api: HermesApi = useMemo(
+    () => createApi(settingsForRoute(settings, activeUrl), { transport: xhrTransport }),
+    [settings, activeUrl],
+  );
 
   const [messages, setMessages] = useState<HermesMessage[]>([]);
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');

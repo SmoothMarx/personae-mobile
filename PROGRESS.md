@@ -204,3 +204,214 @@ needs **Android 7.0 / API 24** or newer) and the "install unknown apps" permissi
 opens the file. If it installs but the roster never loads, open Definições and press
 **Testar ligação** — it reports, per profile, the exact HTTP status and message the phone received.
 
+---
+
+# P9/P10 — Remote access: reach the gateway from anywhere, including 5G
+
+Brief: `GOAL-REMOTE-ACCESS.md`. Every fact below was produced by a command on this host; the command
+and its exit code are given with it. Nothing here is estimated.
+
+## P9 — Server side: the tailnet route, and a correction to the brief
+
+**The brief's ground-truth row is wrong, and that matters.** It states the gateway listens on
+`0.0.0.0:9119`. Measured:
+
+```
+$ ss -ltnp | grep 9119
+LISTEN 0 2048 0.0.0.0:9119 ... users:(("hermes",pid=1202957,fd=10))
+$ ps -p 1202957 -o cmd --no-headers
+... hermes dashboard --host 0.0.0.0 --port 9119 --skip-build --no-open     # exit 0
+$ curl -sS http://127.0.0.1:9119/api/sessions                              # exit 0
+{"error":"unauthenticated","detail":"Unauthorized","reason":"no_cookie","login_url":"/login"}
+```
+
+`:9119` is the **dashboard** (session-cookie auth). Personae speaks the **API server** — bearer
+`Authorization`, `/api/sessions → {"object":"list",…}`, the `gateway_auth_failed` 401 envelope — and
+`config.yaml` puts it on **`:9222`**:
+
+```
+$ grep -n -A2 'api_server' ~/.hermes/config.yaml     # gateway.api_server
+925:  api_server:
+926:    enabled: true
+927:    extra: {host: 0.0.0.0, key: <redacted>, port: 9222}
+$ ss -ltnp | grep 9222     # exit 0
+LISTEN 0 128 0.0.0.0:9222 ... users:(("hermes",pid=2240357,fd=159))
+```
+
+| Fact | Value | How verified |
+|---|---|---|
+| Host / tailnet IP | `personae-sk` / `100.64.0.11` | `hostname`; `tailscale ip -4` (exit 0) |
+| Tailscale version | `1.102.4` | `tailscale version` (exit 0) |
+| `:9119` | `hermes dashboard` — cookie auth | `ps`, `curl` above |
+| **`:9222`** | **`hermes gateway api_server` — bearer auth = Personae's gateway** | `config.yaml`, `ss`, `curl` |
+| `:443` before | Funnel → `http://127.0.0.1:8100` (Pharmacy) | `tailscale serve status` (exit 0) |
+| `:10443` after | tailnet-only → `http://127.0.0.1:9222` | `tailscale serve status` (exit 0) |
+
+**Commands, with their real exit codes:**
+
+```
+$ tailscale serve --bg --https=10443 http://127.0.0.1:9119     # exit 1
+sending serve config: Access denied: serve config denied
+Use 'sudo tailscale serve ...'.  To not require root, use 'sudo tailscale set --operator=$USER'
+
+$ sudo -n tailscale serve --bg --https=10443 http://127.0.0.1:9222   # exit 0
+https://personae-sk.tail0000demo.ts.net:10443/
+|-- proxy http://127.0.0.1:9222
+
+$ tailscale serve status                                        # exit 0
+https://personae-sk.tail0000demo.ts.net:10443 (tailnet only)
+|-- / proxy http://127.0.0.1:9222
+https://personae-sk.tail0000demo.ts.net (Funnel on)
+|-- / proxy http://127.0.0.1:8100          <- the pre-existing Funnel entry, UNTOUCHED
+```
+
+`sudo` was used for **that one command** rather than
+`tailscale set --operator=$USER`, which would be a persistent privilege change. `serve` proxies to
+loopback, so the desktop app's own `127.0.0.1:9119` dial is unaffected.
+
+**The literal §A command was run first and captured** (it publishes the dashboard, which a phone
+cannot authenticate to with a bearer key); both variants are in `logs/serve-evidence.txt`.
+
+**Tailnet proof of the API route** (each line = one command, all exit 0):
+
+| Request | Result |
+|---|---|
+| `curl https://personae-sk.tail0000demo.ts.net:10443/v1/health` | **200**, `ssl_verify=0`, `remote_ip=100.64.0.11` — `{"status":"ok","platform":"hermes-agent","version":"0.21.5"}` |
+| same, `/api/sessions`, no auth | **401** `{"error":{"message":"Invalid gateway API key (API_SERVER_KEY)","code":"gateway_auth_failed"}}` |
+| same, `/api/sessions`, `Authorization: Bearer <key>` | **200**, `object=list`, **52** sessions |
+| same, `/api/sessions/<id>/messages?order=latest&limit=1` | **200**, `object=list`, 1 row |
+| same, `/api/health` | **404** — that endpoint is dashboard-only, evidence of the finding above |
+| `curl -H 'Authorization: Bearer <key>' http://100.64.0.11:9222/v1/health` | **200** — the raw tailnet route works (WireGuard-encrypted, no app TLS) |
+
+So the tailnet route to the gateway is **reachable and serves the app's real read paths**, with a
+publicly-trusted cert (`ssl_verify=0`).
+
+## P10 — App side
+
+### Routes, priority, role inference, failure taxonomy
+
+| Deliverable | Where (verified line numbers) |
+|---|---|
+| Route candidate model + open-string role + styled labels | `src/routes.ts:26` (type), `:38` (`STYLED_ROLES`), `:40` (`roleLabel`) |
+| `inferRole` (`.ts.net` / `100.64.0.0/10` → tailscale, RFC1918 → lan, else public) | `src/routes.ts:125` |
+| Strict priority: reachability breaks ties **within** a group, never promotes across groups | `src/routes.ts:211` (`pickByPriority`), ordered at `:197` |
+| `selectRoute` + explicit `pin-bypassed` report | `src/routes.ts:245` |
+| Per-route security policy (public http refused; private http needs the ack) | `src/routes.ts:161` (`checkRoute`) |
+| Honest transport security note (tailnet http = WireGuard, never "public plaintext") | `src/routes.ts:185` (`transportSecurityNote`) |
+| Candidate-list derivation from a legacy `baseUrl` | `src/routes.ts:277` (`routesFromBaseUrl`), `:284` (`normalizeRoutes`), `:302` (`effectiveRoutes`) |
+| Failure taxonomy (§D) | `src/api/failures.ts:34` (`classifyStatus`), `:50` (`classifyApiError`), `:64` (`shouldRetry`) |
+| Retry policy: 401 never retried, jittered backoff, no retry while backgrounded | `src/api/failures.ts:85` (`retryDelayMs`), `:119` (`nextDelayMs`), `:185` (`attemptWithPolicy`) |
+| Connect engine: priority probing, per-candidate cache, deadline, foreground gate | `src/connectivity.ts:84` (`createProbeCache`), `:182` (`connectThrough`), `:304` (`probeRoute`) |
+| Network change (`expo-network`) + foreground re-probe, background cancels | `src/ConnectivityContext.tsx:116` (provider), `:145` (`addNetworkStateListener`), `:156` (`AppState`) |
+| Native Android module (broadcast + TCP probe) | `modules/tailscale-trigger/.../TailscaleTriggerModule.kt:40` (class), `:86` (`probeTcp`), `:126` (`trigger`), `:132` (`setPackage`) |
+| `<queries>` config plugin | `modules/tailscale-trigger/app.plugin.js` |
+| Settings model + defaults | `src/settings.ts:16` (type), `:60` (defaults), `:85` (`settingsForRoute`) |
+| Non-destructive persistence + migration from `baseUrl` | `src/settingsStore.ts:35` (load), `:72` (save) |
+| Routes editor + state panel | `app/settings.tsx:275` (Rotas), `:467` (Estado da ligação) |
+
+**Network-change signal: `expo-network@57.0.2`, `Network.addNetworkStateListener`** (not netinfo) —
+reasons in DECISIONS D6.
+
+### Test evidence (real output)
+
+```
+$ npx tsc --noEmit                     -> exit 0, 0 errors
+$ npx tsx tests/run.ts                 -> 60/60 passed, 0 failed
+$ npx expo-doctor                      -> 21/21 checks passed
+```
+
+The suite went from **40 to 60** tests. New: 7 routes/priority/security/inference
+(§1/§2: tests 44-50), 4 failure-taxonomy (§4: 51-54), 6 connect-engine (§1/§4: 55-60). Pinned
+behaviours include: *reachability never promotes a lower priority over a higher one*; a **401 stops
+the whole run after exactly one probe and no other route is tried**; a 404 kills only that candidate;
+`retryDelayMs` is capped and jittered; **nothing is probed or retried once backgrounded**; the
+deadline is respected; one dead route cannot poison a healthy one.
+
+`expo-doctor` initially dropped to **20/21** because the local module's `android/` directory was
+hidden by the bare `android/` .gitignore rule. Fixed with `/android/` (top-level only) → **21/21**,
+iOS still capable.
+
+### P10 build — one real defect found, and the artifact
+
+The regenerated `android/` loses the release-signing patch, so `scripts/patch-android-signing.sh`
+was re-applied first (idempotent, exit 0) → the build logs
+`Personae: release build signed with /signing/personae-release.keystore`.
+
+**Attempt 1 failed and the cause was measured, not guessed.** `:app:assembleRelease` (4 ABIs,
+parallel) died at `:react-native-reanimated:compileReleaseJavaWithJavac FAILED` with **no Gradle
+failure summary at all** — the signature of the JVM being killed rather than javac finding an error.
+Evidence: `free -h` showed **swap 14Gi/15Gi used**, and the machine runs dozens of other containers.
+`expo-router` requires `react-native-reanimated` (verified in `package-lock.json`), so this was
+memory pressure, not the new code.
+
+**Attempt 2 succeeded** by serialising the build:
+
+```
+$ docker run --rm --env-file ~/.personae-android/build.env \
+    -e GRADLE_OPTS='-Dorg.gradle.jvmargs=-Xmx3072m -XX:MaxMetaspaceSize=768m' \
+    -v ~/Projects/personae-mobile:/work -v ~/.personae-android/gradle:/root/.gradle \
+    -v ~/.personae-android:/signing:ro -w /work/android personae-android:1 \
+    bash -lc './gradlew :app:assembleRelease --no-daemon --console=plain --no-parallel --max-workers=1'
+BUILD SUCCESSFUL in 5m 11s · 605 actionable tasks: 111 executed, 494 up-to-date
+```
+
+**Then rebuilt once more, deliberately** (`BUILD SUCCESSFUL in 1m 14s · 605 actionable tasks: 60
+executed, 545 up-to-date`, log `logs/gradle-v03c.log`): a review pass found that removing a route
+from the Settings list deleted by **URL**, which would also delete a second route legitimately
+sharing that URL. It now deletes by object identity. That is an app-source change, so the artifact
+was rebuilt rather than shipped out of sync with its source — the numbers below are from **this**
+build. Both builds are release-signed with the same keystore; only the JS bundle differs (2,308,272 →
+2,308,256 bytes).
+
+| Measured fact | Value | Command |
+|---|---|---|
+| Path | `~/Projects/personae-mobile/dist/personae-0.3.0.apk` | `cp` (exit 0) |
+| Bytes | **98,953,733** | `stat -c '%s'` |
+| sha256 | **a18e350b52a8e30025b625b3b50d226b68bdbd4ca82f287bab0eafc81f74af9b** | `sha256sum` |
+| Package | `com.personae.mobile` | `aapt2 dump badging` |
+| versionCode / versionName | **3** / `0.3.0` | `apkanalyzer apk summary` |
+| minSdk / targetSdk / compileSdk | **24** / 36 / 36 | `apkanalyzer manifest min-sdk` / `target-sdk` |
+| Native ABIs | arm64-v8a, armeabi-v7a, x86, x86_64 — **22 libs each** | `unzip -Z1 \| grep ^lib/` |
+| Signature | **Verifies**; v2 scheme true; `CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT`, SHA-256 `bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26` | `apksigner verify --print-certs` (exit 0) |
+
+The signer is **the same Personae release key as 0.1.0/0.2.0**, so this APK **upgrades them in
+place** — it does not require an uninstall.
+
+Artifact forensics (scripts: `logs/verify-apk.sh`, `logs/verify-dex.sh`, exit 0):
+
+| Check | Result |
+|---|---|
+| `<queries>` in the **shipped** manifest | `package android:name="com.tailscale.ipn"` present, **and** the template's pre-existing VIEW/BROWSABLE intent preserved (`aapt2 dump xmltree`) |
+| `ACCESS_NETWORK_STATE` permission | present (merged from `expo-network`), beside `INTERNET` |
+| Our native module in the dex | `TailscaleTriggerModule` strings in **classes3.dex**; all six methods present (`probeTcp`, `triggerConnect`, `triggerDisconnect`, `isPackageInstalled`, `vpnTransportActive`, `openApp`) |
+| Broadcast actions in the dex | `com.tailscale.ipn.CONNECT_VPN` **and** `com.tailscale.ipn.DISCONNECT_VPN` |
+| JS bundle | 2,308,272 bytes; contains `preferredRouteRole`, `connectDeadlineMs`, `insecureRouteAck`, `everReachedGateway`, `com.tailscale.ipn`, `Personalizado (`, `Verificar agora` |
+| Encryption note in the bundle | `Sem TLS de aplicação — cifrado pelo WireGuard do Tailscale` present — matched at **UTF-16LE**, because Hermes stores any literal containing a non-ASCII character in a UTF-16 string table (a plain byte-grep for "WireGuard" returns 0 and is misleading; recorded here so nobody repeats that mistake) |
+| **Hardcoded environment facts** | `100.64.0.11` → **0** occurrences (UTF-8 **and** UTF-16LE); `personae` → **0**; the gateway key → **0** |
+| Secrets | no `API_SERVER_KEY=<value>`; the 1 hit for the bare string is the API-key **input placeholder** |
+
+## What could NOT be verified (unchanged, and it is the important part)
+
+1. **No device, no emulator on this host.** The 0.3.0 APK has **never been installed or launched**,
+   and the app has **never talked to the real gateway**. Every functional claim above is either
+   offline-suite evidence or analysis of the built artifact. The tailnet route itself *was* probed
+   from this host's shell (P9) — that is a different thing from the phone reaching it.
+2. Therefore **"the tunnel comes up on a cold launch with no Tailscale UI" is UNVERIFIED.** The
+   mechanism is the one documented in the reference plan and the broadcast action is in the shipped
+   dex, but `VpnService.prepare()` consent is one-time and per-package, and nothing here proves the
+   trigger works on a phone.
+3. **iOS cannot be tested at all**, and cannot do this anyway (no cross-app broadcast) — the
+   asymmetry is stated in the UI (DECISIONS D7).
+4. **The render layer was never executed on hardware.** The "app still starts and shows a specific
+   error when the tunnel is down" path is the new `ConnectivityBanner` plus the pre-existing
+   not-configured/error cards; the *decisions* behind it are unit-tested, the pixels are not.
+
+## Next step
+
+Install `dist/personae-0.3.0.apk` (Android 7.0 / API 24+; it upgrades 0.1.0/0.2.0 in place). Then:
+set the routes in Definições → **Rotas** (a `https://<host>.<tailnet>.ts.net:10443` route first, and
+`http://<tailnet-ip>:9222` below it — the ack switch is required for the plain-http one), paste the
+API key, and read **Estado da ligação**: it names which of Tailscale-installed / tunnel / route /
+gateway is the one that is not working, which is exactly what could not be determined before.
+The three device checks worth running are listed in QUESTIONS Q13.
+

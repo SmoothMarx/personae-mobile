@@ -8,15 +8,33 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
 import { createApi } from '../src/api/client';
 import { parseErrorForDisplay } from '../src/api/display';
 import { xhrTransport } from '../src/api/transport';
+import { useConnectivity } from '../src/ConnectivityContext';
 import { formatTime } from '../src/format';
 import { t } from '../src/i18n';
 import { contactsOf, probeFromHealth, statusColor, type Probe } from '../src/logic/roster';
-import { checkBaseUrl, DEFAULT_SETTINGS, redactKey, splitProfiles, type Settings } from '../src/settings';
+import {
+  checkBaseUrl,
+  DEFAULT_SETTINGS,
+  redactKey,
+  splitProfiles,
+  type Settings,
+} from '../src/settings';
+import {
+  checkRoute,
+  moveRoute,
+  nextRoute,
+  normalizeRouteUrl,
+  orderRoutes,
+  roleLabel,
+  transportSecurityNote,
+  type RouteCandidate,
+  type RouteProblem,
+} from '../src/routes';
 import { useSettings } from '../src/SettingsContext';
 import { colors, font, radius, space } from '../src/theme';
 
@@ -31,6 +49,53 @@ export default function SettingsScreen() {
   const [results, setResults] = useState<TestResult[]>([]);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hydrated = useRef(false);
+
+  const { diagnostic, busy, recheck, openTailscale } = useConnectivity();
+  const [newRoute, setNewRoute] = useState('');
+  const [routeProblem, setRouteProblem] = useState<string | null>(null);
+  const routeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const routes = useMemo(() => orderRoutes(form.routes), [form.routes]);
+
+  /**
+   * Structural edits (add / remove / move) are discrete, so they persist immediately. Typing a URL
+   * is debounced: every keystroke would otherwise restart the connect pass.
+   */
+  const saveRoutes = useCallback(
+    (next: RouteCandidate[], delay = 0) => {
+      setForm((prev) => ({ ...prev, routes: next }));
+      if (routeTimer.current) clearTimeout(routeTimer.current);
+      if (delay <= 0) {
+        update({ routes: next });
+        return;
+      }
+      routeTimer.current = setTimeout(() => update({ routes: next }), delay);
+    },
+    [update],
+  );
+
+  const addRoute = useCallback(() => {
+    const url = normalizeRouteUrl(newRoute);
+    if (!url) return;
+    if (!checkBaseUrl(url).ok) {
+      setRouteProblem(t.routes.problemBadUrl);
+      return;
+    }
+    setRouteProblem(null);
+    saveRoutes([...form.routes, nextRoute(form.routes, url)]);
+    setNewRoute('');
+  }, [form.routes, newRoute, saveRoutes]);
+
+  const problemText = useCallback((problem: RouteProblem): string => {
+    if (problem === 'public-http') return t.routes.problemPublicHttp;
+    if (problem === 'needs-ack') return t.routes.problemNeedsAck;
+    return t.routes.problemBadUrl;
+  }, []);
+
+  const tri = useCallback(
+    (value: boolean | null): string => (value === null ? t.connectivity.unknown : value ? t.connectivity.yes : t.connectivity.no),
+    [],
+  );
 
   useEffect(() => {
     if (!ready || hydrated.current) return;
@@ -51,6 +116,7 @@ export default function SettingsScreen() {
   useEffect(
     () => () => {
       if (timer.current) clearTimeout(timer.current);
+      if (routeTimer.current) clearTimeout(routeTimer.current);
     },
     [],
   );
@@ -206,6 +272,252 @@ export default function SettingsScreen() {
         effective={form.model.trim() || 'modelo por omissão do gateway'}
       />
 
+      {/* ── Rotas: one server, several routes ─────────────────────────────── */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.routes.title}</Text>
+        <Text style={styles.help}>{t.routes.help}</Text>
+
+        {routes.length ? (
+          orderRoutes(form.routes).map((route, index) => {
+            const check = checkRoute(route, { insecureAck: form.insecureRouteAck });
+            return (
+              <View key={`route-${index}`} style={styles.routeRow}>
+                <View style={styles.rowBetween}>
+                  <View style={styles.roleChip}>
+                    <Text style={styles.roleChipText}>{roleLabel(route.role)}</Text>
+                  </View>
+                  <Text style={styles.routePriority}>{t.routes.priorityLabel(index)}</Text>
+                  <View style={styles.rowButtons}>
+                    <Pressable
+                      disabled={index === 0}
+                      onPress={() => saveRoutes(moveRoute(form.routes, index, -1))}
+                      style={({ pressed }) => [styles.smallButton, pressed && styles.pressed, index === 0 && styles.disabled]}
+                    >
+                      <Text style={styles.smallButtonText}>↑ {t.routes.moveUp}</Text>
+                    </Pressable>
+                    <Pressable
+                      disabled={index === routes.length - 1}
+                      onPress={() => saveRoutes(moveRoute(form.routes, index, 1))}
+                      style={({ pressed }) => [styles.smallButton, pressed && styles.pressed, index === routes.length - 1 && styles.disabled]}
+                    >
+                      <Text style={styles.smallButtonText}>↓ {t.routes.moveDown}</Text>
+                    </Pressable>
+                    <Pressable
+                      onPress={() =>
+                        Alert.alert(t.routes.title, t.routes.removeConfirm(route.url), [
+                          { text: t.roster.cancel, style: 'cancel' },
+                          {
+                            text: t.routes.remove,
+                            style: 'destructive',
+                            onPress: () => {
+                              // Remove by object identity, not by URL: two routes can legitimately
+                              // share a URL (different role/priority), and removing by URL would
+                              // silently delete both.
+                              const ordered = orderRoutes(form.routes);
+                              saveRoutes(form.routes.filter((item) => item !== ordered[index]));
+                            },
+                          },
+                        ])
+                      }
+                      style={({ pressed }) => [styles.smallButton, pressed && styles.pressed]}
+                    >
+                      <Text style={[styles.smallButtonText, styles.dangerTextSmall]}>{t.routes.remove}</Text>
+                    </Pressable>
+                  </View>
+                </View>
+
+                <TextInput
+                  value={route.url}
+                  onChangeText={(value) => {
+                    const next = orderRoutes(form.routes).map((item, position) =>
+                      position === index ? { ...item, url: value.trim(), role: item.role } : item,
+                    );
+                    saveRoutes(next, 700);
+                  }}
+                  placeholder={t.routes.placeholder}
+                  placeholderTextColor={colors.faint}
+                  style={[styles.input, !check.ok && styles.inputInvalid]}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="url"
+                />
+
+                {/* The role is inferred from the address, and the label says so. */}
+                <Text style={styles.help}>
+                  {`${t.routes.inferred}: ${roleLabel(route.role)}`}
+                </Text>
+                <Text style={styles.help}>{transportSecurityNote(route)}</Text>
+                {!check.ok ? <Text style={styles.invalid}>{problemText(check.reason)}</Text> : null}
+              </View>
+            );
+          })
+        ) : (
+          <Text style={styles.help}>{t.routes.empty}</Text>
+        )}
+
+        <TextInput
+          value={newRoute}
+          onChangeText={setNewRoute}
+          onSubmitEditing={addRoute}
+          placeholder={t.routes.placeholder}
+          placeholderTextColor={colors.faint}
+          style={styles.input}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          returnKeyType="done"
+        />
+        <Pressable onPress={addRoute} style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
+          <Text style={styles.secondaryText}>{t.routes.add}</Text>
+        </Pressable>
+        {routeProblem ? <Text style={styles.invalid}>{routeProblem}</Text> : null}
+
+        <View style={styles.rowBetween}>
+          <Text style={styles.label}>{t.routes.ackTitle}</Text>
+          <Switch
+            value={form.insecureRouteAck}
+            onValueChange={(value) => {
+              setForm((prev) => ({ ...prev, insecureRouteAck: value }));
+              update({ insecureRouteAck: value });
+            }}
+          />
+        </View>
+        <Text style={styles.help}>{t.routes.ackHelp}</Text>
+
+        <Text style={styles.label}>{t.routes.preferredTitle}</Text>
+        <View style={styles.pillRow}>
+          {[null, ...Array.from(new Set(routes.map((route) => route.role)))].map((role) => {
+            const active = (form.preferredRouteRole ?? null) === role;
+            return (
+              <Pressable
+                key={role ?? 'auto'}
+                onPress={() => {
+                  setForm((prev) => ({ ...prev, preferredRouteRole: role }));
+                  update({ preferredRouteRole: role });
+                }}
+                style={({ pressed }) => [styles.pill, active && styles.pillActive, pressed && styles.pressed]}
+              >
+                <Text style={[styles.pillText, active && styles.pillTextActive]}>
+                  {role === null ? t.routes.preferredAuto : roleLabel(role)}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={styles.help}>{t.routes.preferredHelp}</Text>
+      </View>
+
+      {/* ── Ligação: the tunnel trigger ───────────────────────────────────── */}
+      <View style={styles.field}>
+        <View style={styles.rowBetween}>
+          <Text style={styles.label}>{t.connectivity.autoConnect}</Text>
+          <Switch
+            value={form.autoConnect}
+            onValueChange={(value) => {
+              setForm((prev) => ({ ...prev, autoConnect: value }));
+              update({ autoConnect: value });
+            }}
+          />
+        </View>
+        <Text style={styles.help}>{t.connectivity.autoConnectHelp}</Text>
+        {Platform.OS !== 'android' ? <Text style={styles.help}>{t.connectivity.iosNote}</Text> : null}
+
+        <Field
+          label={t.connectivity.tailscalePackage}
+          help={t.connectivity.tailscalePackageHelp}
+          value={form.tailscalePackage}
+          onChangeText={(value) => stage({ tailscalePackage: value.trim() || 'com.tailscale.ipn' })}
+          effective={form.tailscalePackage || DEFAULT_SETTINGS.tailscalePackage}
+        />
+
+        <Field
+          label={t.connectivity.connectDeadline}
+          help=""
+          value={String(Math.round(form.connectDeadlineMs / 1000))}
+          onChangeText={(value) => {
+            const seconds = Number(value.replace(/[^0-9]/g, ''));
+            if (!Number.isFinite(seconds) || seconds <= 0) return;
+            stage({ connectDeadlineMs: Math.min(120_000, Math.max(1_000, seconds * 1000)) });
+          }}
+          effective={`${Math.round(form.connectDeadlineMs / 1000)} s`}
+          keyboardType="default"
+        />
+
+        <Field
+          label={t.connectivity.probeTimeout}
+          help=""
+          value={String(Math.round(form.probeTimeoutMs / 1000))}
+          onChangeText={(value) => {
+            const seconds = Number(value.replace(/[^0-9.]/g, '').replace(',', '.'));
+            if (!Number.isFinite(seconds) || seconds <= 0) return;
+            stage({ probeTimeoutMs: Math.min(10_000, Math.max(100, Math.round(seconds * 1000))) });
+          }}
+          effective={`${(form.probeTimeoutMs / 1000).toFixed(1).replace('.', ',')} s`}
+        />
+
+        <View style={styles.rowBetween}>
+          <Text style={styles.label}>{t.connectivity.openOnFailure}</Text>
+          <Switch
+            value={form.openTailscaleOnFailure}
+            onValueChange={(value) => {
+              setForm((prev) => ({ ...prev, openTailscaleOnFailure: value }));
+              update({ openTailscaleOnFailure: value });
+            }}
+          />
+        </View>
+      </View>
+
+      {/* ── Estado da ligação: the panel that tells the four failures apart ── */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.connectivity.diagnosticsTitle}</Text>
+
+        <DiagRow label={t.connectivity.diagInstalled} value={diagnostic.canTrigger ? tri(diagnostic.installed) : t.connectivity.diagNotAvailable} />
+        <DiagRow
+          label={t.connectivity.diagTunnel}
+          value={
+            diagnostic.stage === 'connecting' || busy
+              ? t.connectivity.tunnelProbing
+              : diagnostic.gatewayAnswering
+                ? t.connectivity.tunnelUp
+                : t.connectivity.tunnelDown
+          }
+        />
+        <DiagRow
+          label={t.connectivity.diagRoute}
+          value={
+            diagnostic.chosenRoute
+              ? `${roleLabel(diagnostic.chosenRoute.role)} · ${diagnostic.chosenRoute.url}`
+              : t.connectivity.noneChosen
+          }
+        />
+        <DiagRow label={t.connectivity.diagGateway} value={tri(diagnostic.gatewayAnswering)} />
+        <DiagRow label={t.connectivity.diagEverWorked} value={tri(settings.everReachedGateway)} />
+        <DiagRow label={t.connectivity.diagLastError} value={settings.lastErrorKind || '—'} />
+        <DiagRow label={t.connectivity.diagTrigger} value={settings.lastTriggerResult || '—'} />
+
+        {diagnostic.vpnTransport ? <Text style={styles.help}>{t.connectivity.diagVpnHint}</Text> : null}
+        {diagnostic.message ? <Text style={styles.invalid}>{diagnostic.message}</Text> : null}
+        {diagnostic.rejected.length
+          ? diagnostic.rejected.map((entry, index) => (
+              <Text key={`rejected-${index}`} style={styles.invalid}>
+                {`${entry.route.url} — ${problemText(entry.reason)}`}
+              </Text>
+            ))
+          : null}
+        <Text style={styles.help}>{t.connectivity.diagHealthCaveat}</Text>
+
+        <View style={styles.rowButtons}>
+          <Pressable onPress={recheck} style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
+            <Text style={styles.secondaryText}>{t.connectivity.recheck}</Text>
+          </Pressable>
+          {diagnostic.canTrigger ? (
+            <Pressable onPress={() => void openTailscale()} style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
+              <Text style={styles.secondaryText}>{t.connectivity.openTailscale}</Text>
+            </Pressable>
+          ) : null}
+        </View>
+      </View>
+
       <View style={styles.field}>
         <Pressable
           onPress={() => void testConnection()}
@@ -259,6 +571,19 @@ function Field(props: {
         <Text style={styles.effectiveLabel}>{t.settings.effective}</Text>
         <Text style={[styles.effectiveValue, props.invalid && styles.invalid]}>{props.effective}</Text>
       </View>
+    </View>
+  );
+}
+
+/**
+ * One read-only diagnostics row. These are the rows that make "wrong port" and "never logged in"
+ * distinguishable at a glance instead of both looking like "it didn't work".
+ */
+function DiagRow(props: { label: string; value: string }) {
+  return (
+    <View style={styles.diagRow}>
+      <Text style={styles.diagLabel}>{props.label}</Text>
+      <Text style={styles.diagValue}>{props.value}</Text>
     </View>
   );
 }
@@ -317,6 +642,56 @@ const styles = StyleSheet.create({
   testLabel: { color: colors.text, fontSize: font.small, width: 90, fontWeight: '600' },
   testDetail: { color: colors.muted, fontSize: font.small, flex: 1 },
   dot: { width: 8, height: 8, borderRadius: 4 },
+  secondary: {
+    alignSelf: 'flex-start',
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+  },
+  secondaryText: { color: colors.accent, fontWeight: '600', fontSize: font.small },
+  routeRow: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    backgroundColor: colors.bg,
+    padding: space.sm,
+    gap: space.xs,
+  },
+  rowBetween: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.sm },
+  rowButtons: { flexDirection: 'row', alignItems: 'center', gap: space.xs, flexWrap: 'wrap' },
+  roleChip: {
+    backgroundColor: colors.panelAlt,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.sm,
+    paddingVertical: 2,
+  },
+  roleChipText: { color: colors.text, fontSize: 11, fontWeight: '700' },
+  routePriority: { color: colors.faint, fontSize: 11, flex: 1 },
+  smallButton: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.sm,
+    paddingHorizontal: space.sm,
+    paddingVertical: 2,
+  },
+  smallButtonText: { color: colors.accent, fontSize: 11, fontWeight: '600' },
+  dangerTextSmall: { color: colors.red },
+  pillRow: { flexDirection: 'row', flexWrap: 'wrap', gap: space.xs },
+  pill: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 999,
+    paddingHorizontal: space.md,
+    paddingVertical: 4,
+  },
+  pillActive: { borderColor: colors.accent, backgroundColor: colors.panelAlt },
+  pillText: { color: colors.muted, fontSize: font.small },
+  pillTextActive: { color: colors.accent, fontWeight: '700' },
+  diagRow: { flexDirection: 'row', alignItems: 'baseline', gap: space.sm },
+  diagLabel: { color: colors.faint, fontSize: font.small, width: 160 },
+  diagValue: { color: colors.text, fontSize: font.small, flex: 1 },
   disabled: { opacity: 0.5 },
   pressed: { opacity: 0.8 },
 });

@@ -1,0 +1,100 @@
+# AUDIT BRIEF — Opus 5.5, adversarial gate on the Personae Mobile Android delivery
+
+You are the **gate of record**. A builder agent (`cody`, a different profile) just claimed the job is
+done and exited 0. Your job is NOT to praise it, NOT to summarize it, and NOT to trust it. Your job
+is to find where the claim is **not true**, and to say so plainly.
+
+You are the adversary, not the reviewer. Assume the builder is competent but optimistic, and that
+its own report is advocacy.
+
+## What you are auditing
+
+- Project: `~/Projects/personae-mobile`
+- Contract (the acceptance criteria): `~/Projects/personae-mobile/GOAL.md` — six numbered conditions,
+  plus a "NOT DONE IF" list. Read it **first, in full**.
+- The spec it was built against: `~/Projects/personae-mobile/SPEC.md`
+- The builder's own claims: `~/Projects/personae-mobile/PROGRESS.md`
+- The builder's open unknowns: `~/Projects/personae-mobile/QUESTIONS.md`
+- The artifact: `~/Projects/personae-mobile/dist/personae-0.1.0.apk`
+- Source: `~/Projects/personae-mobile/app/`, `src/`, `tests/`, `mock/`
+
+## Independent measurements ALREADY DONE by the orchestrator (do not redo; verify if cheap)
+
+- sha256 `afd2943ad0499dae7c1725fb76a34ada275e3aed72512944e1d34c6edd56ae45`,
+  85,610,829 bytes, byte-identical to `android/app/build/outputs/apk/release/app-release.apk`.
+- `apksigner verify` → v2 true, 1 signer, "Verifies".
+  Cert SHA-256 `bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26`, DN
+  `CN=Personae Mobile, O=Personae, L=Lisboa, C=PT`, RSA 2048.
+- `aapt dump badging` → package `com.personae.mobile`, versionCode 1, versionName 0.1.0,
+  minSdk 24, targetSdk 36, launchable-activity `com.personae.mobile.MainActivity`,
+  native-code arm64-v8a/armeabi-v7a/x86/x86_64, 1254 entries.
+- Reproducibility re-run: `BUILD SUCCESSFUL in 36s`, `GRADLE_EXIT=0`, 412 tasks (26 executed).
+- Git: `4cbf58a`, `f1a083e`, `428d2b2`; working tree clean at handoff.
+
+Also relevant, and you should read it: `~/Projects/personae-mobile/logs/gradle-release*.log`.
+
+## What I want back — `AUDIT.md` in the project root
+
+Work GOAL.md's **six conditions one at a time**, and for each return exactly one verdict:
+
+- `MET — <the command you ran, or the file+line you read, that proves it>`
+- `UNMET — <what is missing>`
+- `CLAIMED-BUT-UNPROVEN — <the claim, and what evidence would settle it>`
+
+Rules for the verdicts:
+
+1. **A claim in PROGRESS.md is not evidence.** The user's own contract says so: "Cody reports numbers
+   he did not measure (no command, no exit code) — that is a fail, not a pass." If PROGRESS.md asserts
+   a number, find the command+exit code that produced it, or mark it CLAIMED-BUT-UNPROVEN.
+2. **Check the "NOT DONE IF" list too.** Every bullet. Especially:
+   - Is any mock-gateway result presented as live-gateway evidence?
+   - Does any secret, key, token, or real person's name appear in the repo, the APK, or a log?
+     Grep for it. `API_SERVER_KEY`, `sk-`, `Bearer ` patterns, `GITHUB_TOKEN`, `.env` files.
+   - Is anything inside `~/Projects/hermes-desktop-plugins/personae` modified? That tree is
+     **read-only**; `git -C ~/Projects/hermes-desktop-plugins/personae status` must be clean.
+   - Are the three screens real implementations, or stubs / TODOs / placeholder bodies? Open the
+     files. `app/index.tsx`, `app/thread/[id].tsx`, `app/settings.tsx`.
+3. **Condition 6 is the interesting one.** The builder had no device and no emulator. Decide whether
+   its handling satisfies the contract's escape clause ("unverified only if cody states plainly that
+   he has no device and cannot") — or whether it overclaims. Quote the exact sentence you judge.
+
+## Then, and this is the part I actually need
+
+### Section B — the three highest-risk untruths
+
+Rank the three places where this delivery is **most likely to disappoint the user when he installs it**.
+Not style. Not "could be improved". Concrete failure modes with the file/line or the code path that
+causes them. Be specific enough that someone can go fix it.
+
+Candidates worth probing hard (find others):
+- SSE incremental delivery over XHR on Android — the builder admits the render layer never ran on
+  hardware and carries a blocking fallback. Does the fallback actually work, or is it a dead path?
+- The app's behaviour when the gateway is unreachable / the key is wrong — the contract demands a
+  *visible, specific* error and calls silent failure "not done". Is that true in the code, or is
+  there a path where it hangs or renders an empty screen?
+- `render` paths that assume `Platform.OS`, date formatting, or locale that could break on the phone.
+- Anything requiring the live gateway that was only ever exercised against `mock/server.mjs`.
+
+### Section C — is the contract's condition 6 met?
+
+One line. `MET` or `UNMET`, and the exact quote you based it on.
+
+### Section D — verdict
+
+One of:
+- `SHIP — safe to hand to the user as-is`
+- `SHIP WITH KNOWN GAPS — <the gaps, ranked>`
+- `DO NOT SHIP — <the blocker>`
+
+## Constraints on you
+
+- **Do not modify any source file.** You may only write `AUDIT.md`. Everything else is read-only.
+- **Do not re-run the Gradle build.** It is expensive and already proven; the logs are on disk.
+  Reading the logs is required; re-running is waste.
+- **Do not touch** `~/Projects/hermes-desktop-plugins/personae`. Read-only.
+- Do not run commands that need the network beyond what you need to read local files.
+- **Never print a secret.** If you find one, name the file and line and write `[REDACTED]` — do not
+  reproduce the value, not even truncated.
+- Keep `AUDIT.md` under 200 lines. Dense, evidence-first, no filler, no praise.
+- Your final chat message must be: the verdict letter from Section D, plus the single most important
+  sentence in the audit. Nothing else.

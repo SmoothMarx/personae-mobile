@@ -1,0 +1,7 @@
+{
+  "name": "tailscale-trigger",
+  "version": "0.2.0",
+  "description": "Personae: drive the stock Tailscale Android client's exported control receiver, and probe a TCP port for real readiness.",
+  "main": "index.ts",
+  "private": true
+}

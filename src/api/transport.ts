@@ -87,7 +87,11 @@ export const xhrTransport: StreamTransport = (request, callbacks) => {
       }
     }
     if (xhr.readyState === 4) {
-      if (xhr.status !== 200) {
+      // A deliberate close() aborts the XHR (that is the Stop button, and the normal exit after a
+      // `done` frame). react-native's abort() resets status to 0 and then fires readystatechange
+      // SYNCHRONOUSLY, so without this guard our own abort would be reported as `HTTP 0` and the
+      // thread's error branch would re-send the message via chatOnce() — on every successful turn.
+      if (xhr.status !== 200 && !aborted) {
         // The whole error body arrived as one non-SSE payload.
         callbacks.onError(new StreamHttpError(xhr.status, (xhr.responseText || '').slice(0, 4000)));
       }

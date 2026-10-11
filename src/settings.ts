@@ -11,8 +11,10 @@
  * (pedro-app-defaults: "the effective value always displayed, never a different one").
  */
 
+import type { RouteCandidate } from './routes';
+
 export type Settings = {
-  /** Gateway origin, e.g. http://100.64.0.5:8642 . Empty = not configured. */
+  /** Gateway origin, e.g. http://100.64.0.5:9222 . Empty = not configured. */
   baseUrl: string;
   /** Bearer token (API_SERVER_KEY). Empty = not configured. NEVER logged or persisted in plain files. */
   apiKey: string;
@@ -20,6 +22,35 @@ export type Settings = {
   profiles: string[];
   /** Optional per-request model override; empty = gateway default. */
   model: string;
+
+  // ── remote access: one server, several routes ────────────────────────────────
+  /**
+   * Ordered candidate list for this one logical server. Empty on a fresh install (derived from
+   * `baseUrl`), which is what keeps the legacy single-URL shape working.
+   */
+  routes: RouteCandidate[];
+  /** Optional manual pin, e.g. 'tailscale'. null = Auto (strict priority order). */
+  preferredRouteRole: string | null;
+  /** Master switch for the launch/foreground tunnel trigger. */
+  autoConnect: boolean;
+  /** Broadcast target for the tunnel trigger; lets a fork swap in without a rebuild. */
+  tailscalePackage: string;
+  /** Wait budget before declaring "setup incomplete". */
+  connectDeadlineMs: number;
+  /** Per-attempt probe timeout. */
+  probeTimeoutMs: number;
+  /** Fallback when the one-time setup is still missing. */
+  openTailscaleOnFailure: boolean;
+  /** Explicit opt-in before using a plain-http non-loopback route. */
+  insecureRouteAck: boolean;
+
+  // ── diagnostics (persisted; read-only on screen) ─────────────────────────────
+  /** Has the whole chain (tunnel + route + gateway) ever worked on this phone? */
+  everReachedGateway: boolean;
+  /** What the last trigger actually did. */
+  lastTriggerResult: string;
+  /** The last failure class seen, e.g. `transient · HTTP 0`. */
+  lastErrorKind: string;
 };
 
 export const SETTINGS_STORE_KEY = 'personae.settings.v1';
@@ -31,9 +62,29 @@ export const DEFAULT_SETTINGS: Settings = {
   apiKey: '',
   profiles: [],
   model: '',
+  routes: [],
+  preferredRouteRole: null,
+  autoConnect: true,
+  tailscalePackage: 'com.tailscale.ipn',
+  connectDeadlineMs: 20_000,
+  probeTimeoutMs: 1_500,
+  openTailscaleOnFailure: true,
+  insecureRouteAck: false,
+  everReachedGateway: false,
+  lastTriggerResult: '',
+  lastErrorKind: '',
 };
 
 export type StoredSettings = Omit<Settings, 'apiKey'>;
+
+/**
+ * Settings as the API client needs them: the same object with `baseUrl` pointing at the route that
+ * was actually chosen. The client keeps talking in terms of one origin, so route selection is
+ * invisible to it — which is what keeps this change from reaching into every call site.
+ */
+export function settingsForRoute(settings: Settings, url: string): Settings {
+  return url && url !== settings.baseUrl ? { ...settings, baseUrl: url } : settings;
+}
 
 export function splitProfiles(raw: string): string[] {
   const seen = new Set<string>();

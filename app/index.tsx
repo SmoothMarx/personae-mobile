@@ -24,8 +24,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createApi, type HermesApi, type HermesSession } from '../src/api/client';
 import { ApiError, normalizeError } from '../src/api/errors';
 import { xhrTransport } from '../src/api/transport';
+import { useActiveUrl, useConnectivity } from '../src/ConnectivityContext';
+import { ConnectivityBanner } from '../src/ConnectivityBanner';
 import { t } from '../src/i18n';
 import { contactsOf, countNew, groupByDay, pageLabel, paginate, probeFromHealth, statusColor, toRow, type Contact, type Probe, type RowGroup } from '../src/logic/roster';
+import { settingsForRoute } from '../src/settings';
 import { loadLastSeen, saveLastSeen } from '../src/settingsStore';
 import { useSettings } from '../src/SettingsContext';
 import { colors, font, radius, space } from '../src/theme';
@@ -43,6 +46,8 @@ export default function RosterScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const { settings, ready } = useSettings();
+  const activeUrl = useActiveUrl();
+  const { diagnostic, busy, recheck } = useConnectivity();
 
   const contacts = useMemo(() => contactsOf(settings), [settings]);
   const [profile, setProfile] = useState('');
@@ -56,7 +61,12 @@ export default function RosterScreen() {
   const [creatingBusy, setCreatingBusy] = useState(false);
 
   const lastSeen = useRef<Record<string, number>>({});
-  const api: HermesApi = useMemo(() => createApi(settings, { transport: xhrTransport }), [settings]);
+  // The client keeps speaking in terms of ONE origin; which candidate that is was decided by the
+  // connectivity layer, and it changes when the network does.
+  const api: HermesApi = useMemo(
+    () => createApi(settingsForRoute(settings, activeUrl), { transport: xhrTransport }),
+    [settings, activeUrl],
+  );
 
   const configured = Boolean(settings.baseUrl.trim()) && Boolean(settings.apiKey);
 
@@ -251,6 +261,13 @@ export default function RosterScreen() {
           <Text style={styles.headerIconText}>⚙</Text>
         </Pressable>
       </View>
+
+      <ConnectivityBanner
+        diagnostic={diagnostic}
+        busy={busy}
+        onRecheck={recheck}
+        onOpenSettings={() => router.push('/settings')}
+      />
 
       {creating ? (
         <View style={styles.composerCard}>

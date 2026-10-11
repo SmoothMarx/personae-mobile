@@ -1,0 +1,195 @@
+# PLAN-UI — Personae Mobile: replicate the messenger pane
+
+**Reference (source of truth):** `~/Projects/hermes-desktop-plugins/personae/`
+— `README.md` = the feature spec, `plugin.js` (8,365 lines) = the implementation.
+**Target:** `~/Projects/personae-mobile/` (Expo/RN, TypeScript, expo-router).
+**Status:** REV 2 — the transport question (`:9222` vs the dashboard on `:9119`) answered from the
+code. Plan for approval, no build started.
+
+---
+
+## 0. Two findings that shape the whole plan
+
+**Finding 1 — the plugin is not a client of the HTTP API.** It runs *inside* the Electron app and
+speaks the app's own RPC surface (`profiles.list`, `profiles.get_asset`, `profiles.configure`,
+`session.{list,active_list,history,title,create,close,delete,archive,branch_stored}`,
+`display.status`, `display.thumbnail`, `cron.manage`, `projects.list`), and keeps its pane state in
+the app's own store under `messenger-*-v1` keys (`SESSION_GROUPS_KEY`, `COLORS_KEY`,
+`SESSION_ORDER_KEY`, `SESSION_SORT_KEY`, `APROPOS_KEY`, `HIDDEN_KEY`, `EXPANDED_KEY`).
+"Replicate the pane" therefore means rebuilding its information architecture on the phone, and
+sourcing each feature's data from whichever server surface actually has it.
+
+**Finding 2 — there are TWO server surfaces, and the second one already has the missing data.**
+The app talks to `platforms.api_server` on `:9222` (bearer key) — narrow. But `hermes serve`, the
+Dashboard backend on `:9119`, already exposes on disk:
+
+| Dashboard route | File:line | What it gives the phone |
+|---|---|---|
+| `GET /api/profiles` | `hermes_cli/web_routers/profiles.py:798` | the rail's **contact list** (D2) |
+| `GET /api/profiles/sessions` | `profiles.py:452` | sessions from **every** profile's state.db, each row tagged with its owning profile, plus `profile_totals` |
+| `GET /api/profiles/sessions/sidebar` | `profiles.py:510` | a **batched** rail payload: recents + cron + messaging slices + usage totals + `profile_totals`, 300 s activity heuristic — written for exactly this shape of UI |
+| `GET /api/profiles/projects/tree` | `profiles.py:710` | projects |
+| `PATCH /api/sessions/{id}` `{unread}` | `web_routers/sessions.py:845` | read/unread **write** (`False` = read now) |
+
+Auth to the dashboard is `X-Hermes-Session-Token: <t>` **or** `Authorization: Bearer <t>` against
+the process token, which `HERMES_DASHBOARD_SESSION_TOKEN` pins to a fixed value instead of a fresh
+per-boot random (`hermes_cli/web_server.py:367`). So a native client can use it with a bearer token —
+no cookie dance. (In gated mode the middleware is cookie-first, but the token branch is what a
+header-only client uses; pinning the env var makes it deterministic.)
+
+**Consequence: D2 is not upstream work, and neither is most of D3.** The honest caveats:
+
+1. The dashboard is an **internal web-UI contract** — its routes are not the documented agent API
+   and can move between releases. `:9222` stays the surface for *talking* (stable, streaming). Use
+   one adapter module per backend so a break is one file, and degrade gracefully when `:9119` is
+   unreachable.
+2. It is a **bigger, sharper API**: `POST /api/profiles`, `DELETE /api/profiles/{name}`,
+   `POST /api/profiles/{name}/open-terminal`. Same blast-radius class as the api_server key (which
+   can run an agent ≈ code exec), but the token must be treated as root-equivalent and kept in
+   `expo-secure-store`, never in a bundle.
+3. **Avatars are still RPC-only** (`profiles.get_asset`, data-URL, ≤2 MB, `methods_profiles.py:446`;
+   `has_avatar` flag at `:277`). No HTTP asset route exists on either surface. Small mechanical
+   route to expose, or ship initials.
+4. **Unread read-back is still unconfirmed** — the write path exists on both surfaces; I could not
+   find the row projection returning `last_read_at`/`unread`. Cheap to close either way (3-line
+   `_session_response` addition, or read the watermark if the row carries it).
+5. **"Blocked on you" (amber) has no live route.** The dashboard sidebar's 300 s heuristic means
+   *recently active*, which is not *waiting for approval*. `display.status` is RPC-only. Either
+   accept "recently active" on the phone, or add a small pending-state route.
+
+---
+
+## 1. What the app has today (the delta)
+
+Roster (profile rows + day-grouped session rows, 25/page) · Thread (history, composer, SSE token
+stream, working Stop) · Settings (base URL, key, extra profiles, model) · connectivity layer (ordered
+route candidates by role+priority, Tailscale trigger module, honest failure banner) · PT-PT
+throughout · **60 offline tests** + `mock/` gateway (a build loop that runs with no phone and no key).
+Shipped today: `dist/personae-0.3.0.apk`, versionCode 3, same release key (upgrades in place over
+0.1.0/0.2.0).
+
+Everything below is what the plugin does and the app does **not**.
+
+---
+
+## 2. Parity matrix
+
+### Bucket A — API supports it; mobile just needs to render/act
+
+| Plugin feature | API |
+|---|---|
+| Profile → that profile's sessions, newest first | `GET /api/sessions` (`/p/<profile>/` prefix for extra profiles) |
+| Open session, full history | `GET /api/sessions/{id}/messages` |
+| Compose + streamed reply, **Stop** | `POST .../chat/stream` · `/chat` · `POST /v1/runs/{id}/stop` |
+| New session with a profile | `POST /api/sessions` |
+| Rename | `PATCH /api/sessions/{id}` `{title}` |
+| Pin | `PATCH {pinned}` |
+| Archive | `PATCH {archived}` |
+| Hide (unfiled) | `PATCH {hidden}` |
+| Delete | `DELETE /api/sessions/{id}` |
+| Fork / branch | `POST /api/sessions/{id}/fork` |
+| Parent↔child links, ↳ / ↩ markers | `parent_session_id`, `_lineage_root_id` |
+| Mark read/unread (**write** side) | `PATCH {unread}` → `db.set_session_read` (both surfaces) |
+| Row body: preview, age, message + tool counts, tokens, cost | `preview`, `last_active`, `message_count`, `tool_call_count`, cost fields |
+| Per-session model lock | `POST /api/sessions/{id}/model` · `GET /api/model/options` |
+| Bell / cron surface | `/api/jobs` (list/create/update/pause/resume/run/delete) · `/api/cron/fire` |
+
+### Bucket B — REVISED: mostly served by the dashboard backend
+
+| Plugin feature | Was | Now |
+|---|---|---|
+| **Profiles list** | no route → upstream | ✅ `GET /api/profiles` (`:9119`) — **consume it, don't build it** (D2) |
+| **Cross-profile session rail** | hand-typed | ✅ `GET /api/profiles/sessions/sidebar` — the exact batched shape the pane needs |
+| **Unread read-back** | write-only → upstream | ⚠️ write confirmed on both surfaces; read projection **unverified** — small fix either way (D3) |
+| **Running / "blocked on you" dot** | RPC-only | ⚠️ hybrid: recently-active is free; true *pending-approval* needs a small route (D3) |
+| **Avatars / thumbnails** | RPC-only | ❌ still RPC-only — expose `GET /api/profiles/{name}/avatar` (cheap) or ship initials (D2) |
+| **Groups** (named sections inside a profile) | client store | **D1(a): phone-local** — 0 hits server-side for `messenger-session-groups`, so there is nothing to read. This is the only option, not a preference. |
+| **Colours** (session / group, incl. "no fill") | client store | D1(a) phone-local |
+| **Manual drag order + sort mode** | client store | D1(a) phone-local |
+| **Apropos** (child session seeded with picked sessions' background) | client store + RPC | D1(a) + `POST /api/sessions/{id}/fork` for the child |
+| **Bots identity parity** | app-local store + RPC | 🟡 partial: name/description/model are in `GET /api/profiles`; avatar is the gap |
+
+### Bucket C — mobile builds it (no server question)
+
+Expand/collapse a profile into its sessions · row geometry · long-press context menus (Open, Rename,
+Colour, File into group, Sort, Copy id, Apropos, Delete) · multi-select + selection bar (bulk archive
+/ delete / Apropos) · groups as drop targets · toolbar chrome (bell, **+**, folder+, search, filters)
+· day grouping and pagination · status-dot aggregation (profile dot = aggregate of its sessions,
+never its own) · PT-PT strings · theme.
+
+**Search & filter is a trap:** the plugin's search is server-side over *profiles and sessions*. The
+API only accepts `source`, exact `title`, `include_children`, `include_hidden` — **no text search, no
+activity/kind/profile-set filters.** Filtering by profile is reachable via the `/p/<profile>/` prefix;
+free-text search over session titles/previews would be a client-side filter over the fetched page.
+State that honestly in the UI or add a server param.
+
+---
+
+## 3. Touch mapping — the plugin's affordances are mouse-shaped
+
+| Plugin (mouse) | Phone |
+|---|---|
+| Right-click context menu | Long-press → action sheet |
+| Hover states | None — affordance always visible |
+| Drag row between groups / reorder groups | Long-press to lift, drop targets highlight |
+| Ctrl/Cmd-click multi-select | "Selecionar" from the toolbar; tap rows to tick |
+| Scroll + 25/page pagination | `FlatList` (virtualised) |
+
+This mapping is in scope — without it, "all features" is not actually reachable on a phone.
+
+---
+
+## 4. Decisions
+
+**Answered by you (2026-10-11):**
+
+- **D1 = (a) phone-local** pane state (groups, colours, manual order, read markers → AsyncStorage).
+  Confirmed as the *only* option: the server has no `messenger-*` state at all. Desktop groups will
+  not appear on the phone until (b) — an opaque per-profile state blob both devices read.
+- **D2 = use `/api/profiles`** — now free, because the dashboard already serves it.
+- **D3 = close the gaps** — shrunk to two small items: unread read-back (verify then patch if
+  needed) and the pending-approval state. Both are now *narrow* fixes, not new subsystems.
+
+**New, from the transport question:**
+
+- **D4 — transport: HYBRID (recommended).** `:9222` for talk (chat, SSE, runs, session actions —
+  stable and streaming); `:9119` for the rail (profiles list, per-profile slices, totals, projects).
+  Two adapters, one interface; if `:9119` is unreachable the rail falls back to hand-declared
+  profiles + `GET /api/sessions`. Rejected: dashboard-only (loses streaming + the documented API),
+  API-only (needs upstream work for data that already exists).
+- **D5 — expose avatars?** Yes = one small dashboard route (`GET /api/profiles/{name}/avatar`).
+  No = initials monogram. Recommend **yes**, it is mechanical and the pane is avatar-driven.
+
+---
+
+## 5. Phases (each ends in a verifiable artifact)
+
+- **P0 — transport.** Dashboard adapter (`:9119`, bearer session token, `expo-secure-store`) behind
+  the existing `src/api` interface; `:9222` stays. `verify:` mock serves both; rail renders from
+  `/api/profiles` + `/sidebar`; 9119-down fallback proven.
+- **P1** expand/collapse the rail into per-profile sessions. `verify:` mock-gateway test asserting
+  rows come from the API and the profile dot is an aggregate of its sessions.
+- **P2** session actions via long-press + the Bucket-A write calls. `verify:` each call asserted
+  against the mock, incl. 409/404 paths.
+- **P3** toolbar, search/scope filters with the honest client-side boundary.
+- **P4** groups + colours + manual sort on local state (D1a).
+- **P5** multi-select bulk actions.
+- **P6** Apropos (scoped beta).
+- **P7** iOS parity pass via EAS.
+
+Each phase git-committed, `npm test` green, `tsc --noEmit` clean. Android first, then iOS.
+
+---
+
+## 6. Sequencing and gates
+
+- ✅ **No collision.** Cody's remote-access run **finished** (48m 8s, pid gone, `logs/CODY-DONE.txt`).
+  The wait-vs-worktree question is moot — the UI build runs in the **main tree**, where the Android
+  toolchain is already warm (docker image, keystore, gradle cache). A worktree would force a fresh
+  `npm install` + native prebuild for zero benefit.
+- Two things the finished run changed in the live config, for the record: `https://…:10443` now
+  proxies `:9222` (was the dashboard), and Funnel `:443 → :8100` is byte-identical. If D4 lands,
+  the dashboard needs its own route — add `:10444 → :9119` rather than repointing `:10443`.
+- You asked for a **frontier model on planning/gates**. This document *is* the gate artifact — it
+  can go to Step5/Opus/Fable for review before Cody builds; Cody builds on deepseek-flash.
+- Android first (the v0.1.0 freeze skips to the new UI), then iOS via EAS.

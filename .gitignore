@@ -2,8 +2,10 @@ node_modules/
 .expo/
 dist/
 web-build/
-android/
-ios/
+# Only the GENERATED top-level native projects are ignored. The local Expo module in ./modules/
+# ships its own android/ directory, which must be committed — a bare `android/` rule would hide it.
+/android/
+/ios/
 *.log
 logs/
 *.keystore
@@ -21,3 +23,7 @@ local.properties
 .DS_Store
 # never commit a real key
 api-key.txt
+
+# Generated native build output inside a local Expo module (the module sources are
+# committed; its Gradle build/ tree is not).
+**/android/build/**

@@ -1,0 +1,15 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.personae.tailscale'
+version = '0.2.0'
+
+android {
+  namespace "com.personae.tailscale"
+  defaultConfig {
+    versionCode 2
+    versionName '0.2.0'
+  }
+}
