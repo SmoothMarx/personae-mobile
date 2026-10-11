@@ -1,5 +1,5 @@
 name: personae-mobile-auth
-version: 1.1.0
+version: 1.2.0
 kind: backend
 author: cody (Personae Mobile)
 description: >-
@@ -18,5 +18,10 @@ description: >-
   phone redeems it at POST /api/plugins/personae-mobile-auth/pair/redeem for a per-device
   token stored only as sha256 in state/credentials.json (0600), revocable from
   /api/plugins/personae-mobile-auth/devices. The env bearer keeps working unchanged.
+  1.2.0 (Personae Mobile 0.7.0) adds GET /tailscale/peers: the host runs
+  `tailscale status --json` and returns {available, self, peers:[{name, ip, os, online}]}
+  over IPv4 for the app's "choose device" picker (a phone cannot enumerate a tailnet).
+  Readable by the owner AND by a paired device; any CLI problem answers
+  {available:false, reason} instead of failing, and the app falls back to manual entry.
 requires_env:
   - HERMES_PERSONAE_BEARER

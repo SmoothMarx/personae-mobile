@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import html
 import importlib.util
+import json
 import logging
+import subprocess
 import sys
 import threading
 import time
@@ -301,6 +303,131 @@ async def device_revoke(request: Request, device_id: str):
         return _err(404, "not_found", "Device not found.")
     _audit("device_revoked", request, user_id=f"{PRINCIPAL}:{device_id}", by=kind)
     return JSONResponse({"device": record}, headers=_NO_STORE)
+
+
+# ---- the tailnet peer list (0.7.0) --------------------------------------------------------------
+#
+# WHY THIS LIVES ON THE HOST: a phone cannot enumerate a tailnet. Android exposes no such API, and
+# `src/native/tailscale.ts` deliberately bridges only six calls (installed / connect / disconnect /
+# openApp / vpnTransportActive / probeTcp) — no status. The HOST can, and does:
+#
+#     $ tailscale status --json      -> {"Self": {...}, "Peer": {"key": {...}, ...}}
+#
+# So the picker's source of truth is this owner-or-device-gated endpoint. It is read by the PHONE,
+# which is a paired device — gating it owner-only would make it useless — so the gate is
+# "owner OR paired device", exactly like `/devices/self`.
+#
+# The endpoint NEVER fails hard: no CLI, a timeout, a non-zero exit or an unparseable blob all
+# answer `{"available": false, "reason": ...}`, which the app renders as "type the address by hand"
+# (the manual entry under Advanced). That is a pass for the release, not a defect.
+
+TAILSCALE_BIN = "tailscale"
+TAILSCALE_TIMEOUT_SECONDS = 5.0
+
+#: A reason string the caller may see. Never contains a path, a token or any output of the CLI.
+TAILSCALE_REASONS = ("cli_missing", "timeout", "cli_error", "unparseable_output")
+
+
+def tailscale_status_json(
+    binary: str = TAILSCALE_BIN, timeout: float = TAILSCALE_TIMEOUT_SECONDS
+) -> tuple[str, str]:
+    """Run ``tailscale status --json``. Returns ``(payload, reason)``; ``reason == ""`` on success.
+
+    The reason vocabulary is small and closed, and the CLI's own stderr/stdout is never returned —
+    it can carry tailnet names, and this response is read by a phone.
+    """
+    try:
+        proc = subprocess.run(
+            [binary, "status", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except (FileNotFoundError, NotADirectoryError, PermissionError):
+        return "", "cli_missing"
+    except subprocess.TimeoutExpired:
+        return "", "timeout"
+    except OSError:
+        return "", "cli_missing"
+    if proc.returncode != 0:
+        return "", "cli_error"
+    return proc.stdout or "", ""
+
+
+def _ipv4_of(node: dict) -> str:
+    """The first IPv4 in ``TailscaleIPs``, or ``""``. IPv6-only peers are dropped, per the brief."""
+    for value in node.get("TailscaleIPs") or []:
+        text = str(value or "").strip()
+        if ":" in text:
+            continue
+        octets = text.split(".")
+        if len(octets) == 4 and all(part.isdigit() and int(part) <= 255 for part in octets):
+            return text
+    return ""
+
+
+def _peer_row(node: dict) -> Optional[dict]:
+    ip = _ipv4_of(node)
+    if not ip:
+        return None
+    name = str(node.get("HostName") or "").strip()
+    if not name:
+        # DNSName is `host.tailnet.ts.net.` — the first label is the same host name the CLI prints.
+        name = str(node.get("DNSName") or "").split(".")[0].strip()
+    return {
+        "name": name,
+        "ip": ip,
+        "os": str(node.get("OS") or "").strip(),
+        "online": bool(node.get("Online")),
+    }
+
+
+def peers_payload(payload: str, reason: str = "") -> dict:
+    """Turn the CLI's blob into the app's shape, or into an honest ``available: false``.
+
+    ``{"available": true, "self": {name, ip, os, online}, "peers": [{name, ip, os, online}, ...]}``
+    — peers sorted by name so two calls cannot reorder the picker, IPv6-only peers dropped.
+    """
+    if reason:
+        return {"available": False, "reason": reason if reason in TAILSCALE_REASONS else "cli_error"}
+    try:
+        data = json.loads(payload)
+    except (json.JSONDecodeError, TypeError):
+        return {"available": False, "reason": "unparseable_output"}
+    if not isinstance(data, dict) or not isinstance(data.get("Self"), dict):
+        return {"available": False, "reason": "unparseable_output"}
+    self_row = _peer_row(data["Self"])
+    if self_row is None:
+        # A running tailnet always has an IPv4 for itself; without one the blob is not usable.
+        return {"available": False, "reason": "unparseable_output"}
+    raw_peers = data.get("Peer")
+    peers: list[dict] = []
+    if isinstance(raw_peers, dict):
+        for node in raw_peers.values():
+            if not isinstance(node, dict):
+                continue
+            row = _peer_row(node)
+            if row is not None:
+                peers.append(row)
+    elif isinstance(raw_peers, list):
+        for node in raw_peers:
+            if isinstance(node, dict):
+                row = _peer_row(node)
+                if row is not None:
+                    peers.append(row)
+    peers.sort(key=lambda row: (row["name"].lower(), row["ip"]))
+    return {"available": True, "self": self_row, "peers": peers}
+
+
+@router.get("/tailscale/peers")
+async def tailscale_peers(request: Request):
+    """The machines this host can see on its tailnet. Owner session OR a paired device."""
+    kind, _ = _caller(request)
+    if kind == "none":
+        return _err(401, "unauthenticated", "A dashboard session or a paired device is required.")
+    payload, reason = tailscale_status_json()
+    return JSONResponse(peers_payload(payload, reason), headers=_NO_STORE)
 
 
 # ---- the /pair page -----------------------------------------------------------------------------
