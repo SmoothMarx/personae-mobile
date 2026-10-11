@@ -976,3 +976,163 @@ own shapes, and forensics on the built artifact. Specifically unverified on hard
 Multi-select · Apropos · iOS/EAS · the gateway-side state store and layout sync (**P11**: every
 roster preference already lives behind `src/rosterPrefs.ts`, so the server store can replace the
 backing without touching a screen) · layout export/import · right-click parity.
+
+
+# 0.6.0 — connection, pairing, and options that sync
+
+Brief: `GOAL-0.6.0.md` (+ its two continuation files). Commits, one per phase:
+`d5f07d1` (P0.6, the server half) · `fb0eae0` (P1 pure: pairing client, wizard probe, surface heal,
+options-sync client) · `6e3f291` (P1 screens: connect wizard, deep link, QR, sync wired into the
+roster, 0.6.0) · `4b31fa7` (P5: the release-signed artifact + `logs/verify-0.6.0.sh`).
+Desktop pane: `6b2b152` in `~/Projects/hermes-desktop-plugins/personae` (the sync writer).
+
+## What 0.6.0 changes for the user
+
+| | 0.5.0 | 0.6.0 |
+|---|---|---|
+| credential | a bearer copied onto the phone by hand | **pairing**: sign in once on the dashboard, the phone gets its own revocable device key |
+| connecting | type the address | **Connect wizard**: probes `/api/health`, names `hermes-serve.service`, one-tap fix when the address is the gateway |
+| the `:9222` mistake | a warning on the settings screen | the wizard says *"esse endereço é o hermes-gateway.service … o dashboard é o :9119"* **and** an already-incoherent stored pair is healed on load, visibly |
+| language | PT-PT only, hardcoded in places | **English by default**, Português selectable (live switch); the support log follows it |
+| Tailscale | auto-start ON | **OFF by default** (manual "abrir Tailscale" and "voltar a verificar" kept) |
+| groups/sort/colours | local to each device | **shared with the desktop pane** through the messenger plugin's `/state` store |
+
+## P0.6 — the server half (`d5f07d1`)
+
+`server/personae-mobile-auth/` (provider + `store.py` + `qr.py` + `dashboard/plugin_api.py`) and
+`server/messenger/dashboard/ui_state.py` + `/state`. 43 pytest checks, run in the **dashboard's own
+runtime** (python 3.14 + its fastapi/Pydantic), with pytest borrowed from the legacy venv —
+`bash server/run-tests.sh tests`.
+
+| Piece | Contract |
+|---|---|
+| pairing | `POST pair/start` (owner session) → single-use code, 300 s, ≤5 live; `POST pair/redeem` → device token **exactly once** (410 on reuse/expiry, 401 unknown, 429 >5/min/IP) |
+| storage | `state/credentials.json`, 0600, flock + temp + `os.replace`; **only `sha256(token)`** and a 6-char prefix; a corrupt file fails closed and is quarantined on the next write |
+| provider | `verify_token` accepts the env bearer, a device token, or a pairing code **only** on the redeem path; `verify_session` accepts the first two (that is what carries `/api/profiles`, `/api/auth/ws-ticket`) |
+| devices | `GET /devices`, `POST /devices/{id}/revoke`, `GET /devices/self`; a revoked token 401s immediately; a device may revoke only itself |
+| browser page | `GET /pair` — server-rendered, styled like `/login`, QR + copyable `personae://connect` deep link + "Continuar"; live status poll |
+| QR | `qr.py`: a dependency-free ISO/IEC 18004 encoder (byte mode, level M, versions 1-25) writing SVG — **verified bit-for-bit against `segno`** for 5 payloads × all 8 masks (`test_qr.py`) |
+| `/state` | entry-wise LWW by `rev`, tombstones that no lower rev can resurrect, multi-device adds both survive, device-local keys refused **by name**, 256 KB → 413, >64 keys → 400 |
+
+**Gate 0, live** (`logs/060-server.txt`, no bearer anywhere in it): `/api/health` 200 ·
+`/api/auth/providers` lists `personae-mobile` · `/api/profiles` 401 anon → **200 with 22 profiles** ·
+`pair/start` 200 (ttl 300) · `pair/redeem` → device token → `/api/profiles` + `/api/auth/me` 200 →
+**revoke → 401** · second redeem → **410** · `/state` round-trip with a tombstone and a conflicting
+rev · `expanded-v1` → 400 · 310 936-byte body → **413**.
+
+## P1 — the app
+
+**Pure first** (`fb0eae0`): `src/pairing.ts` (link parsing, redeem with a typed failure per status,
+probe, `settingsAfterPairing`) and `src/sync/uiSync.ts` (Lamport revs, tombstones, seed-then-
+authoritative, 1.5 s debounce, backoff, 404 → local-only). **Screens** (`6e3f291`):
+`app/connect.tsx` — the wizard **and** the `personae://connect` landing route (expo-router hands the
+query to it on cold start and on foreground), with the browser auth session
+(`expo-web-browser` + `personae://` redirect), the QR scanner (`expo-camera`), a pasted link, the
+systemd lines as copyable blocks, and `/api/profiles` as the "22 perfis" confirmation.
+
+The sync is wired through the one place preferences are written (`useRoster`'s `mutate`), so no screen
+had to learn about it; remote values are applied through the **same normalisers** a local load uses.
+
+**Measured, not claimed:** `scripts/pair-harness.ts` drives the app's own code against the live
+dashboard (`logs/pair-harness-0.6.0.txt`): probe :9119 = dashboard, **probe :9222 = gateway**,
+`pair/start` → `parseConnectLink` → `redeemPairing` → `/api/profiles` **200 / 22 profiles** → second
+redeem `used (HTTP 410)` → `revokeSelf` → **401**. And a desktop↔phone round-trip through the live
+store (`logs/sync-roundtrip-0.6.0.txt`): the pane pushed an entry, a phone-side write at `rev+1`
+survived, a fresh pane adopted both, tombstones cleaned up.
+
+## P5 — the artifact, measured
+
+```
+npx expo prebuild -p android --no-install      # versionCode 6 / versionName 0.6.0
+bash scripts/patch-android-signing.sh
+docker run … personae-android:1 ./gradlew :app:assembleRelease --no-daemon --max-workers=1
+# BUILD SUCCESSFUL in 5m 53s · 449 actionable tasks: 421 executed, 28 up-to-date  (logs/gradle-v060.log)
+```
+
+| Measured fact | Value |
+|---|---|
+| Path / bytes | `dist/personae-0.6.0.apk` / **113 406 676** |
+| sha256 | **599e2a8eea81cd02a0704227c6d7a764271afa9476ddffd7b3ca5a43ef48d200** |
+| versionCode / versionName | **6** / **0.6.0** |
+| Signer | `CN=Personae Mobile, …`, SHA-256 `bd40e005…dd37f26` — **the same key as 0.1.0-0.5.0** |
+| Bundle | 2 838 104 bytes; markers `pair/redeem` 1 · `personae://connect` 1 · `api/plugins/personae-mobile-auth` 1 · `api/plugins/messenger/state` 1 · `expo-camera` 1 |
+| Manifest | `CAMERA` permission, `personae` scheme ×11, `usesCleartextTraffic` |
+| **Live bearer in the bundle** | **0 occurrences** |
+| Environment facts | `100.64.0.11` 0 · `10.0.0.15` 0 · `personae` 0 · `API_SERVER_KEY=` 0 |
+
+`bash logs/verify-0.6.0.sh` re-runs the whole check — **19 PASS, exit 0** (`logs/verify-0.6.0.txt`):
+app tests, `tsc`, server tests, deployed-vs-repo drift, service status, version, the artifact summary,
+the signer fingerprint against 0.5.0's, the bearer grep and the bundle markers.
+
+## Deviations from the brief, and why (each one deliberate)
+
+1. **`/pair` is a root page, not an `/api/plugins/…` route.** The login redirect refuses `/api/*`
+   targets (`is_safe_next_path`), so the post-login landing page cannot live under the plugin prefix.
+   The plugin adds `GET /pair` to the dashboard app at import time — dashboards import plugin APIs
+   *before* mounting the SPA, so it wins. **No core file was edited** (that was the fallback the brief
+   allowed); the reach into `hermes_cli.web_server.app` is the cost, and it is guarded and logged.
+2. **The pairing code is honoured on ONE path, by inspecting the seam's caller.** `verify_token` gets
+   no request object, so the provider confirms it is being asked by the redeem route by reading the
+   seam's own frame — fail-closed: if core ever changes shape, redeem 401s and nothing widens. The
+   alternative (registering the code on the sidebar token route for its 5-minute life) was worse.
+3. **`pair/qr.svg` takes an opaque `?id=`, never the code.** A code in a URL is a code in an access
+   log; the id is an in-memory handle that expires with the code.
+4. **The QR encoder is our own pure Python**, not a vendored JS blob (`segno`/`qrcode` are absent from
+   the dashboard venv) — and it is pinned against `segno` as an oracle rather than trusted.
+5. **No candidate addresses are baked into the app.** The brief listed tailnet/LAN candidates; the
+   0.5.0 forensics check counts those strings and expects 0, so the wizard instead derives suggestions
+   from the address and routes the phone already knows (`candidateAddresses`).
+6. **The settings screen was NOT restructured into three blocks.** What is there: a "Language / Língua"
+   row (0.5.0-parity additions), a **Connection block at the top** (heal note, "Set up the connection"
+   → the wizard, this phone's device label, Revoke), and the 0.5.0 fields, including the `Tipo de
+   ligação` segment, unchanged below it. The wizard — the part that actually answers "why are there two
+   ports?" — is a first-class screen. The cosmetic regroup is the one acceptance line this release does
+   not fully meet; see the gaps below.
+7. **Restarts go through a detached helper.** This session's parent chain lives in
+   `hermes-serve.service`'s cgroup, so a direct `systemctl --user restart` kills the run doing it
+   (that is exactly how run #1 died). Used:
+   `systemd-run --user --collect --unit=hs-restart-$(date +%s) bash -lc 'sleep 2; systemctl --user restart hermes-serve.service'`.
+
+## Honest gaps (0.6.0)
+
+1. **Nothing has run on the phone.** No adb on this host and the Pixel 8 is offline. Unverified on
+   hardware: the QR scan, the in-app-browser interception (`openAuthSessionAsync` + `personae://`),
+   the deep-link cold start, the camera permission prompt, and the roster's sync feel. What *is*
+   proven: the app's own client code against the live dashboard (harness above), the artifact
+   forensics, and 145 offline tests.
+2. **The settings three-block restructure** (§1.2 of the brief) — not done, see deviation 6.
+3. **The app sends only two of the seven shared keys** (`sections-v1`, `session-colors-v1`): they are
+   the ones the phone renders, so it can never clobber the pane's `hidden`/`apropos`/`session-order`.
+   Sort and grouping ride inside `sections-v1` (`sort`, `order`, `members`) — one key, both features.
+4. **APK size grew 88.3 MB → 113.4 MB** (+28 %), all of it `expo-camera` (zxing-wasm + MLKit). QRs
+   could be scanned without it, but not without either a native dep or a network call.
+5. **Two live-state hygiene notes:** a revoked test device and a `pair/*` device from the harness are
+   in `state/credentials.json` (revoked, inert); the Gate-0 test entries were tombstoned out of
+   `/state`.
+6. **Not re-verified this run:** the desktop pane's own 668-check harness was run and passed when its
+   commit was made; the live round-trip above is the newer evidence.
+
+## For the user — install and the checks worth running
+
+1. Put `dist/personae-0.6.0.apk` on the phone and tap it. Same Personae release key as 0.4.0/0.5.0,
+   so it installs **over** the existing app.
+2. First run (or **Definições → Ligação → Configurar a ligação**) should already show a banner saying
+   the address was fixed from `:9222` to `:9119` — that is the heal, and it is the 404 you would
+   otherwise have seen again.
+3. Press **Verificar este endereço**: it must answer `✓ hermes-serve.service respondeu — Hermes
+   0.21.5`. Point it at `:9222` on purpose and it must say *hermes-gateway.service … o dashboard é o
+   :9119* with a one-tap fix.
+4. Tap **Emparelhar este telefone (entrar)**: the dashboard's login appears inside the app, you sign
+   in as usual, and the page ends with **Continuar na app** → the phone stores its own key. Nothing to
+   copy. Success reads **22 perfis encontrados**.
+5. Alternatively: on the computer open `http://<host>:9119/pair`, and tap **Ler código QR** in the app.
+6. Definições → **Tipo de ligação** still shows the pair in one line, and now **Ligação** shows this
+   phone's device label with **Revogar este dispositivo**.
+7. On the desktop pane (after its `deploy.sh`), create a group or recolour a session: it should appear
+   on the phone when the roster refreshes, and vice versa.
+
+Commands for the two things only the phone can prove (marked **deferred** — not run here):
+```bash
+adb install -r dist/personae-0.6.0.apk
+adb shell am start -a android.intent.action.VIEW -d 'personae://connect?base=HTTP%3A%2F%2Fhost%3A9119&code=…'
+```
