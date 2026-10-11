@@ -115,4 +115,92 @@ contacted (see "What could NOT be verified").
   patched to sign `release` with that keystore from **environment variables only**, and to fall back
   to the debug key *with a printed warning* if it is absent — never to pretend otherwise.
 
-Next step: run `:app:assembleRelease` in the container, then P8 measurement.
+### P7 result — two build attempts, one real defect found
+
+Run 1 — `:app:assembleRelease` → **BUILD FAILED in 8m 40s**. 350 tasks; every native task passed
+(all 4 ABIs compiled), and the failure was the JS bundling step:
+
+```
+> Task :app:createBundleReleaseJsAndAssets
+Error: Unable to resolve module node:http from /work/src/api/transport.ts
+```
+
+Metro resolves `require`/`import` **statically**, so a lazily-called `require('node:http')` inside
+`nodeTransport` (in the same file the app imports) is still resolved at bundle time. Fixed by moving
+the Node transport to `src/api/transportNode.ts`, imported **only** by `tests/`. The app file
+`src/api/transport.ts` now has no `node:` import at all.
+
+Also found and fixed before rebuild (measured, not assumed):
+
+- `android/app/src/main/AndroidManifest.xml` had **no** `usesCleartextTraffic` — only the
+  `debug`/`debugOptimized` manifests do. The first release build would therefore have **blocked every
+  `http://` request** on Android 9+, i.e. a roster that could never load. Fixed with the supported
+  `expo-build-properties` plugin (`android.usesCleartextTraffic: true`, `app.json`); verified present
+  in the built APK's manifest (`aapt2 dump xmltree` → `usesCleartextTraffic(0x010104ec)=true`).
+- `expo-doctor` reported 2 failures (app config schema: `newArchEnabled` and
+  `android.usesCleartextTraffic` are not valid SDK 57 fields; and a `typescript` major mismatch).
+  Both fixed → **21/21 checks passed**.
+- `tsc` 5.9 → 6.0.3 required removing the unused `baseUrl`/`paths` from `tsconfig.json`.
+
+Run 2 — the same command → **BUILD SUCCESSFUL in 7m 11s** (412 actionable tasks).
+
+## P8 — the APK, measured
+
+Commands and their real results (all run against the artifact on disk, nothing from memory):
+
+```
+docker run --rm --env-file ~/.personae-android/build.env \
+  -v ~/Projects/personae-mobile:/work -v ~/.personae-android/gradle:/root/.gradle \
+  -v ~/.personae-android:/signing:ro -w /work/android personae-android:1 \
+  bash -lc './gradlew :app:assembleRelease --no-daemon --console=plain'     # BUILD SUCCESSFUL, 7m 11s
+
+# re-run of the identical command (warm Gradle cache, proves the lane repeats):
+#   BUILD SUCCESSFUL in 36s · 412 actionable tasks (26 executed, 386 up-to-date) · GRADLE_EXIT=0
+
+cp android/app/build/outputs/apk/release/app-release.apk dist/personae-0.1.0.apk   # exit 0
+sha256sum dist/personae-0.1.0.apk
+stat -c '%s' dist/personae-0.1.0.apk
+$ANDROID_HOME/build-tools/36.0.0/aapt2 dump badging dist/personae-0.1.0.apk
+$ANDROID_HOME/build-tools/36.0.0/apksigner verify --print-certs dist/personae-0.1.0.apk
+apkanalyzer manifest min-sdk | manifest target-sdk | apk summary
+```
+
+| Measured fact | Value |
+|---|---|
+| Path | `~/Projects/personae-mobile/dist/personae-0.1.0.apk` |
+| Bytes | **85,610,829** |
+| sha256 | **afd2943ad0499dae7c1725fb76a34ada275e3aed72512944e1d34c6edd56ae45** |
+| package | `com.personae.mobile` |
+| versionCode / versionName | **1** / 0.1.0 |
+| minSdk / targetSdk / compileSdk | **24** / 36 / 36 |
+| Native ABIs | arm64-v8a, armeabi-v7a, x86, x86_64 (universal — installs on any phone) |
+| Signer | `CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT`, SHA-256 `bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26` — **matches the Personae release keystore**, not the debug key |
+| Cleartext HTTP | `usesCleartextTraffic=true` present in the shipped manifest |
+| Contents | `assets/index.android.bundle` 2,139,544 bytes; 1254 zip entries, 111,944,419 bytes uncompressed |
+| Bundle is ours, and key-free | contains `chat/stream` and `personae.lastSeen.v1`; no `API_SERVER_KEY=` literal and no `sk-…` token anywhere in the bundle |
+
+`npx expo-doctor` → **21/21 checks passed**. iOS capability kept: `eas.json` present,
+`ios.bundleIdentifier` set, and the only `Platform.OS` uses are the keyboard-avoidance offsets in
+the thread screen.
+
+## What could NOT be verified
+
+1. **The live gateway.** There is no API key in this build and none was available, so the app has
+   **never** talked to the real gateway. Every functional claim above is **mock-gateway evidence**
+   (`mock/server.mjs`), which reproduces the shapes and error envelopes derived from the server
+   source — it is not evidence about the running service.
+2. **On-device rendering and install.** No Android device and no emulator exist on this host, so the
+   APK has not been installed or launched by me. The render layer was never executed on real
+   hardware; what was tested is the client, the SSE parser, the error mapping and the pure screen
+   logic. Specifically untested on hardware: whether XHR delivers SSE incrementally on Android (the
+   blocking-fallback path exists for exactly this, and `react-native-sse` is installed as a drop-in
+   replacement — QUESTIONS Q3).
+3. **Real profile names / real session data.** Never touched.
+
+## Next step
+
+Hand the APK over; if it fails to install, the first thing to check is Android version (the APK
+needs **Android 7.0 / API 24** or newer) and the "install unknown apps" permission for whichever app
+opens the file. If it installs but the roster never loads, open Definições and press
+**Testar ligação** — it reports, per profile, the exact HTTP status and message the phone received.
+
