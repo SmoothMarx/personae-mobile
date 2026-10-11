@@ -128,6 +128,12 @@ docker run --rm -e LIVE_BEARER -v "$ROOT:/work" -w /work "$IMAGE" bash -lc '
     printf "%s=%s " "$s" "$(unzip -p "$APK" assets/index.android.bundle | grep -ac "$s")"
   done
   echo
+  echo "application-id: $(apkanalyzer manifest application-id "$APK")"
+  printf "0.7.0 feature strings (want >=1 each): "
+  for s in "Show advanced settings" "New profile" "Choose device" "Log in to Tailscale"; do
+    printf "[%s]=%s " "$s" "$(unzip -p "$APK" assets/index.android.bundle | grep -ac "$s")"
+  done
+  echo
   printf "env facts (want 0): "
   for s in 100.64.0.11 personae 10.0.0.15 API_SERVER_KEY=; do
     printf "%s=%s " "$s" "$(unzip -p "$APK" assets/index.android.bundle | grep -ac "$s")"
@@ -169,6 +175,19 @@ if grep -qE '^env facts \(want 0\): 100\.106\.51\.4=0 personae=0 10\.0\.4\.15=0 
   ok "no host address, user name or key literal in the shipped bundle"
 else
   bad "an environment fact leaked into the shipped bundle"; grep '^env facts' /tmp/v070-apk.txt
+fi
+
+# The three UI strings only B and C introduce. A 0.6.1 bundle under a 0.7.0 name cannot carry them,
+# which is the point: the version check alone cannot tell a stale bundle from a fresh one.
+if grep -qE '^0\.7\.0 feature strings .*\[Show advanced settings\]=[1-9].*\[New profile\]=[1-9].*\[Choose device\]=[1-9].*\[Log in to Tailscale\]=[1-9]' /tmp/v070-apk.txt; then
+  ok "the shipped bundle carries B's Advanced disclosure, C's New profile, and the Tailscale picker copy"
+else
+  bad "a 0.7.0 UI string is missing from the shipped bundle"; grep '^0\.7\.0 feature strings' /tmp/v070-apk.txt
+fi
+if [ "$(grep -E '^application-id: com\.personae\.mobile' /tmp/v070-apk.txt | wc -l)" = 1 ]; then
+  ok "application id com.personae.mobile (unchanged, so it installs over 0.6.1)"
+else
+  bad "application id changed — this would install as a second app"; grep '^application-id' /tmp/v070-apk.txt
 fi
 
 echo

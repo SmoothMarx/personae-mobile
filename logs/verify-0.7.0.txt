@@ -1,11 +1,11 @@
-=== 0.7.0 release check — 2026-10-11T21:59:35Z ===
+=== 0.7.0 release check — 2026-10-11T22:00:44Z ===
 
 --- app ---
 PASS  app tests: 161/161 passed, 0 failed (floor 145)
 PASS  typecheck: tsc --noEmit rc 0
 
 --- server plugins ---
-PASS  server tests: 60 passed in 1.92s (floor 43)
+PASS  server tests: 60 passed in 1.63s (floor 43)
       literal '~/.hermes/hermes-agent/venv/bin/python -m pytest server/tests -q' fails on this host
         (ImportError while importing test module '~/Projects/personae-mobile/server/); server/run-tests.sh is the runner of record
 PASS  deployed plugins match server/ (no drift)
@@ -29,6 +29,8 @@ min-sdk: 24  target-sdk: 36
 camera permission: 1
 deep-link scheme personae: 11
 markers: personae://connect=1 tailscale/peers=1 api/profiles=1 pair/redeem=1 api/plugins/messenger/state=1 expo-camera=1 
+application-id: com.personae.mobile
+0.7.0 feature strings (want >=1 each): [Show advanced settings]=1 [New profile]=1 [Choose device]=1 [Log in to Tailscale]=1 
 env facts (want 0): 100.64.0.11=0 personae=0 10.0.0.15=0 API_SERVER_KEY==0 
 positive control personae://connect: 1
 live bearer occurrences (want 0): 0
@@ -40,5 +42,7 @@ PASS  CAMERA permission present
 PASS  personae:// deep link present in the manifest
 PASS  live bearer occurrences in the shipped bundle: 0
 PASS  no host address, user name or key literal in the shipped bundle
+PASS  the shipped bundle carries B's Advanced disclosure, C's New profile, and the Tailscale picker copy
+PASS  application id com.personae.mobile (unchanged, so it installs over 0.6.1)
 
 RESULT: PASS — 0.7.0 verified

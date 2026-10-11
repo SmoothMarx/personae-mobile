@@ -1274,10 +1274,17 @@ docker run … personae-android:1 ./gradlew :app:assembleRelease --no-daemon
 | Environment facts | `100.64.0.11` 0 · `10.0.0.15` 0 · `personae` 0 · `API_SERVER_KEY=` 0 |
 | CAMERA permission / `personae://` scheme | present / present |
 
-`bash logs/verify-0.7.0.sh` → **15 PASS, 0 FAIL, RESULT: PASS** (`logs/verify-0.7.0.txt`). It derives
+`bash logs/verify-0.7.0.sh` → **17 PASS, 0 FAIL, RESULT: PASS** (`logs/verify-0.7.0.txt`). It derives
 the expected version from `app.json`, so a stale 0.6.1 bundle under a 0.7.0 name fails instead of
-passing, and it now also proves the 0.7.0 **features** are in the shipped bundle (`tailscale/peers`,
-`api/profiles`) rather than trusting that the source tree was what got built.
+passing, and it proves the 0.7.0 **features** are in the shipped bundle rather than trusting that the
+source tree was what got built — four checks that a 0.6.1 artifact could not satisfy:
+
+* `tailscale/peers`, `api/profiles` present as bundle markers (the endpoints B and C call);
+* the new **UI copy** is in the bundle: `[Show advanced settings]=1 [New profile]=1
+  [Choose device]=1 [Log in to Tailscale]=1` — i.e. B's Advanced disclosure, C's "+", and the Tailscale
+  picker really shipped, not just their source files;
+* `application-id: com.personae.mobile` unchanged (a changed id would install as a second app);
+* the signer is still `bd40e005…dd37f26`, so it installs **over** 0.6.1.
 
 ## Suites (all run on this host, in this run)
 
@@ -1378,15 +1385,17 @@ session-colors-v1, hidden-v1, apropos-v1}` — so **`session-groups-v1` is the e
 desktop-shared key session grouping must ride**; the phone's `src/sync/uiSync.ts` currently syncs only
 `sections-v1` and `session-colors-v1` (profile groups and colours) and never writes it.
 
-*Why it was not attempted:* the shape of that key is defined by the desktop pane
+*Why it was not attempted (budget, stated as the operator asked):* the shape of that key is defined by the desktop pane
 (`~/.hermes/desktop-plugins/messenger/plugin.js` — `profileSessionGroups` `:944`,
 `sessionGroupShell` `:845`, `sessionGroupMoveTargets` `:1110`, no `parent_session_id` on members
 `:747`/`:786`). Writing a model before reading those four sites is exactly how a *second* source of
 truth gets invented, and §5 of the goal names that as the one failure that costs the run. Reading an
 8 365-line file, porting the membership resolver, adding the sync key, and building selection mode with
-its bars is the largest single item in the release; the run budget that was left after A–C plus the
-build, the live probes and the verifier was not enough to do it **and** re-verify honestly, and shipping
-a working-looking D that can lose a group on the next sync is worse than not shipping it.
+its bars is the largest single item in the release; the honest estimate for D is ~90 minutes (read the four
+desktop sites, model, sync wiring, selection UI, round-trip test, rebuild the bundle, re-verify), and
+about **50 minutes** were left when A–C were committed, built and verified. Doing it in half would have
+left HEAD carrying a store no UI reaches, or an APK that does not match HEAD — and shipping a
+working-looking D that can lose a group on the next sync is worse than not shipping it at all.
 
 *Next run's first step (exact):* read `plugin.js:944-1000`, `:1110-1180`, `:840-870` and
 `plugin.js:747/:786`, then write the model's normaliser to match `sessionGroups` byte-for-byte; add
