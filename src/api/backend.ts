@@ -61,6 +61,12 @@ export type Backend = {
   sidebar(profile?: string, limits?: { recents?: number; cron?: number }): Promise<SidebarSlices>;
   /** Message-body search (FTS). Dashboard only; the legacy surface answers with an empty list. */
   searchMessages(query: string, profile: string, limit?: number): Promise<MessageHit[]>;
+  /** Archive one session (never a delete). */
+  archiveSession(id: string, profile?: string): Promise<void>;
+  /** Delete one session — the only irreversible verb in the roster. */
+  deleteSession(id: string, profile?: string): Promise<void>;
+  /** Lazy page of one profile's sessions, used when a row is expanded (R9). */
+  profileSessions(profile: string, limit?: number): Promise<HermesSession[]>;
   /** Authoritative title for one session, or null (F4's second link in the chain). */
   sessionTitle(id: string, profile?: string): Promise<string | null>;
   messages(id: string, profile: string, limit?: number): Promise<HermesMessage[]>;
@@ -192,6 +198,20 @@ function createDashboardBackend(settings: Settings): Backend {
 
     async searchMessages(query, profile = 'all', limit = 40) {
       return client.searchMessages(query, profile, limit);
+    },
+
+    /** The lazy page a row asks for when the user opens it. Cron runs are filtered by the roster. */
+    async profileSessions(profile, limit = 25) {
+      const body = await client.rail(profile || 'all', { limit, offset: 0 });
+      return (body.sessions ?? []).map(toHermesSession);
+    },
+
+    async archiveSession(id, profile = '') {
+      await client.patchFlags(id, { archived: true }, profile);
+    },
+
+    async deleteSession(id, profile = '') {
+      await client.deleteSession(id, profile);
     },
 
     async sessionTitle(id, profile = '') {
@@ -369,6 +389,25 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
       // Message bodies are not searchable on the api_server surface; the metadata sweep is all the
       // search is there, and saying so beats issuing a request that cannot answer.
       return [];
+    },
+
+    async profileSessions(profile = '', limit = 25) {
+      const body = await api.listSessions(profile, limit, 0);
+      return (body.data ?? []).map((row) => ({ ...row, profile: row.profile ?? (profile || 'default') }));
+    },
+
+    archiveSession() {
+      // The archive/hide flags are a dashboard route; this surface answers 501 out loud rather
+      // than pretending the action happened (the same choice `rename` already makes here).
+      return Promise.reject(
+        new ApiError(t.errors.server(501, 'arquivar não é suportado nesta ligação'), { kind: 'http', status: 501 }),
+      );
+    },
+
+    deleteSession() {
+      return Promise.reject(
+        new ApiError(t.errors.server(501, 'apagar não é suportado nesta ligação'), { kind: 'http', status: 501 }),
+      );
     },
 
     async sessionTitle(id, profile = '') {

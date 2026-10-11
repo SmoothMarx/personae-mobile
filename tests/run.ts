@@ -99,6 +99,7 @@ import {
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
 import { t } from '../src/i18n';
+import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
 
 type TestFn = () => void | Promise<void>;
 const tests: { name: string; fn: TestFn }[] = [];
@@ -1930,6 +1931,49 @@ async function main(): Promise<void> {
     assert.deepEqual(result.contacts, [], 'no synthetic `Principal` contact, ever');
     assert.ok(result.error, 'the error travels to the screen');
     backend.dispose();
+  });
+
+
+  // ── R8: the long-press menus, as an inventory ──
+  test('menus: the profile menu carries the R8 verbs, and archive-all is its only destructive one', () => {
+    const entries = profileMenuEntries({
+      label: 'Cody',
+      hidden: false,
+      canRename: true,
+      canArchiveAll: true,
+      sections: [{ id: 'g', name: 'G' }],
+      currentSectionId: '',
+    });
+    const keys = entries.map((entry) => entry.key);
+    for (const verb of ['new-session', 'rename', 'colour', 'group', 'sort', 'hide', 'archive-all', 'copy-id']) {
+      assert.ok(keys.includes(verb), `the profile menu must offer ${verb}`);
+    }
+    assert.deepEqual(
+      entries.filter((entry) => entry.destructive).map((entry) => entry.key),
+      ['archive-all'],
+      'archiving is the heaviest thing a profile menu may do — it deletes nothing',
+    );
+    const hidden = profileMenuEntries({ label: 'x', hidden: true, canRename: true, canArchiveAll: false, sections: [], currentSectionId: '' });
+    assert.ok(hidden.some((entry) => entry.key === 'hide' && entry.label === 'unhide'), 'a hidden profile offers the way back');
+    assert.equal(hidden.some((entry) => entry.destructive), false);
+  });
+
+  test('menus: the session menu offers open/rename/colour/archive/delete, delete being the one irreversible verb', () => {
+    const entries = sessionMenuEntries({ title: 'Sessão', colour: null });
+    const keys = entries.map((entry) => entry.key);
+    for (const verb of ['open', 'rename', 'colour', 'archive', 'copy-id', 'delete']) {
+      assert.ok(keys.includes(verb), `the session menu must offer ${verb}`);
+    }
+    assert.deepEqual(entries.filter((entry) => entry.destructive).map((entry) => entry.key), ['delete']);
+  });
+
+  test('menus: the group menu offers rename and delete, and its delete cannot name a session', () => {
+    const entries = sectionMenuEntries();
+    assert.deepEqual(entries.map((entry) => entry.key), ['rename-section', 'delete-section']);
+    // The destructive entry is a SECTION delete. Nothing in this menu is reachable from a session,
+    // which is the structural half of "deleting a group never deletes sessions".
+    assert.equal(entries.filter((entry) => entry.destructive).length, 1);
+    assert.deepEqual(sortEntries().map((entry) => entry.key), ['sort-activity', 'sort-name', 'sort-sessions']);
   });
 
   // ─────────────────────────────────────────────────────── report ──

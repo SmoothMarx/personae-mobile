@@ -555,6 +555,21 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
     },
 
     /**
+     * DELETE /api/sessions/{id} — the one irreversible verb in the roster.
+     *
+     * Read from `web_routers/sessions.py:792`: an already-absent session answers
+     * `{ok: true, already_absent: true}` (idempotent on purpose, so a retry after a transient empty
+     * does not resurrect a ghost row), and an active write guard answers 409.
+     */
+    deleteSession(sessionId: string, profile = ''): Promise<{ ok?: boolean; already_absent?: boolean }> {
+      return json<{ ok?: boolean; already_absent?: boolean }>(
+        `/api/sessions/${encodeURIComponent(sessionId)}`,
+        { method: 'DELETE' },
+        { profile: profile && profile !== 'default' ? profile : undefined },
+      );
+    },
+
+    /**
      * profiles.get_asset (RPC) — the avatar as a data URL (never a new route). `found:false` is a
      * normal answer, not an error, so the caller falls back to the monogram (F1).
      */

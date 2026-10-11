@@ -24,6 +24,7 @@ import type { ColourModel } from './logic/rosterFeed';
 export const EXPANDED_STORE_KEY = 'personae.expanded.v1';
 export const HIDDEN_STORE_KEY = 'personae.hidden.v1';
 export const COLOURS_STORE_KEY = 'personae.colours.v1';
+export const LABELS_STORE_KEY = 'personae.labels.v1';
 
 /**
  * The palette. A fixed set (never a free colour picker): the plugin validates against its own
@@ -47,6 +48,17 @@ export type RosterPrefs = {
   expanded: Record<string, true>;
   hidden: string[];
   colours: ColourModel;
+  /**
+   * A phone-local display name per profile.
+   *
+   * Why it is local, and not a rename: the dashboard's `PATCH /api/profiles/{name}` is read
+   * (`web_routers/profiles.py:951`) and it does something far heavier than rename a label — it stops
+   * the running gateway, **renames the profile's directory on disk** and regenerates its wrapper
+   * script. Wiring that behind a long-press on a phone would be a destructive host action wearing a
+   * rename's clothes, so the profile menu labels this verb as this-phone-only and stores a local
+   * label here instead. Saying so is the honest option; the alternative was a silent directory move.
+   */
+  labels: Record<string, string>;
 };
 
 export const EMPTY_PREFS: RosterPrefs = {
@@ -54,6 +66,7 @@ export const EMPTY_PREFS: RosterPrefs = {
   expanded: {},
   hidden: [],
   colours: { profiles: {}, sessions: {}, groups: {} },
+  labels: {},
 };
 
 /**
@@ -120,30 +133,60 @@ function parse<T>(raw: string | null, fallback: T, read: (value: unknown) => T):
   }
 }
 
+/** A local display name: a trimmed non-empty string, or nothing at all. */
+export function normalizeLabels(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    for (const [name, label] of Object.entries(value as Record<string, unknown>)) {
+      const clean = String(label ?? '').trim();
+      if (name && clean) out[String(name)] = clean;
+    }
+  }
+  return out;
+}
+
 /** One read of every key. A corrupt blob degrades to the default rather than crashing the roster. */
 export async function loadRosterPrefs(): Promise<RosterPrefs> {
-  const [sectionsRaw, expandedRaw, hiddenRaw, coloursRaw] = await Promise.all([
+  const [sectionsRaw, expandedRaw, hiddenRaw, coloursRaw, labelsRaw] = await Promise.all([
     storeGet(SECTIONS_STORE_KEY),
     storeGet(EXPANDED_STORE_KEY),
     storeGet(HIDDEN_STORE_KEY),
     storeGet(COLOURS_STORE_KEY),
+    storeGet(LABELS_STORE_KEY),
   ]);
   return {
     sections: parse(sectionsRaw, EMPTY_PREFS.sections, normalizeSections),
     expanded: parse(expandedRaw, {}, normalizeExpanded),
     hidden: parse(hiddenRaw, [], normalizeHidden),
     colours: parse(coloursRaw, EMPTY_PREFS.colours, normalizeColours),
+    labels: parse(labelsRaw, {}, normalizeLabels),
   };
 }
 
-/** One write per key, only for the parts that changed. */
+/** One write per key. */
 export async function saveRosterPrefs(prefs: RosterPrefs): Promise<void> {
   await Promise.all([
     storeSet(SECTIONS_STORE_KEY, JSON.stringify(prefs.sections)),
     storeSet(EXPANDED_STORE_KEY, JSON.stringify(prefs.expanded)),
     storeSet(HIDDEN_STORE_KEY, JSON.stringify(prefs.hidden)),
     storeSet(COLOURS_STORE_KEY, JSON.stringify(prefs.colours)),
+    storeSet(LABELS_STORE_KEY, JSON.stringify(prefs.labels)),
   ]);
+}
+
+/** Set (or clear, with a null/blank value) the local display name for a profile. */
+export function setProfileLabel(prefs: RosterPrefs, profile: string, label: string | null): RosterPrefs {
+  const labels = { ...prefs.labels };
+  const clean = String(label ?? '').trim();
+  if (clean) labels[profile] = clean;
+  else delete labels[profile];
+  return { ...prefs, labels };
+}
+
+/** The label a row paints: the user's own local name first, then whatever the surface said. */
+export function labelFor(prefs: RosterPrefs, profile: string, fallback: string): string {
+  const local = prefs.labels[profile];
+  return local || fallback;
 }
 
 // ── expansion: a per-profile SET, several may be open at once (R2) ──
