@@ -1,25 +1,68 @@
 #!/usr/bin/env bash
-# Deploy server/personae-mobile-auth into the Hermes user-plugin directory and enable it.
-# Idempotent; prints a diff when the deployed copy has drifted from this source of record.
+# Deploy the two server plugins Personae Mobile depends on (personae-mobile-auth, messenger) into
+# the Hermes user-plugin directory and make sure both are enabled.
+#
+#   server/install.sh            # deploy changed files + enable (idempotent: a 2nd run changes nothing)
+#   server/install.sh --check    # report drift only, change nothing (exit 1 on drift)
+#
+# Only files that differ are copied (with a diff shown). The plugins' state/ directories
+# (credentials.json, ui-state.json) are never touched. No secret is read or printed.
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
-PLUGIN_DIR="${HERMES_PLUGIN_DIR:-$HOME/.hermes/plugins}/personae-mobile-auth"
+PLUGINS="${HERMES_PLUGIN_DIR:-$HOME/.hermes/plugins}"
 HERMES_HOME_DIR="${HERMES_HOME_DIR:-$HOME/.hermes}"
+CHECK=0
+[ "${1:-}" = "--check" ] && CHECK=1
 
-mkdir -p "$PLUGIN_DIR"
-for f in __init__.py plugin.yaml; do
-  if [ -f "$PLUGIN_DIR/$f" ] && ! diff -q "$HERE/personae-mobile-auth/$f" "$PLUGIN_DIR/$f" >/dev/null; then
-    echo "drift detected in $f — deployed copy differs, overwriting with the repo copy:"
-    diff -u "$PLUGIN_DIR/$f" "$HERE/personae-mobile-auth/$f" || true
-  fi
-  install -m 0644 "$HERE/personae-mobile-auth/$f" "$PLUGIN_DIR/$f"
+declare -A FILES=(
+  [personae-mobile-auth]="__init__.py plugin.yaml store.py qr.py dashboard/manifest.json dashboard/plugin_api.py"
+  [messenger]="__init__.py plugin.yaml dashboard/manifest.json dashboard/plugin_api.py dashboard/ui_state.py"
+)
+
+drift=0
+changed=0
+for plugin in personae-mobile-auth messenger; do
+  dest="$PLUGINS/$plugin"
+  for f in ${FILES[$plugin]}; do
+    src="$HERE/$plugin/$f"
+    if [ -f "$dest/$f" ] && diff -q "$src" "$dest/$f" >/dev/null; then
+      continue
+    fi
+    drift=1
+    if [ -f "$dest/$f" ]; then
+      echo "drift: $plugin/$f"
+      [ "$CHECK" = 1 ] || diff -u "$dest/$f" "$src" | head -40 || true
+    else
+      echo "missing: $plugin/$f"
+    fi
+    if [ "$CHECK" = 0 ]; then
+      install -D -m 0644 "$src" "$dest/$f"
+      changed=1
+    fi
+  done
 done
-echo "installed -> $PLUGIN_DIR"
 
-if ! grep -q 'HERMES_PERSONAE_BEARER=' "$HERMES_HOME_DIR/.env" 2>/dev/null; then
-  echo "NOTE: $HERMES_HOME_DIR/.env has no HERMES_PERSONAE_BEARER line yet — the provider stays"
-  echo "      disabled (fail-closed) until one is added; see server/README.md."
+if [ "$CHECK" = 1 ]; then
+  [ "$drift" = 0 ] && echo "no drift: deployed plugins match server/"
+  exit "$drift"
 fi
 
-HERMES_HOME="$HERMES_HOME_DIR" hermes plugins enable personae-mobile-auth
-echo "done. Restart hermes-serve.service to pick up an env change; plugin edits alone do not need it."
+for plugin in personae-mobile-auth messenger; do
+  if ! grep -qE "^\s+- ${plugin}\s*$" "$HERMES_HOME_DIR/config.yaml" 2>/dev/null; then
+    HERMES_HOME="$HERMES_HOME_DIR" hermes plugins enable "$plugin"
+    changed=1
+  fi
+done
+
+if ! grep -q '^HERMES_PERSONAE_BEARER=' "$HERMES_HOME_DIR/.env" 2>/dev/null; then
+  echo "NOTE: no HERMES_PERSONAE_BEARER in $HERMES_HOME_DIR/.env — the provider registers only"
+  echo "      once a device has been paired (fail-closed); see server/README.md."
+fi
+
+if [ "$changed" = 1 ]; then
+  echo "deployed. New routes / the /pair page mount at dashboard start. Restart it OUTSIDE any"
+  echo "process that lives in hermes-serve's cgroup:"
+  echo "  systemd-run --user --collect --unit=hs-restart-\$(date +%s) bash -lc 'sleep 2; systemctl --user restart hermes-serve.service'"
+else
+  echo "nothing to do: deployed plugins already match server/"
+fi

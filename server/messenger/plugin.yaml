@@ -1,0 +1,13 @@
+name: messenger
+version: 0.2.0
+description: >-
+  Read-only session/message-body search backing the Messenger desktop pane.
+  The pane's SDK gives it session metadata over gateway RPC and a namespaced
+  REST door, but no way to read message text; this backend exposes exactly that
+  one read (per profile, against the profile's own state.db, read-only).
+  0.2.0 adds GET/PUT /state: the shared roster layout prefs (entry-wise
+  last-writer-wins by rev, tombstones, device-local keys refused), stored in
+  state/ui-state.json, so the desktop pane and Personae Mobile agree.
+author: the user
+kind: standalone
+platforms: []

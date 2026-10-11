@@ -27,3 +27,6 @@ api-key.txt
 # Generated native build output inside a local Expo module (the module sources are
 # committed; its Gradle build/ tree is not).
 **/android/build/**
+
+# Python bytecode (server/ plugin sources)
+__pycache__/

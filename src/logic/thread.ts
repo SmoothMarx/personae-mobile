@@ -20,6 +20,7 @@
 
 import type { HermesMessage } from '../api/client';
 import { toMillis } from '../format';
+import { t } from '../i18n';
 
 export type ToolCall = {
   /** Stable key: the provider's tool_call_id when there is one, else `run-index`. */
@@ -44,7 +45,7 @@ export const RESULT_LIMIT = 800;
 
 export function truncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
-  return `${text.slice(0, limit)}\n… (+${text.length - limit} caracteres)`;
+  return `${text.slice(0, limit)}\n… ${t.thread.truncated(text.length - limit)}`;
 }
 
 /** Pretty-print JSON when it parses, otherwise the raw text — the API sends both shapes. */

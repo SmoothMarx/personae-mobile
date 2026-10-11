@@ -11,6 +11,9 @@
  */
 
 import assert from 'node:assert/strict';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { connect as netConnect } from 'node:net';
+import { join } from 'node:path';
 import { createMockGateway } from '../mock/server.mjs';
 import { createMockDashboard, profileFixture, sessionFixture } from '../mock/dashboard.mjs';
 import { createDashboardClient, type GatewayEvent } from '../src/api/dashboard';
@@ -22,7 +25,7 @@ import { xhrTransport } from '../src/api/transport';
 import { installRnXhr, SSE_OK } from './rnXhr';
 import { ApiError } from '../src/api/errors';
 import { attemptWithPolicy, classifyStatus, nextDelayMs, parseRetryAfter, retryDelayMs, shouldRetry } from '../src/api/failures';
-import { connectThrough, createProbeCache } from '../src/connectivity';
+import { connectThrough, createProbeCache, probeRoute, tailscalePolicy } from '../src/connectivity';
 import {
   checkRoute,
   effectiveRoutes,
@@ -99,8 +102,23 @@ import {
 } from '../src/rosterPrefs';
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
-import { t } from '../src/i18n';
+import { getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
 import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
+
+// Most assertions below were written against the Portuguese copy, so the suite runs in PT
+// explicitly. The language tests switch on purpose and always restore 'pt' afterwards.
+setLanguage('pt');
+
+/** Run `fn` in a given language, then put the suite's language back. */
+async function inLanguage(language: 'en' | 'pt', fn: () => void | Promise<void>): Promise<void> {
+  const before = getLanguage();
+  setLanguage(language);
+  try {
+    await fn();
+  } finally {
+    setLanguage(before);
+  }
+}
 
 type TestFn = () => void | Promise<void>;
 const tests: { name: string; fn: TestFn }[] = [];
@@ -972,6 +990,171 @@ async function main(): Promise<void> {
     const { storeSet } = await import('../src/storage');
     await storeSet('personae.settings.v1', '{not json');
     assert.deepEqual(await loadSettings(), { ...DEFAULT_SETTINGS, apiKey: '' });
+  });
+
+  // ─────────────────────────────────────────────────── language (i18n) ──
+  test('i18n: a fresh install defaults to English', async () => {
+    __resetStoreProbe();
+    assert.equal(DEFAULT_SETTINGS.language, 'en');
+    assert.equal((await loadSettings()).language, 'en', 'nothing stored = fresh install = English');
+  });
+
+  test('i18n: an existing install without a language field keeps Portuguese (and its other values)', async () => {
+    __resetStoreProbe();
+    const { storeSet } = await import('../src/storage');
+    // The exact shape the Portuguese-only build wrote: every field except `language`.
+    await storeSet(
+      'personae.settings.v1',
+      JSON.stringify({ baseUrl: 'http://10.0.0.15:9119', surface: 'dashboard', profiles: [], model: '', autoConnect: true, openTailscaleOnFailure: true }),
+    );
+    const loaded = await loadSettings();
+    assert.equal(loaded.language, 'pt');
+    assert.equal(loaded.autoConnect, true, 'a stored value survives the default change');
+    assert.equal(loaded.openTailscaleOnFailure, true, 'a stored value survives the default change');
+
+    // An explicit choice always wins, and is what gets saved back.
+    await saveSettings({ ...loaded, language: 'en' });
+    assert.equal((await loadSettings()).language, 'en');
+    await storeSet('personae.settings.v1', JSON.stringify({ baseUrl: '', language: 'pt' }));
+    assert.equal((await loadSettings()).language, 'pt');
+  });
+
+  test('i18n: setLanguage switches t.* live through the same import', async () => {
+    await inLanguage('en', () => {
+      assert.equal(t.settings.title, 'Settings');
+      assert.equal(t.roster.groups.ungrouped, 'No group');
+      assert.equal(t.roster.messages(2), '2 messages');
+      assert.equal(formatAge(Date.now() / 1000, Date.now()), 'just now');
+    });
+    await inLanguage('pt', () => {
+      assert.equal(t.settings.title, 'Definições');
+      assert.equal(t.roster.groups.ungrouped, 'Sem grupo');
+      assert.equal(t.roster.messages(2), '2 mensagens');
+      assert.equal(formatAge(Date.now() / 1000, Date.now()), 'agora mesmo');
+    });
+    // The exported log follows the chosen language too.
+    await inLanguage('en', () => {
+      const doc = buildLogDocument({ appVersion: '0', versionCode: '0', surface: 's', baseUrl: '' }, '', []);
+      assert.match(doc, /support log/);
+      assert.doesNotMatch(doc, /registo de diagnóstico/);
+    });
+  });
+
+  test('i18n: the en and pt tables have the same keys, with functions in the same places', () => {
+    const shape = (value: unknown, path: string, out: string[]): string[] => {
+      if (typeof value === 'function') out.push(`${path}()/${(value as (...a: unknown[]) => unknown).length}`);
+      else if (value && typeof value === 'object') {
+        for (const key of Object.keys(value as object).sort()) shape((value as Record<string, unknown>)[key], `${path}.${key}`, out);
+      } else out.push(`${path}:${typeof value}`);
+      return out;
+    };
+    const en = shape(stringsFor('en'), 't', []);
+    const pt = shape(stringsFor('pt'), 't', []);
+    assert.deepEqual(pt, en);
+    assert.ok(en.length > 300, `expected the full table, got ${en.length} leaves`);
+    // Every string leaf is filled in, in both languages.
+    for (const language of ['en', 'pt'] as const) {
+      const empties: string[] = [];
+      const walk = (value: unknown, path: string) => {
+        if (typeof value === 'string') { if (!value.trim()) empties.push(path); }
+        else if (value && typeof value === 'object') for (const [k, v] of Object.entries(value)) walk(v, `${path}.${k}`);
+      };
+      walk(stringsFor(language), language);
+      assert.deepEqual(empties, []);
+    }
+  });
+
+  test('i18n: the swept Portuguese strings are no longer hardcoded outside the table', () => {
+    const root = process.cwd();
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) walk(full);
+        else if (/\.(ts|tsx)$/.test(name) && !full.endsWith(join('src', 'i18n.ts'))) files.push(full);
+      }
+    };
+    walk(join(root, 'src'));
+    walk(join(root, 'app'));
+    const swept = [
+      'Personae — registo de diagnóstico',
+      'Últimas falhas:',
+      'cabeçalhos de autenticação, bilhetes e tokens',
+      'endereço sem host ou porta',
+      'a ligação abriu mas não houve resposta',
+      "'enviado'",
+      'automático desligado',
+      'indisponível nesta plataforma',
+      'erro na transmissão',
+      'sessão sem id',
+      'não é suportado nesta ligação',
+      'Bearer do dashboard',
+      'modelo por omissão do gateway',
+      'agora mesmo',
+      'caracteres)',
+      "'API do gateway (:9222)'",
+      'tempo esgotado',
+      'falha de rede',
+      'ticket ausente',
+      'Ignorado:',
+    ];
+    const hits: string[] = [];
+    for (const file of files) {
+      const text = readFileSync(file, 'utf8');
+      for (const literal of swept) if (text.includes(literal)) hits.push(`${file.slice(root.length + 1)}: ${literal}`);
+    }
+    assert.deepEqual(hits, []);
+  });
+
+  // ──────────────────────────────────────────── Tailscale opt-in defaults ──
+  test('tailscale: auto-connect and open-on-failure are OFF by default', async () => {
+    assert.equal(DEFAULT_SETTINGS.autoConnect, false);
+    assert.equal(DEFAULT_SETTINGS.openTailscaleOnFailure, false);
+    __resetStoreProbe();
+    const fresh = await loadSettings();
+    assert.equal(fresh.autoConnect, false);
+    assert.equal(fresh.openTailscaleOnFailure, false);
+    assert.deepEqual(
+      tailscalePolicy(fresh, { canTrigger: true, installed: true }),
+      { sendTrigger: false, openOnFailure: false },
+      'with the defaults the app neither raises nor opens Tailscale',
+    );
+    assert.deepEqual(
+      tailscalePolicy({ autoConnect: true, openTailscaleOnFailure: true }, { canTrigger: true, installed: true }),
+      { sendTrigger: true, openOnFailure: true },
+    );
+    assert.equal(tailscalePolicy({ autoConnect: true, openTailscaleOnFailure: true }, { canTrigger: true, installed: false }).openOnFailure, false);
+  });
+
+  test('tailscale: a direct LAN route still connects with both Tailscale flags off', async () => {
+    const settings = settingsFor(gateway.url, {
+      routes: [{ role: 'lan', priority: 0, url: gateway.url, insecure: false }],
+    });
+    assert.equal(settings.autoConnect, false);
+    assert.equal(settings.openTailscaleOnFailure, false);
+    const tcp = (host: string, port: number, timeoutMs: number) =>
+      new Promise<boolean>((resolve) => {
+        const socket = netConnect({ host, port });
+        const done = (ok: boolean) => { socket.destroy(); resolve(ok); };
+        socket.setTimeout(timeoutMs, () => done(false));
+        socket.once('connect', () => done(true));
+        socket.once('error', () => done(false));
+      });
+    const health = async (url: string) => {
+      const response = await fetch(`${url.replace(/\/+$/, '')}/v1/health`).catch(() => null);
+      return response ? { status: response.status, ok: response.ok } : null;
+    };
+    const result = await connectThrough({
+      routes: effectiveRoutes(settings),
+      insecureAck: settings.insecureRouteAck,
+      preferredRole: settings.preferredRouteRole,
+      probeTimeoutMs: settings.probeTimeoutMs,
+      deadlineMs: 3_000,
+      probe: probeRoute({ tcp, health }),
+    });
+    assert.equal(result.reason, 'selected');
+    assert.equal(result.route?.url, gateway.url);
+    assert.deepEqual(tailscalePolicy(settings, { canTrigger: true, installed: true }), { sendTrigger: false, openOnFailure: false });
   });
 
   // ───────────────────────────────────────────── routes: inference (§2) ──

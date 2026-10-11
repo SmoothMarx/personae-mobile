@@ -1,13 +1,416 @@
 /**
- * Single string table for the whole app.
+ * Single string table for the whole app, in two languages.
  *
- * Language decision (2026-10-11): PT-PT. the user's standing product rule is that the interface is
- * written in the end user's language, in plain language, for a non-technical user. The end user of
- * this build is the user himself. Every user-visible string lives here so the choice is reversible by
- * editing one file — see QUESTIONS.md Q4.
+ * Language decision (2026-10-11, revised): English is the source-of-truth table and the default for
+ * a fresh install; PT-PT is kept as a full translation and selectable in Settings (live switch).
+ * An install that already had saved settings before the switch existed keeps Portuguese (see
+ * settingsStore.loadSettings). Plain language, for a non-technical user. Every user-visible string
+ * lives here — see QUESTIONS.md Q4.
+ *
+ * `t` is a LIVE view: every property read resolves against the current language, so call sites
+ * keep writing `t.roster.title` and get the right language at render time. Never cache a `t.*`
+ * value at module scope.
  */
 
-export const t = {
+import { useSyncExternalStore } from 'react';
+
+export type Language = 'en' | 'pt';
+export const LANGUAGES: readonly Language[] = ['en', 'pt'];
+export const DEFAULT_LANGUAGE: Language = 'en';
+
+export function isLanguage(value: unknown): value is Language {
+  return value === 'en' || value === 'pt';
+}
+
+const en = {
+  appName: 'Personae',
+  loading: 'Loading…',
+  retry: 'Try again',
+
+  roster: {
+    title: 'Personae',
+    profiles: 'Profiles',
+    primary: 'Main',
+    allProfiles: 'All',
+    sessions: 'Sessions',
+    sessionsOf: (name: string) => `Sessions · ${name}`,
+    emptyTitle: 'No sessions yet',
+    emptyBody: 'When this profile has sessions, they show up here.',
+    newSession: 'New session',
+    newSessionTitle: 'New session',
+    newSessionPlaceholder: 'Session title (optional)',
+    create: 'Create',
+    cancel: 'Cancel',
+    open: 'Open',
+    openSettings: 'Settings',
+    notConfiguredTitle: 'Setup needed',
+    notConfiguredBody: 'Enter the server address and the API key in Settings to get started.',
+    page: (cur: number, total: number, from: number, to: number, all: number) =>
+      `Page ${cur} of ${total} · ${from}–${to} of ${all}`,
+    prev: 'Previous',
+    next: 'Next',
+    newBadge: (n: number) => (n > 0 ? `${n} new` : ''),
+    newTag: 'new',
+    messages: (n: number) => `${n} message${n === 1 ? '' : 's'}`,
+
+    // ── the roster proper (0.5.0): a vertical list of faces that expand in place ──
+    searchPlaceholder: 'Search profiles and conversations…',
+    searchClear: 'Clear',
+    searchResults: (n: number) => (n === 1 ? '1 result' : `${n} results`),
+    searchEmpty: 'Nothing found. Try another word.',
+    searchBodyHint: 'Includes the text of messages.',
+    expandAll: 'Open all',
+    collapseAll: 'Close all',
+    automatic: 'Automatic',
+    automaticCount: (n: number) => (n === 1 ? '1 automatic run' : `${n} automatic runs`),
+    automaticHelp:
+      'Runs of scheduled tasks. They are not conversations; they are listed here only so you can see them.',
+    noSessions: 'No conversations in this profile.',
+    profileErrorTitle: 'Could not read the list of profiles',
+    profileErrorBody:
+      'The server answered, but did not give the list of profiles. This is not the same as "there are no profiles" — see the error below and the support log.',
+    surfaceNoProfiles:
+      'This connection is the gateway API (:9222), which has no list of profiles. To see all your profiles, switch to Dashboard (:9119) in Settings.',
+
+    groups: {
+      title: 'Groups',
+      ungrouped: 'No group',
+      new: 'New group',
+      namePlaceholder: 'Group name',
+      create: 'Create group',
+      rename: 'Rename',
+      renamePrompt: 'Group name',
+      delete: 'Delete group',
+      deleteConfirm: (name: string) =>
+        `Delete the group "${name}"? Conversations are not touched: the profiles go back to "No group".`,
+      empty: 'Empty group. Press and hold a profile and choose "Move to group" to put it here.',
+      assign: 'Move to group',
+      assignment: (name: string) => `Move to "${name}"`,
+      remove: 'Remove from group',
+      help: 'Group profiles under a name. Deleting a group never deletes conversations.',
+    },
+
+    menu: {
+      title: 'Actions',
+      newSession: 'New session',
+      rename: 'Rename…',
+      renamePrompt: 'New name',
+      localOnly: 'on this phone only',
+      colour: 'Colour',
+      colourNone: 'No colour',
+      hide: 'Hide profile',
+      unhide: 'Show profile',
+      archiveAll: 'Archive all conversations',
+      archiveAllConfirm: (label: string) =>
+        `Archive all conversations of ${label}? Nothing is deleted — they stay archived on the server.`,
+      open: 'Open',
+      copyId: 'Copy ID',
+      copied: 'ID copied.',
+      sessionColour: 'Conversation colour',
+      archive: 'Archive conversation',
+      deleteSession: 'Delete conversation',
+      deleteSessionConfirm: (title: string) => `Delete the conversation "${title}"? This cannot be undone.`,
+      deleted: 'Conversation deleted.',
+      group: 'Group',
+      sort: 'Sort',
+      sortActivity: 'By activity',
+      sortName: 'By name',
+      sortSessions: 'By number of conversations',
+      cancel: 'Cancel',
+    },
+
+    lights: {
+      waiting: 'Waiting for you',
+      unread: 'Unread',
+      idle: 'Nothing pending',
+      fresh: (n: number) => (n === 1 ? '1 new since your last visit' : `${n} new since your last visit`),
+    },
+  },
+
+  thread: {
+    you: 'You',
+    agent: 'Agent',
+    tools: (n: number) => `${n} tool call${n === 1 ? '' : 's'}`,
+    showTools: 'Show details',
+    hideTools: 'Hide details',
+    reasoning: 'Thinking',
+    toolArgs: 'Arguments',
+    toolResult: 'Result',
+    toolNoResult: 'no result',
+    toolFailed: 'failed',
+    orphanTool: 'result with no matching call',
+    liveActivity: 'Live activity',
+    liveToolDone: 'done',
+    liveToolRunning: 'running…',
+    composerPlaceholder: 'Write a message…',
+    send: 'Send',
+    stop: 'Stop',
+    thinking: 'Thinking…',
+    historical: 'history',
+    streamed: 'live',
+    emptyThread: 'No messages in this session. Write the first one.',
+    stopped: 'Reply stopped. The text received so far was kept.',
+    fellBack: 'Live mode failed; the reply was requested again in one piece.',
+    truncated: (n: number) => `(+${n} characters)`,
+  },
+
+  settings: {
+    title: 'Settings',
+    surface: 'Connection type',
+    surfaceHelp:
+      'Only one thing is required: the connection type must be "Dashboard (:9119)" and the credential must be the app bearer token. The gateway API (:9222) still works, but has no profiles or groups.',
+    surfaceCheckOk: 'Dashboard (:9119) + bearer token — filled in. Use "Test connection" to confirm.',
+    surfaceCheckPending:
+      'Choose "Dashboard (:9119)" or fill in the credential (the bearer token). That pair is the only thing required.',
+    gatewayNoProfiles:
+      'The gateway API (:9222) has no list of profiles: the roster will have no profiles, no groups and no per-profile conversations. Switch to "Dashboard (:9119)" to see everything.',
+    baseUrl: 'Server address',
+    baseUrlHelp: 'E.g. http://10.0.0.5:9119',
+    baseUrlHelpGateway: 'E.g. http://10.0.0.5:9222',
+    profilesFound: 'profiles found',
+    logTitle: 'Support log',
+    logHelp:
+      'A .txt file with what the app tried and what failed. Nothing is sent anywhere: it is only shared when you press the button.',
+    logPlaceholder: 'Describe what happened here (optional)…',
+    logExport: 'Share log',
+    logClear: 'Clear',
+    logShared: 'Log created and handed to the share menu.',
+    logCleared: 'Log cleared.',
+    logFailed: 'Could not share the log.',
+    apiKey: 'API key',
+    apiKeyHelp: "Stored in the phone's secure storage. It never leaves the phone.",
+    apiKeySet: 'saved',
+    apiKeyUnset: 'not set',
+    profiles: 'Extra profiles (prefix)',
+    profilesHelp: 'One name per line. Each one is served at /p/<profile>/.',
+    model: 'Model (optional)',
+    modelHelp: "Leave empty to use the gateway's default model.",
+    effective: 'In use now',
+    clear: 'Clear',
+    saved: 'Saved',
+    savedKey: 'Key saved',
+    clearKey: 'Delete key',
+    clearKeyConfirm: 'Delete the API key saved on this phone?',
+    testConnection: 'Test connection',
+    testing: 'Testing…',
+    testOk: (v: string) => `Connection OK · version ${v}`,
+    testFail: 'Failed',
+    autoSave: 'Each field saves itself.',
+    showKey: 'Show',
+    hideKey: 'Hide',
+    valueSet: 'set',
+    valueUnset: 'empty',
+    surfaceDashboard: 'Dashboard (:9119)',
+    surfaceGateway: 'Gateway API (:9222)',
+    keyChars: (n: number) => `${n} characters`,
+    keyPlaceholderDashboard: 'Dashboard bearer token',
+    keyPlaceholderGateway: 'API_SERVER_KEY',
+    modelDefault: "the gateway's default model",
+    ignored: (list: string) => `Ignored: ${list}`,
+    logLines: (n: number) => `${n} lines`,
+    logFileName: 'personae-support-log.txt',
+    language: 'Language / Língua',
+    languageHelp: 'Changes straight away. Also sets the language of the support log.',
+    languageEnglish: 'English',
+    languagePortuguese: 'Português',
+  },
+
+  routes: {
+    title: 'Routes',
+    help:
+      'The same gateway can be reached in several ways. The app tries them in order and uses the first one that answers.',
+    empty: 'No routes yet. Type one below.',
+    add: 'Add route',
+    placeholder: 'http://10.0.0.5:9222',
+    roleLan: 'Local network',
+    roleTailscale: 'Tailscale',
+    rolePublic: 'Internet (public)',
+    customRole: (role: string) => `Custom (${role})`,
+    inferred: 'Worked out from the address',
+    invalid: 'Invalid address',
+    problemBadUrl: 'Invalid address — it must start with http:// or https://',
+    problemPublicHttp:
+      'A public address must use https://. This one will not be used while it is http://.',
+    problemNeedsAck:
+      'http:// route on a private network: it has no app-level encryption. Allow it below to use it.',
+    moveUp: 'Up',
+    moveDown: 'Down',
+    remove: 'Remove',
+    removeConfirm: (url: string) => `Remove the route ${url}?`,
+    priorityLabel: (n: number) => `priority ${n}`,
+    ackTitle: 'Allow http:// routes beyond this phone',
+    ackHelp:
+      "Private route without app-level encryption. Traffic is still encrypted by Tailscale's WireGuard when the address is on your tailnet.",
+    preferredTitle: 'Preferred route',
+    preferredAuto: 'Automatic',
+    preferredHelp: 'Automatic always picks by priority order.',
+    secTailscaleTls: 'App-level encryption (.ts.net certificate)',
+    secTailscaleWireguard:
+      "No app-level encryption — encrypted by Tailscale's WireGuard",
+    secLocalTls: 'App-level encryption',
+    secLocalPlain: 'No encryption — private local network',
+    secPublicTls: 'App-level encryption',
+    secPublicPlain: 'No encryption — public address (only https:// is accepted)',
+  },
+
+  connectivity: {
+    title: 'Connection',
+    tailscaleInstalled: 'Tailscale installed',
+    autoConnect: 'Connect the tunnel automatically on open',
+    autoConnectHelp:
+      'Asks the Tailscale app to connect when this app opens and when it comes back to the foreground.',
+    tailscalePackage: 'Tailscale package',
+    tailscalePackageHelp: 'Only change this if you use a modified version of the app.',
+    connectDeadline: 'Maximum wait (s)',
+    probeTimeout: 'Time per attempt (s)',
+    openOnFailure: 'Open Tailscale when the connection fails',
+    diagnosticsTitle: 'Connection status',
+    diagInstalled: 'Tailscale installed',
+    diagTunnel: 'Tunnel',
+    diagRoute: 'Chosen route',
+    diagGateway: 'Gateway answering',
+    diagEverWorked: 'Has ever connected',
+    diagLastError: 'Last error',
+    diagPinBypassed: (role: string) =>
+      `The preferred route (${role}) did not answer; another one was used.`,
+    yes: 'Yes',
+    no: 'No',
+    unknown: 'Not known yet',
+    tunnelUp: 'Connected',
+    tunnelDown: 'Disconnected',
+    tunnelProbing: 'Connecting…',
+    noneChosen: 'None',
+    diagTrigger: 'Last request to the tunnel',
+    diagVpnHint: 'The active network has a VPN — a hint, not proof',
+    diagHealthCaveat:
+      '/v1/health answering proves the route reaches the gateway; it does not prove a conversation will work.',
+    diagNotAvailable: 'Android only',
+    recheck: 'Check again',
+    setupIncomplete:
+      'The tunnel was not ready in time. Open Tailscale, turn it on, and come back here.',
+    openTailscale: 'Open Tailscale',
+    notInstalled:
+      'The Tailscale app is not installed on this phone. Install it or use a local network route.',
+    permanentKey:
+      'The API key was refused. Fix the key in Settings — trying again will not help.',
+    iosNote:
+      'On iPhone, Tailscale cannot be turned on from here: there is no way for apps to do this. Turn on "On-Demand" in the Tailscale settings and the app will connect by itself.',
+    probeNoHostPort: 'address has no host or port',
+    probeNoAnswer: (hostPort: string, ms: number) => `${hostPort} did not answer within ${ms} ms`,
+    probeOpenNoReply: 'the connection opened but nothing answered',
+    triggerSent: 'sent',
+    triggerNotSent: 'not sent',
+    triggerAutoOff: 'automatic connection off',
+    triggerUnavailable: 'not available on this platform',
+  },
+
+  errors: {
+    noBaseUrl: 'The server address is missing. Open Settings and enter it.',
+    badBaseUrl: (v: string) => `The address "${v}" is not valid. It must start with http:// or https://`,
+    noKey: 'The API key is missing. Open Settings and enter it.',
+    unauthorized:
+      'The gateway refused the API key (401). Check the key in Settings.',
+    unauthorizedProfile: (p: string) =>
+      `The gateway refused the API key (401) for the profile "${p}". Check the key and the profile name.`,
+    network: (detail: string) =>
+      `Could not reach the gateway. Check the address and that you are on the same network. (${detail})`,
+    timeout: (sec: number) => `The gateway did not answer within ${sec} s.`,
+    notFound: (what: string) => `${what} does not exist on the gateway (404).`,
+    sessionGone: 'This session no longer exists on the gateway.',
+    server: (status: number, detail: string) => `Gateway error (${status}): ${detail}`,
+    badJson: 'The gateway reply is not valid JSON.',
+    badStream: 'The live stream arrived in an invalid format.',
+    missingMessage: "The 'message' field is missing.",
+    streamDropped: 'The live stream dropped before the end.',
+    sessionNoId: 'session has no id',
+    turnFailed: 'error during the turn',
+    streamFailed: 'error in the stream',
+    rpcFailed: 'RPC error',
+    internal: 'internal error',
+    archiveUnsupported: 'archiving is not supported on this connection',
+    deleteUnsupported: 'deleting is not supported on this connection',
+    renameUnsupported: 'renaming is not supported on this connection',
+    ticketMissing: 'ticket missing',
+    resource: 'The item',
+  },
+
+  status: {
+    ok: 'Answering',
+    degraded: 'Unstable',
+    down: 'Not answering',
+    unknown: 'Not tested',
+    auth: 'Key refused',
+  },
+
+  time: {
+    justNow: 'just now',
+    minutesAgo: (n: number) => `${n} min ago`,
+    hoursAgo: (n: number) => `${n} h ago`,
+    daysAgo: (n: number) => `${n} d ago`,
+  },
+
+  /** The exported support log (header lines + the per-call lines written while the app runs). */
+  log: {
+    docTitle: 'Personae — support log',
+    generated: (stamp: string) => `Generated: ${stamp}`,
+    userNote: 'What happened (in your words):',
+    context: 'Context',
+    connection: (surface: string, url: string) => `Connection: ${surface} · ${url}`,
+    noAddress: 'no address',
+    activeRoute: (url: string) => `Route in use: ${url}`,
+    candidateRoutes: 'Candidate routes (by priority):',
+    recentFailures: 'Recent failures:',
+    device: (os: string) => `Device: ${os}`,
+    notAvailable: 'n/a',
+    entries: (n: number) => `Log (${n} lines, oldest first)`,
+    empty: '(empty)',
+    redactionNote: 'Note: authentication headers, tickets and tokens are replaced with [REDACTED].',
+    attempt: (n: number) => ` (attempt ${n})`,
+    noResponse: 'no response',
+    took: (status: string, ms: number) => `${status} in ${ms} ms`,
+    timedOut: (ms: number) => `timed out (${ms} ms)`,
+    networkFailure: 'network failure',
+    wsOpening: (url: string, ttl: number) => `opening /api/ws with a fresh ticket (${url}, ttl ${ttl} s)`,
+    wsFailure: 'WebSocket failure',
+  },
+
+  /**
+   * Accessibility labels (F2): every icon-only control needs one, or it is unusable with a
+   * screen reader. Kept apart from the visible copy so a label can be longer than a caption.
+   */
+  a11y: {
+    avatar: (name: string) => `Profile picture of ${name}`,
+    contact: (label: string, hasAvatar: boolean) =>
+      `Profile ${label}${hasAvatar ? ', with picture' : ''}`,
+    send: 'Send message',
+    stop: 'Stop the reply',
+    refresh: 'Refresh the list',
+    settings: 'Open settings',
+    newSession: 'Create a new session',
+    expandDetails: 'Show the details of this call',
+    collapseDetails: 'Hide the details of this call',
+    expandReasoning: "Show the agent's thinking",
+    collapseReasoning: "Hide the agent's thinking",
+    pagePrev: 'Previous page',
+    pageNext: 'Next page',
+    toolFailed: 'the call failed',
+    surface: (label: string) => `Connection type: ${label}`,
+    exportLog: 'Export the support log',
+  },
+
+  common: {
+    back: 'Back',
+    close: 'Close',
+    unknown: '—',
+    yes: 'Yes',
+    no: 'No',
+  },
+};
+
+export type Strings = typeof en;
+
+/** Portuguese (PT-PT): typed against the English table, so a missing or extra key fails typecheck. */
+const pt: Strings = {
   appName: 'Personae',
   loading: 'A carregar…',
   retry: 'Tentar de novo',
@@ -136,6 +539,7 @@ export const t = {
     emptyThread: 'Sem mensagens nesta sessão. Escreve a primeira.',
     stopped: 'Resposta parada. O texto recebido ficou guardado.',
     fellBack: 'O modo em direto falhou; a resposta foi pedida novamente em bloco.',
+    truncated: (n: number) => `(+${n} caracteres)`,
   },
 
   settings: {
@@ -184,6 +588,19 @@ export const t = {
     hideKey: 'Esconder',
     valueSet: 'definido',
     valueUnset: 'vazio',
+    surfaceDashboard: 'Dashboard (:9119)',
+    surfaceGateway: 'API do gateway (:9222)',
+    keyChars: (n: number) => `${n} caracteres`,
+    keyPlaceholderDashboard: 'Bearer do dashboard',
+    keyPlaceholderGateway: 'API_SERVER_KEY',
+    modelDefault: 'modelo por omissão do gateway',
+    ignored: (list: string) => `Ignorado: ${list}`,
+    logLines: (n: number) => `${n} linhas`,
+    logFileName: 'personae-registo.txt',
+    language: 'Língua / Language',
+    languageHelp: 'Muda logo. Também define a língua do registo de diagnóstico.',
+    languageEnglish: 'English',
+    languagePortuguese: 'Português',
   },
 
   routes: {
@@ -266,6 +683,13 @@ export const t = {
       'A chave de API foi recusada. Corrige a chave em Definições — não vale a pena tentar de novo.',
     iosNote:
       'No iPhone não é possível ligar a Tailscale a partir daqui: não existe este mecanismo entre apps. Liga o "On-Demand" nas Definições da Tailscale e a app liga-se sozinha a seguir.',
+    probeNoHostPort: 'endereço sem host ou porta',
+    probeNoAnswer: (hostPort: string, ms: number) => `${hostPort} não respondeu em ${ms} ms`,
+    probeOpenNoReply: 'a ligação abriu mas não houve resposta',
+    triggerSent: 'enviado',
+    triggerNotSent: 'não enviado',
+    triggerAutoOff: 'automático desligado',
+    triggerUnavailable: 'indisponível nesta plataforma',
   },
 
   errors: {
@@ -286,6 +710,16 @@ export const t = {
     badStream: 'A transmissão em direto veio em formato inválido.',
     missingMessage: "Falta o campo 'message'.",
     streamDropped: 'A transmissão em direto caiu antes do fim.',
+    sessionNoId: 'sessão sem id',
+    turnFailed: 'erro no turno',
+    streamFailed: 'erro na transmissão',
+    rpcFailed: 'erro RPC',
+    internal: 'erro interno',
+    archiveUnsupported: 'arquivar não é suportado nesta ligação',
+    deleteUnsupported: 'apagar não é suportado nesta ligação',
+    renameUnsupported: 'renomear não é suportado nesta ligação',
+    ticketMissing: 'ticket ausente',
+    resource: 'O recurso',
   },
 
   status: {
@@ -294,6 +728,38 @@ export const t = {
     down: 'Sem resposta',
     unknown: 'Por testar',
     auth: 'Chave recusada',
+  },
+
+  time: {
+    justNow: 'agora mesmo',
+    minutesAgo: (n: number) => `há ${n} min`,
+    hoursAgo: (n: number) => `há ${n} h`,
+    daysAgo: (n: number) => `há ${n} d`,
+  },
+
+  /** The exported support log (header lines + the per-call lines written while the app runs). */
+  log: {
+    docTitle: 'Personae — registo de diagnóstico',
+    generated: (stamp: string) => `Gerado: ${stamp}`,
+    userNote: 'O que se passou (escrito por ti):',
+    context: 'Contexto',
+    connection: (surface: string, url: string) => `Ligação: ${surface} · ${url}`,
+    noAddress: 'sem endereço',
+    activeRoute: (url: string) => `Rota em uso: ${url}`,
+    candidateRoutes: 'Rotas candidatas (por prioridade):',
+    recentFailures: 'Últimas falhas:',
+    device: (os: string) => `Dispositivo: ${os}`,
+    notAvailable: 'n/d',
+    entries: (n: number) => `Registo (${n} linhas, mais antiga primeiro)`,
+    empty: '(vazio)',
+    redactionNote: 'Nota: cabeçalhos de autenticação, bilhetes e tokens são substituídos por [REDACTED].',
+    attempt: (n: number) => ` (tentativa ${n})`,
+    noResponse: 'sem resposta',
+    took: (status: string, ms: number) => `${status} em ${ms} ms`,
+    timedOut: (ms: number) => `tempo esgotado (${ms} ms)`,
+    networkFailure: 'falha de rede',
+    wsOpening: (url: string, ttl: number) => `a abrir /api/ws com um bilhete novo (${url}, ttl ${ttl} s)`,
+    wsFailure: 'falha no WebSocket',
   },
 
   /**
@@ -327,6 +793,48 @@ export const t = {
     yes: 'Sim',
     no: 'Não',
   },
-} as const;
+};
 
-export type Strings = typeof t;
+const tables: Record<Language, Strings> = { en, pt };
+
+let current: Language = DEFAULT_LANGUAGE;
+const listeners = new Set<() => void>();
+
+export function getLanguage(): Language {
+  return current;
+}
+
+export function setLanguage(language: Language): void {
+  const next = isLanguage(language) ? language : DEFAULT_LANGUAGE;
+  if (next === current) return;
+  current = next;
+  for (const listener of Array.from(listeners)) listener();
+}
+
+export function subscribeLanguage(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+  };
+}
+
+/** Re-render the calling component whenever the language changes; returns the current language. */
+export function useLanguage(): Language {
+  return useSyncExternalStore(subscribeLanguage, getLanguage, getLanguage);
+}
+
+/** The raw table for one language (tests, and anything that must not follow the live switch). */
+export function stringsFor(language: Language): Strings {
+  return tables[language];
+}
+
+/** Live string table: each top-level read resolves against the current language. */
+export const t: Strings = new Proxy({} as Strings, {
+  get: (_target, key) => (tables[current] as Record<string | symbol, unknown>)[key],
+  has: (_target, key) => key in tables[current],
+  ownKeys: () => Reflect.ownKeys(tables[current]),
+  getOwnPropertyDescriptor: (_target, key) => {
+    const value = (tables[current] as Record<string | symbol, unknown>)[key];
+    return value === undefined ? undefined : { value, enumerable: true, configurable: true, writable: false };
+  },
+});

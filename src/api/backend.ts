@@ -241,7 +241,7 @@ function createDashboardBackend(settings: Settings): Backend {
       const live = await shared();
       const result = await live.rpc<Record<string, unknown>>('session.create', title.trim() ? { title: title.trim() } : {});
       const id = String(result.session_id ?? result.id ?? '');
-      if (!id) throw new ApiError(t.errors.server(500, 'sessão sem id'), { kind: 'http', status: 500 });
+      if (!id) throw new ApiError(t.errors.server(500, t.errors.sessionNoId), { kind: 'http', status: 500 });
       return { id, title: title.trim() || null, message_count: 0, last_active: Date.now() / 1000 };
     },
 
@@ -298,7 +298,7 @@ function createDashboardBackend(settings: Settings): Backend {
                   break;
                 case 'turn.error':
                   handlers.onError(
-                    new ApiError(t.errors.server(500, String(event.payload.message ?? 'erro no turno')), {
+                    new ApiError(t.errors.server(500, String(event.payload.message ?? t.errors.turnFailed)), {
                       kind: 'http',
                       detail: String(event.payload.message ?? ''),
                     }),
@@ -400,13 +400,13 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
       // The archive/hide flags are a dashboard route; this surface answers 501 out loud rather
       // than pretending the action happened (the same choice `rename` already makes here).
       return Promise.reject(
-        new ApiError(t.errors.server(501, 'arquivar não é suportado nesta ligação'), { kind: 'http', status: 501 }),
+        new ApiError(t.errors.server(501, t.errors.archiveUnsupported), { kind: 'http', status: 501 }),
       );
     },
 
     deleteSession() {
       return Promise.reject(
-        new ApiError(t.errors.server(501, 'apagar não é suportado nesta ligação'), { kind: 'http', status: 501 }),
+        new ApiError(t.errors.server(501, t.errors.deleteUnsupported), { kind: 'http', status: 501 }),
       );
     },
 
@@ -423,7 +423,7 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
     },
 
     rename() {
-      return Promise.reject(new ApiError(t.errors.server(501, 'renomear não é suportado nesta ligação'), { kind: 'http', status: 501 }));
+      return Promise.reject(new ApiError(t.errors.server(501, t.errors.renameUnsupported), { kind: 'http', status: 501 }));
     },
 
     async createSession(title, profile = '') {

@@ -158,7 +158,7 @@ export default function SettingsScreen() {
       log.entries,
     );
     try {
-      const file = new File(Paths.cache, 'personae-registo.txt');
+      const file = new File(Paths.cache, t.settings.logFileName);
       if (file.exists) file.delete();
       file.create();
       file.write(doc);
@@ -268,6 +268,33 @@ export default function SettingsScreen() {
         </Text>
       ) : null}
 
+      {/* Interface language: one tap, applied and saved at once (no Save button). */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.settings.language}</Text>
+        <View style={styles.segment}>
+          {(['en', 'pt'] as const).map((option) => {
+            const active = settings.language === option;
+            const label = option === 'en' ? t.settings.languageEnglish : t.settings.languagePortuguese;
+            return (
+              <Pressable
+                key={option}
+                onPress={() => {
+                  setForm((prev) => ({ ...prev, language: option }));
+                  update({ language: option });
+                }}
+                style={[styles.segmentButton, active && styles.segmentButtonActive]}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={label}
+              >
+                <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={styles.help}>{t.settings.languageHelp}</Text>
+      </View>
+
       {/* Which surface the address speaks. One choice, applied at once (single-field settings save
           themselves), because everything else on this screen means something slightly different
           per surface: the bearer is a dashboard app credential, or the :9222 API key. */}
@@ -359,7 +386,7 @@ export default function SettingsScreen() {
         <TextInput
           value={form.apiKey}
           onChangeText={(value) => stage({ apiKey: value.trim() }, 400)}
-          placeholder={form.surface === 'dashboard' ? 'Bearer do dashboard' : 'API_SERVER_KEY'}
+          placeholder={form.surface === 'dashboard' ? t.settings.keyPlaceholderDashboard : t.settings.keyPlaceholderGateway}
           placeholderTextColor={colors.faint}
           style={styles.input}
           secureTextEntry={!revealKey}
@@ -405,7 +432,7 @@ export default function SettingsScreen() {
           </Text>
         </View>
         {droppedLines.length ? (
-          <Text style={styles.invalid}>{`Ignorado: ${droppedLines.join(', ')}`}</Text>
+          <Text style={styles.invalid}>{t.settings.ignored(droppedLines.join(', '))}</Text>
         ) : null}
       </View>
 
@@ -416,7 +443,7 @@ export default function SettingsScreen() {
         onChangeText={(value) => stage({ model: value.trim() })}
         autoCapitalize="none"
         autoCorrect={false}
-        effective={form.model.trim() || 'modelo por omissão do gateway'}
+        effective={form.model.trim() || t.settings.modelDefault}
       />
 
       {/* ── Rotas: one server, several routes ─────────────────────────────── */}
@@ -719,7 +746,7 @@ export default function SettingsScreen() {
         {logStatus ? <Text style={styles.help}>{logStatus}</Text> : null}
         <View style={styles.effectiveRow}>
           <Text style={styles.effectiveLabel}>{t.settings.effective}</Text>
-          <Text style={styles.effectiveValue}>{log.entries.length} linhas</Text>
+          <Text style={styles.effectiveValue}>{t.settings.logLines(log.entries.length)}</Text>
         </View>
       </View>
     </ScrollView>

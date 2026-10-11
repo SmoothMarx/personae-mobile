@@ -251,10 +251,10 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
     } catch (error) {
       if (timer) clearTimeout(timer);
       if ((error as Error)?.name === 'AbortError') {
-        log.warn('net', `${init.method ?? 'GET'} ${path} → tempo esgotado (${timeoutMs} ms)`);
+        log.warn('net', `${init.method ?? 'GET'} ${path} → ${t.log.timedOut(timeoutMs)}`);
         throw new ApiError(t.errors.timeout(Math.round(timeoutMs / 1000)), { kind: 'timeout' });
       }
-      log.error('net', `${init.method ?? 'GET'} ${path} → ${(error as Error)?.message || 'falha de rede'}`);
+      log.error('net', `${init.method ?? 'GET'} ${path} → ${(error as Error)?.message || t.log.networkFailure}`);
       throw new ApiError(t.errors.network((error as Error)?.message || 'fetch failed'), {
         kind: 'network',
         detail: (error as Error)?.message,
@@ -281,7 +281,7 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
       method: 'POST',
     });
     if (!body.ticket) {
-      throw new ApiError(t.errors.server(500, 'ticket ausente'), { kind: 'http', status: 500 });
+      throw new ApiError(t.errors.server(500, t.errors.ticketMissing), { kind: 'http', status: 500 });
     }
     return { ticket: body.ticket, ttlSeconds: Number(body.ttl_seconds ?? 30) };
   }
@@ -296,7 +296,7 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
   async function connect(handlers: SocketHandlers = {}): Promise<DashboardSocket> {
     const connection = resolveDashboardConnection(settings);
     const { ticket, ttlSeconds: ticketTtl } = await wsTicket();
-    log.info('ws', `a abrir /api/ws com um bilhete novo (${connection.baseUrl}, ttl ${ticketTtl} s)`);
+    log.info('ws', t.log.wsOpening(connection.baseUrl, ticketTtl));
     const socket = socketFactory(wsUrlOf(connection.baseUrl, '/api/ws', ticket));
     const pending = new Map<string, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> | null }>();
     const listeners = new Map<string, Set<(event: GatewayEvent) => void>>();
@@ -352,7 +352,7 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
       if (frame.error && typeof frame.error === 'object') {
         const err = frame.error as { message?: string; code?: number };
         entry.reject(
-          new ApiError(t.errors.server(Number(err.code ?? 500), err.message || 'erro RPC'), {
+          new ApiError(t.errors.server(Number(err.code ?? 500), err.message || t.errors.rpcFailed), {
             kind: 'http',
             status: Number(err.code ?? 500),
             detail: err.message,
@@ -374,7 +374,7 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
         if (typeof data === 'string') dispatchFrame(data);
       };
       const onError = (event: unknown) => {
-        const error = new Error((event as { message?: string })?.message || 'falha no WebSocket');
+        const error = new Error((event as { message?: string })?.message || t.log.wsFailure);
         handlers.onError?.(error);
         if (!state.open) reject(error);
         failAll(error);

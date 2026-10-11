@@ -1,0 +1,11 @@
+{
+  "name": "messenger",
+  "label": "Messenger",
+  "description": "Message-body search plus the shared UI-state store (GET/PUT /state) behind the Messenger/Personae panes and Personae Mobile.",
+  "version": "0.2.0",
+  "icon": "comment-discussion",
+  "api": "plugin_api.py",
+  "tab": {
+    "hidden": true
+  }
+}

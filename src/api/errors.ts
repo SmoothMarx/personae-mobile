@@ -96,11 +96,11 @@ export function httpError(status: number, body: unknown, profile?: string): ApiE
     return new ApiError(message, { kind: 'http', status, code, type, detail: serverMessage });
   }
   if (status === 404) {
-    const what = serverMessage || 'O recurso';
+    const what = serverMessage || t.errors.resource;
     return new ApiError(t.errors.notFound(what), { kind: 'http', status, code, type, detail: serverMessage });
   }
   if (status >= 500) {
-    const detail = serverMessage || 'erro interno';
+    const detail = serverMessage || t.errors.internal;
     return new ApiError(t.errors.server(status, detail), { kind: 'http', status, code, type, detail });
   }
   const detail = serverMessage || `HTTP ${status}`;

@@ -20,7 +20,7 @@ import type { MessageHit, ProfileInfo } from '../api/backend';
 import { normalizeError, type ApiError } from '../api/errors';
 import { useConnectivity } from '../ConnectivityContext';
 import { log } from '../logging';
-import { t } from '../i18n';
+import { t, useLanguage } from '../i18n';
 import { useAvatars } from '../Avatar';
 import {
   EMPTY_COLOURS,
@@ -289,9 +289,12 @@ export function useRoster() {
 
   const allSessions = useMemo(() => [...recents, ...runs, ...Object.values(loaded).flat()], [recents, runs, loaded]);
 
+  // The 'No group' label comes from the string table, so a language switch must recompute it.
+  const language = useLanguage();
   const groups = useMemo(
     () => groupsFor(prefs.sections, model.rows, (row) => row.name, t.roster.groups.ungrouped),
-    [model.rows, prefs.sections],
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [model.rows, prefs.sections, language],
   );
 
   const listRows = useMemo<RosterListRow[]>(() => {

@@ -6,6 +6,8 @@
  * the wire — only here, at render time.
  */
 
+import { t } from './i18n';
+
 const MONTHS = ['01', '02', '03', '04', '05', '06', '07', '08', '09', '10', '11', '12'];
 
 /** Epoch seconds (or ms) -> DD-MM-YYYY. Empty stays empty: never invent a value. */
@@ -39,13 +41,13 @@ export function formatAge(input?: number | null, now = Date.now()): string {
   const ms = toMillis(input);
   if (ms === null) return '';
   const seconds = Math.max(0, Math.round((now - ms) / 1000));
-  if (seconds < 60) return 'agora mesmo';
+  if (seconds < 60) return t.time.justNow;
   const minutes = Math.round(seconds / 60);
-  if (minutes < 60) return `há ${minutes} min`;
+  if (minutes < 60) return t.time.minutesAgo(minutes);
   const hours = Math.round(minutes / 60);
-  if (hours < 24) return `há ${hours} h`;
+  if (hours < 24) return t.time.hoursAgo(hours);
   const days = Math.round(hours / 24);
-  if (days < 30) return `há ${days} d`;
+  if (days < 30) return t.time.daysAgo(days);
   return formatDate(ms);
 }
 

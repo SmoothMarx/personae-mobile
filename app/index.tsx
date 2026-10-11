@@ -29,7 +29,7 @@ import * as Clipboard from 'expo-clipboard';
 import { ConnectivityBanner } from '../src/ConnectivityBanner';
 import type { Diagnostic } from '../src/ConnectivityContext';
 import { normalizeError } from '../src/api/errors';
-import { t } from '../src/i18n';
+import { t, useLanguage } from '../src/i18n';
 import { monogramFor } from '../src/logic/avatars';
 import type { SortMode } from '../src/logic/sections';
 import {
@@ -57,6 +57,8 @@ export default function RosterScreen() {
   const router = useRouter();
   const insets = useSafeAreaInsets();
   const roster = useRoster();
+  // Re-render (and refresh the list cells) when the interface language changes.
+  const language = useLanguage();
 
   const [menu, setMenu] = useState<MenuState>({ kind: 'none' });
   const [colourFor, setColourFor] = useState<{ kind: 'profile' | 'session'; profile: string; sessionId?: string } | null>(null);
@@ -319,6 +321,7 @@ export default function RosterScreen() {
         keyExtractor={(item) => item.key}
         ListHeaderComponent={header}
         renderItem={renderItem}
+        extraData={language}
         removeClippedSubviews
         initialNumToRender={14}
         windowSize={9}

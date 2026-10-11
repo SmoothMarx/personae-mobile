@@ -11,6 +11,7 @@
  * (pedro-app-defaults: "the effective value always displayed, never a different one").
  */
 
+import { t, type Language } from './i18n';
 import type { RouteCandidate } from './routes';
 
 /**
@@ -41,7 +42,12 @@ export type Settings = {
   routes: RouteCandidate[];
   /** Optional manual pin, e.g. 'tailscale'. null = Auto (strict priority order). */
   preferredRouteRole: string | null;
-  /** Master switch for the launch/foreground tunnel trigger. */
+  /**
+   * Interface language. A fresh install starts in English; an install that saved settings before
+   * this field existed keeps Portuguese (the language it was built in) — see loadSettings.
+   */
+  language: Language;
+  /** Master switch for the launch/foreground tunnel trigger. Off by default (opt-in). */
   autoConnect: boolean;
   /** Broadcast target for the tunnel trigger; lets a fork swap in without a rebuild. */
   tailscalePackage: string;
@@ -49,7 +55,7 @@ export type Settings = {
   connectDeadlineMs: number;
   /** Per-attempt probe timeout. */
   probeTimeoutMs: number;
-  /** Fallback when the one-time setup is still missing. */
+  /** Fallback when the one-time setup is still missing. Off by default (opt-in). */
   openTailscaleOnFailure: boolean;
   /** Explicit opt-in before using a plain-http non-loopback route. */
   insecureRouteAck: boolean;
@@ -75,11 +81,14 @@ export const DEFAULT_SETTINGS: Settings = {
   model: '',
   routes: [],
   preferredRouteRole: null,
-  autoConnect: true,
+  language: 'en',
+  // Tailscale auto-start is opt-in: route probing runs regardless, these only gate the broadcast
+  // trigger and opening the Tailscale app on failure. Stored values on an existing install win.
+  autoConnect: false,
   tailscalePackage: 'com.tailscale.ipn',
   connectDeadlineMs: 20_000,
   probeTimeoutMs: 1_500,
-  openTailscaleOnFailure: true,
+  openTailscaleOnFailure: false,
   insecureRouteAck: false,
   everReachedGateway: false,
   lastTriggerResult: '',
@@ -97,9 +106,9 @@ export function settingsForRoute(settings: Settings, url: string): Settings {
   return url && url !== settings.baseUrl ? { ...settings, baseUrl: url } : settings;
 }
 
-/** Human label for a surface (PT-PT, shown next to the URL field). */
+/** Human label for a surface (interface language, shown next to the URL field). */
 export function surfaceLabel(surface: Surface): string {
-  return surface === 'gateway' ? 'API do gateway (:9222)' : 'Dashboard (:9119)';
+  return surface === 'gateway' ? t.settings.surfaceGateway : t.settings.surfaceDashboard;
 }
 
 export function splitProfiles(raw: string): string[] {
@@ -148,5 +157,5 @@ export function joinUrl(baseUrl: string, path: string): string {
 export function redactKey(key: string): string {
   if (!key) return '';
   if (key.length <= 6) return '••••';
-  return `${key.slice(0, 3)}…${key.slice(-2)} (${key.length} caracteres)`;
+  return `${key.slice(0, 3)}…${key.slice(-2)} (${t.settings.keyChars(key.length)})`;
 }

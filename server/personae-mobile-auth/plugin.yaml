@@ -1,5 +1,5 @@
 name: personae-mobile-auth
-version: 1.0.0
+version: 1.1.0
 kind: backend
 author: cody (Personae Mobile)
 description: >-
@@ -12,6 +12,11 @@ description: >-
   documents for token-mode remote clients, which the gate honours on every route and which
   sets request.state.session so POST /api/auth/ws-ticket can mint a WS ticket). Never
   mints an interactive cookie session; the login page entry is inert by design. No-op when
-  HERMES_PERSONAE_BEARER is unset.
+  HERMES_PERSONAE_BEARER is unset. 1.1.0 (Personae Mobile 0.6.0) adds browser-mediated
+  device pairing: a signed-in browser opens /pair (or the phone's in-app browser opens
+  /login?next=/pair), gets a single-use 300 s code as a QR + personae:// deep link, and the
+  phone redeems it at POST /api/plugins/personae-mobile-auth/pair/redeem for a per-device
+  token stored only as sha256 in state/credentials.json (0600), revocable from
+  /api/plugins/personae-mobile-auth/devices. The env bearer keeps working unchanged.
 requires_env:
   - HERMES_PERSONAE_BEARER

@@ -38,7 +38,7 @@ import type { LiveTool } from '../../src/api/backend';
 import { ApiError, normalizeError } from '../../src/api/errors';
 import type { StreamHandle } from '../../src/api/transport';
 import { formatTime } from '../../src/format';
-import { t } from '../../src/i18n';
+import { t, useLanguage } from '../../src/i18n';
 import { buildItems, type ThreadItem } from '../../src/logic/thread';
 import { threadTitle } from '../../src/logic/roster';
 import { useBackend } from '../../src/useBackend';
@@ -54,6 +54,8 @@ export default function ThreadScreen() {
   const { backend, ready } = useBackend();
 
   const [messages, setMessages] = useState<HermesMessage[]>([]);
+  // Re-render (and refresh the list cells) when the interface language changes.
+  const language = useLanguage();
   const [loadedTitle, setLoadedTitle] = useState('');
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [loadError, setLoadError] = useState<ApiError | null>(null);
@@ -361,6 +363,7 @@ export default function ThreadScreen() {
         data={items}
         keyExtractor={(item) => item.key}
         renderItem={renderItem}
+        extraData={language}
         contentContainerStyle={styles.listContent}
         ListFooterComponent={footer}
         refreshControl={

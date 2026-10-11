@@ -317,7 +317,7 @@ export function createApi(settings: Settings, options: ClientOptions) {
               }
               case 'error': {
                 const detail = typeof event.payload.message === 'string' ? (event.payload.message as string) : '';
-                handlers.onError(new ApiError(t.errors.server(500, detail || 'erro na transmissão'), { kind: 'http', detail }));
+                handlers.onError(new ApiError(t.errors.server(500, detail || t.errors.streamFailed), { kind: 'http', detail }));
                 break;
               }
               case 'done': {

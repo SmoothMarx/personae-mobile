@@ -22,7 +22,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { AppState, type AppStateStatus } from 'react-native';
 
 import { errorKindLabel } from './api/failures';
-import { connectThrough, createProbeCache, probeRoute, type ConnectResult } from './connectivity';
+import { connectThrough, createProbeCache, probeRoute, tailscalePolicy, type ConnectResult } from './connectivity';
 import { t } from './i18n';
 import {
   isPackageInstalled,
@@ -205,14 +205,15 @@ export function ConnectivityProvider({ children }: { children: React.ReactNode }
 
       // 2. Raise the tunnel ourselves — but only when the master switch is on. The broadcast is
       //    fire-and-forget, so its result proves nothing; readiness is decided by the probe below.
+      const policy = tailscalePolicy(current, { canTrigger, installed });
       let triggerResult = '';
-      if (current.autoConnect && canTrigger) {
+      if (policy.sendTrigger) {
         const trigger = await triggerTailscaleConnect(pkg);
-        triggerResult = trigger.sent ? 'enviado' : 'não enviado';
+        triggerResult = trigger.sent ? t.connectivity.triggerSent : t.connectivity.triggerNotSent;
       } else if (!current.autoConnect) {
-        triggerResult = 'automático desligado';
+        triggerResult = t.connectivity.triggerAutoOff;
       } else {
-        triggerResult = 'indisponível nesta plataforma';
+        triggerResult = t.connectivity.triggerUnavailable;
       }
 
       // 3. Prove readiness by probing, in strict priority order, until the deadline.
@@ -244,7 +245,7 @@ export function ConnectivityProvider({ children }: { children: React.ReactNode }
       else if (result.reason === 'backgrounded') message = null;
       else if (result.reason === 'deadline' || (result.reason === 'none-reachable' && !reachable)) {
         message = installed === false ? t.connectivity.notInstalled : t.connectivity.setupIncomplete;
-        if (current.openTailscaleOnFailure && installed !== false && canTrigger) {
+        if (policy.openOnFailure) {
           void openPackage(pkg);
         }
       } else if (result.reason === 'pin-bypassed') {

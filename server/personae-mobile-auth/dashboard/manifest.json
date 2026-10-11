@@ -1,0 +1,11 @@
+{
+  "name": "personae-mobile-auth",
+  "label": "Personae Mobile",
+  "description": "Browser-mediated device pairing for the Personae Mobile app: /pair page (QR + deep link), single-use codes, per-device revocable tokens.",
+  "version": "1.1.0",
+  "icon": "device-mobile",
+  "api": "plugin_api.py",
+  "tab": {
+    "hidden": true
+  }
+}

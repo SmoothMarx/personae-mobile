@@ -10,12 +10,14 @@
  */
 
 import {
+  DEFAULT_SETTINGS,
   LAST_SEEN_STORE_KEY,
   SECRET_STORE_KEY,
   SETTINGS_STORE_KEY,
   type Settings,
   type StoredSettings,
 } from './settings';
+import { DEFAULT_LANGUAGE, isLanguage } from './i18n';
 import { normalizeRouteUrl, normalizeRoutes, orderRoutes, routesFromBaseUrl } from './routes';
 import { storeDelete, storeGet, storeSet } from './storage';
 
@@ -35,10 +37,15 @@ function asNumber(value: unknown, fallback: number, min: number, max: number): n
 export async function loadSettings(): Promise<Settings> {
   const [blob, apiKey] = await Promise.all([storeGet(SETTINGS_STORE_KEY), storeGet(SECRET_STORE_KEY)]);
   let parsed: Partial<StoredSettings> = {};
+  /** True when an earlier build saved a settings object here (i.e. not a fresh install). */
+  let existing = false;
   if (blob) {
     try {
       const value = JSON.parse(blob);
-      if (value && typeof value === 'object') parsed = value as Partial<StoredSettings>;
+      if (value && typeof value === 'object') {
+        parsed = value as Partial<StoredSettings>;
+        existing = true;
+      }
     } catch {
       parsed = {};
     }
@@ -49,6 +56,10 @@ export async function loadSettings(): Promise<Settings> {
 
   // `surface` is ADDITIVE: an older blob simply has no value and lands on the default, so an
   // existing install keeps working and a newer build reads the old shape unchanged.
+  // `language` is ADDITIVE too, with one twist: a blob saved before the field existed came from the
+  // Portuguese-only build, so that install keeps Portuguese. Only a fresh install gets the default.
+  const language = isLanguage(parsed.language) ? parsed.language : existing ? 'pt' : DEFAULT_LANGUAGE;
+
   const surface = parsed.surface === 'gateway' ? 'gateway' : parsed.surface === 'dashboard' ? 'dashboard' : 'dashboard';
 
   return {
@@ -61,11 +72,12 @@ export async function loadSettings(): Promise<Settings> {
       typeof parsed.preferredRouteRole === 'string' && parsed.preferredRouteRole.trim()
         ? parsed.preferredRouteRole.trim()
         : null,
-    autoConnect: asBoolean(parsed.autoConnect, true),
+    language,
+    autoConnect: asBoolean(parsed.autoConnect, DEFAULT_SETTINGS.autoConnect),
     tailscalePackage: asString(parsed.tailscalePackage, 'com.tailscale.ipn').trim() || 'com.tailscale.ipn',
     connectDeadlineMs: asNumber(parsed.connectDeadlineMs, 20_000, 1_000, 120_000),
     probeTimeoutMs: asNumber(parsed.probeTimeoutMs, 1_500, 100, 10_000),
-    openTailscaleOnFailure: asBoolean(parsed.openTailscaleOnFailure, true),
+    openTailscaleOnFailure: asBoolean(parsed.openTailscaleOnFailure, DEFAULT_SETTINGS.openTailscaleOnFailure),
     insecureRouteAck: asBoolean(parsed.insecureRouteAck, false),
     everReachedGateway: asBoolean(parsed.everReachedGateway, false),
     lastTriggerResult: asString(parsed.lastTriggerResult, ''),
@@ -87,6 +99,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     model: settings.model,
     routes: settings.routes,
     preferredRouteRole: settings.preferredRouteRole,
+    language: settings.language,
     autoConnect: settings.autoConnect,
     tailscalePackage: settings.tailscalePackage,
     connectDeadlineMs: settings.connectDeadlineMs,

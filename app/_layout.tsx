@@ -4,10 +4,13 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { SettingsProvider } from '../src/SettingsContext';
 import { ConnectivityProvider } from '../src/ConnectivityContext';
-import { t } from '../src/i18n';
+import { t, useLanguage } from '../src/i18n';
 import { colors, font } from '../src/theme';
 
 export default function RootLayout() {
+  // Re-render on a language switch so the header titles below follow it; screens re-render through
+  // SettingsContext (its value carries the language) and their own useLanguage().
+  useLanguage();
   return (
     <SafeAreaProvider>
       <SettingsProvider>

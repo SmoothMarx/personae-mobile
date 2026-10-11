@@ -23,6 +23,7 @@
  * and the probe itself are all injected, so the whole policy is unit-testable without a device.
  */
 
+import { t } from './i18n';
 import { classifyStatus, nextDelayMs, shouldRetry, type FailureClass } from './api/failures';
 import { checkRoute, hostOf, orderRoutes, portOf, selectRoute, type RouteCandidate, type RouteDecision } from './routes';
 
@@ -281,6 +282,24 @@ export async function connectThrough(options: ConnectOptions): Promise<ConnectRe
   }
 }
 
+// ──────────────────────────────────────────────────── Tailscale side effects ──
+
+/**
+ * What the connect pass may do to the Tailscale app. Both actions are opt-in settings (off by
+ * default); route probing never depends on them, so a direct LAN route connects with both off.
+ *   sendTrigger   — broadcast the "connect" intent before probing (needs the Android module).
+ *   openOnFailure — open the Tailscale app when no route answered in time (not when it is missing).
+ */
+export function tailscalePolicy(
+  settings: { autoConnect: boolean; openTailscaleOnFailure: boolean },
+  env: { canTrigger: boolean; installed: boolean | null },
+): { sendTrigger: boolean; openOnFailure: boolean } {
+  return {
+    sendTrigger: settings.autoConnect && env.canTrigger,
+    openOnFailure: settings.openTailscaleOnFailure && env.canTrigger && env.installed !== false,
+  };
+}
+
 // ───────────────────────────────────────────────────────────── the real probe ──
 
 export type ProbeDeps = {
@@ -307,19 +326,19 @@ export function probeRoute(deps: ProbeDeps): ProbeFn {
     const host = hostOf(route.url);
     const port = portOf(route.url);
     if (!host || port === null) {
-      return { ok: false, failure: 'route', detail: 'endereço sem host ou porta' };
+      return { ok: false, failure: 'route', detail: t.connectivity.probeNoHostPort };
     }
     const open = await deps.tcp(host, port, timeoutMs);
     if (!open) {
       return {
         ok: false,
         failure: 'transient',
-        detail: `${host}:${port} não respondeu em ${timeoutMs} ms`,
+        detail: t.connectivity.probeNoAnswer(`${host}:${port}`, timeoutMs),
       };
     }
     const health = await deps.health(route.url, timeoutMs);
     if (health === null) {
-      return { ok: false, failure: 'transient', detail: 'a ligação abriu mas não houve resposta' };
+      return { ok: false, failure: 'transient', detail: t.connectivity.probeOpenNoReply };
     }
     if (!health.ok) {
       return {

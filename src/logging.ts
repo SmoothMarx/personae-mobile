@@ -17,6 +17,8 @@
  *  5. **Share, never upload.** Local only: no telemetry, no auto-send.
  */
 
+import { t } from './i18n';
+
 export type LogLevel = 'info' | 'warn' | 'error';
 export type LogCategory = 'net' | 'auth' | 'api' | 'ws' | 'ui' | 'error';
 
@@ -94,7 +96,7 @@ export function createLog(options: ExportLogOptions = {}) {
       push(
         record.status !== null && record.status >= 400 ? 'warn' : 'info',
         'api',
-        `${record.method} ${record.path}${record.attempt && record.attempt > 1 ? ` (tentativa ${record.attempt})` : ''} → ${record.status ?? 'sem resposta'} em ${record.ms} ms`,
+        `${record.method} ${record.path}${record.attempt && record.attempt > 1 ? t.log.attempt(record.attempt) : ''} → ${t.log.took(record.status === null ? t.log.noResponse : String(record.status), record.ms)}`,
       ),
     clear: () => {
       entries.length = 0;
@@ -120,38 +122,38 @@ export type LogHeader = {
 export function buildLogDocument(header: LogHeader, description: string, entries: LogEntry[]): string {
   const stamp = (ms: number) => new Date(ms).toISOString();
   const lines: string[] = [];
-  lines.push('Personae — registo de diagnóstico');
+  lines.push(t.log.docTitle);
   lines.push('=================================');
-  lines.push(`Gerado: ${stamp(Date.now())}`);
+  lines.push(t.log.generated(stamp(Date.now())));
   lines.push('');
   if (description.trim()) {
-    lines.push('O que se passou (escrito por ti):');
+    lines.push(t.log.userNote);
     lines.push(description.trim());
     lines.push('');
   }
-  lines.push('Contexto');
+  lines.push(t.log.context);
   lines.push('--------');
   lines.push(`App: ${header.appVersion} (versionCode ${header.versionCode})`);
-  lines.push(`Ligação: ${header.surface} · ${header.baseUrl || 'sem endereço'}`);
-  if (header.activeRoute) lines.push(`Rota em uso: ${header.activeRoute}`);
+  lines.push(t.log.connection(header.surface, header.baseUrl || t.log.noAddress));
+  if (header.activeRoute) lines.push(t.log.activeRoute(header.activeRoute));
   if (header.routes?.length) {
-    lines.push('Rotas candidatas (por prioridade):');
+    lines.push(t.log.candidateRoutes);
     for (const route of header.routes) lines.push(`  ${route.priority}. ${route.url} [${route.role}]`);
   }
   if (header.tailscale) lines.push(`Tailscale: ${header.tailscale}`);
   if (header.failures?.length) {
-    lines.push('Últimas falhas:');
+    lines.push(t.log.recentFailures);
     for (const failure of header.failures.slice(-3)) lines.push(`  - ${failure}`);
   }
-  lines.push(`Dispositivo: ${header.deviceOs ?? 'n/d'}`);
+  lines.push(t.log.device(header.deviceOs ?? t.log.notAvailable));
   lines.push('');
-  lines.push(`Registo (${entries.length} linhas, mais antiga primeiro)`);
+  lines.push(t.log.entries(entries.length));
   lines.push('------------------------------------------------');
   for (const entry of entries) {
     lines.push(`${stamp(entry.at)} [${entry.level}] ${entry.category}: ${entry.message}`);
   }
-  if (!entries.length) lines.push('(vazio)');
+  if (!entries.length) lines.push(t.log.empty);
   lines.push('');
-  lines.push('Nota: cabeçalhos de autenticação, bilhetes e tokens são substituídos por [REDACTED].');
+  lines.push(t.log.redactionNote);
   return redact(lines.join('\n'));
 }
