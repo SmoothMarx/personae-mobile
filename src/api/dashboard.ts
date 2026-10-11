@@ -478,16 +478,21 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
     /**
      * GET /api/plugins/messenger/search — message-BODY full-text search.
      *
-     * Measured on the live box (2026-10-11): `?q=&profile=&limit=` → 200
-     * `{profile, query, results:[{session_id, role, snippet}]}`. It is **one profile per call**,
-     * which is exactly why the caller debounces and issues the batch once per settled query rather
-     * than once per keystroke (R5).
+     * Measured on the live box (2026-10-11, `logs/roster-2026-10-11.txt`):
+     *   `?q=plugin&profile=all`  → **404** `{"detail":"Profile 'all' does not exist."}`
+     *   `?q=plugin&profile=cody` → 200 `{profile, query, results:[{session_id, role, snippet}]}`
+     *   `?q=plugin`              → 200, the whole box
+     *
+     * So `profile` is left OUT for a cross-profile search (one request per settled query), and
+     * named only when a single profile is wanted.
      */
-    async searchMessages(query: string, profile = 'all', limit = 40): Promise<{ session_id: string; role?: string; snippet: string }[]> {
+    async searchMessages(query: string, profile = '', limit = 40): Promise<{ session_id: string; role?: string; snippet: string }[]> {
       const body = await json<{ results?: { session_id?: string; role?: string; snippet?: string }[] }>(
         '/api/plugins/messenger/search',
         { method: 'GET' },
-        { q: query, profile: profile || 'all', limit },
+        // An OMITTED profile serves the whole box; `all` is NOT a profile name and answers 404
+        // (measured 2026-10-11). An empty string is dropped from the query by `json()`.
+        { q: query, profile: profile || undefined, limit },
       );
       const rows = Array.isArray(body.results) ? body.results : [];
       return rows

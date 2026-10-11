@@ -196,7 +196,7 @@ function createDashboardBackend(settings: Settings): Backend {
       };
     },
 
-    async searchMessages(query, profile = 'all', limit = 40) {
+    async searchMessages(query, profile = '', limit = 40) {
       return client.searchMessages(query, profile, limit);
     },
 

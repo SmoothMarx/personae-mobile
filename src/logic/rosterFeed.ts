@@ -10,6 +10,12 @@
  * (`SESSIONS_PER_PROFILE`, preview + age per face), `NON_CONVERSATION_SOURCES`:179, `searchInSessions`
  * :1996, and the auto-expand rule (a hit inside a profile is drawn under that profile, so the
  * profile opens).
+ *
+ * MEASURED CORRECTION (2026-10-11, `logs/roster-2026-10-11.txt`): the brief and the plugin's own
+ * comment say the sidebar's `recents` slice carries no cron runs. On the live box it DOES — the
+ * slice came back `{desktop: 22, cli: 6, cron: 6, api_server: 1, tui: 1}`. So the filter here is not
+ * belt-and-braces: it is load-bearing, and it runs on the `recents` path exactly as it does on the
+ * rail path. Never take the slice's name as a guarantee about its contents.
  */
 
 import { formatAge, firstLine, initialOf, toMillis } from '../format';
@@ -155,6 +161,8 @@ export type SearchResult = {
   profileHits: string[];
   /** Profiles that must be expanded because a hit lives inside them (the plugin's rule). */
   autoExpand: string[];
+  /** Body hits the server returned whose session is not in the loaded feed — say so, don't guess. */
+  unplaced?: number;
 };
 
 export function normalizeNeedle(needle: string): string {
@@ -176,13 +184,31 @@ export function profileMatches(profile: { name: string; label: string }, needle:
 }
 
 /**
- * The search plan over the roster. One settled query produces ONE sweep plus ONE body request per
- * profile — never one per keystroke (the caller debounces and cancels; this function is what makes
- * the request count knowable and testable).
+ * The search plan: which requests one settled query makes.
+ *
+ * Measured on the live box (2026-10-11, `logs/roster-2026-10-11.txt`):
+ *   `…/search?q=plugin&profile=all` → **404** `{"detail":"Profile 'all' does not exist."}`
+ *   `…/search?q=plugin&profile=cody` → 200, results
+ *   `…/search?q=plugin`              → 200, results — an OMITTED profile serves the whole box
+ *
+ * So the default plan is **ONE server-wide request**, whatever the number of profiles. That is the
+ * answer to R5's "must not fire 22 requests per keystroke" — it is one request per *settled* query,
+ * and the results are attributed to profiles locally by `attributeBodyHits`.
+ *
+ * `perProfile: true` keeps the other route available (one request per profile, for a caller that
+ * wants the server to do the scoping). It is deduped and capped, so even that path cannot fan out
+ * without bound.
  */
-export function bodySearchRequests(profiles: string[], needle: string, cap = 32): string[] {
+export function bodySearchPlan(
+  profiles: string[],
+  needle: string,
+  options: { perProfile?: boolean; cap?: number } = {},
+): string[] {
   const q = normalizeNeedle(needle);
   if (!q) return [];
+  if (!options.perProfile) return [''];
+  if (!profiles.length) return [];
+  const cap = options.cap ?? 32;
   const seen = new Set<string>();
   const out: string[] = [];
   for (const profile of profiles) {
@@ -195,8 +221,40 @@ export function bodySearchRequests(profiles: string[], needle: string, cap = 32)
   return out;
 }
 
+/**
+ * Attribute server body hits to the profile that owns the session.
+ *
+ * The response carries only `session_id`, so the profile comes from the feed the app already holds.
+ * A hit whose session is not in the loaded feed cannot be placed under a face, and it is DROPPED
+ * rather than guessed at — `unplaced` counts them so the screen can say so out loud.
+ */
+export function attributeBodyHits(
+  sessions: (HermesSession & { profile?: string | null })[],
+  hits: { session_id: string; snippet?: string; role?: string }[],
+): { perProfile: Record<string, { session_id: string; snippet: string }[]>; unplaced: number } {
+  const owner = new Map<string, string>();
+  for (const session of sessions) owner.set(session.id, profileOf(session));
+  const perProfile: Record<string, { session_id: string; snippet: string }[]> = {};
+  let unplaced = 0;
+  for (const hit of hits ?? []) {
+    const id = String(hit?.session_id ?? '');
+    if (!id) continue;
+    const profile = owner.get(id);
+    if (!profile) {
+      unplaced += 1;
+      continue;
+    }
+    (perProfile[profile] ??= []).push({ session_id: id, snippet: String(hit.snippet ?? '') });
+  }
+  return { perProfile, unplaced };
+}
+
 /** Fold server body hits into the sweep's result — the plugin's `mergeBodyHits`, kept as data. */
-export function mergeBodyHits(result: SearchResult, perProfile: Record<string, { session_id?: string; snippet?: string }[]>): SearchResult {
+export function mergeBodyHits(
+  result: SearchResult,
+  perProfile: Record<string, { session_id?: string; snippet?: string }[]>,
+  unplaced = 0,
+): SearchResult {
   const hits = [...result.hits];
   const bodyProfiles = new Set(result.bodyProfiles);
   const known = new Set(hits.map((hit) => `${hit.profile}\u0000${hit.sessionId}`));
@@ -217,7 +275,7 @@ export function mergeBodyHits(result: SearchResult, perProfile: Record<string, {
     }
   }
   const autoExpand = Array.from(new Set([...result.autoExpand, ...bodyProfiles, ...hits.map((hit) => hit.profile)]));
-  return { ...result, hits, bodyProfiles: Array.from(bodyProfiles), autoExpand };
+  return { ...result, hits, bodyProfiles: Array.from(bodyProfiles), autoExpand, unplaced: (result.unplaced ?? 0) + unplaced };
 }
 
 /**

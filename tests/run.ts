@@ -73,8 +73,9 @@ import {
 } from '../src/logic/sections';
 import { dotStateFor, isUnread, profileRollup, showBadge } from '../src/logic/lights';
 import {
+  attributeBodyHits,
   automaticRuns,
-  bodySearchRequests,
+  bodySearchPlan,
   buildRoster,
   coloursFor,
   conversations,
@@ -1742,12 +1743,31 @@ async function main(): Promise<void> {
     assert.ok(merged.autoExpand.includes('scout'));
   });
 
-  test('search: one settled query is ONE batch of body requests — never one per keystroke', () => {
-    assert.deepEqual(bodySearchRequests(['cody', 'scout'], 'orçamento'), ['cody', 'scout']);
-    assert.deepEqual(bodySearchRequests(['cody', 'cody', 'scout'], 'x'), ['cody', 'scout'], 'deduped');
-    assert.deepEqual(bodySearchRequests(['cody'], '   '), [], 'nothing is fired for a blank query');
-    const many = Array.from({ length: 40 }, (_, index) => `p${index}`);
-    assert.equal(bodySearchRequests(many, 'x', 8).length, 8, 'and the fan-out is capped');
+  test('search: one settled query is ONE body request, whatever the profile count', () => {
+    // Measured: `?profile=all` is a 404 and an OMITTED profile serves the whole box, so the plan is
+    // a single server-wide call. 22 profiles do not make 22 requests.
+    assert.deepEqual(bodySearchPlan(['cody', 'scout'], 'orçamento'), ['']);
+    assert.deepEqual(bodySearchPlan(Array.from({ length: 22 }, (_, i) => `p${i}`), 'x'), [''], 'still one');
+    assert.deepEqual(bodySearchPlan(['cody'], '   '), [], 'nothing is fired for a blank query');
+    // The per-profile route stays available, deduped and capped, for a caller that wants it:
+    assert.deepEqual(bodySearchPlan(['cody', 'cody', 'scout'], 'x', { perProfile: true }), ['cody', 'scout']);
+    assert.equal(bodySearchPlan(Array.from({ length: 40 }, (_, i) => `p${i}`), 'x', { perProfile: true, cap: 8 }).length, 8);
+    assert.deepEqual(bodySearchPlan([], 'x', { perProfile: true }), []);
+  });
+
+  test('search: a body hit is attributed to its profile from the feed, and an unplaceable one is counted', () => {
+    const sessions = [
+      { id: 'a', profile: 'scout', source: 'dashboard' },
+      { id: 'b', profile: 'cody', source: 'dashboard' },
+    ];
+    const { perProfile, unplaced } = attributeBodyHits(sessions as never[], [
+      { session_id: 'a', snippet: 'um' },
+      { session_id: 'b', snippet: 'dois' },
+      { session_id: 'nowhere', snippet: 'três' },
+    ]);
+    assert.deepEqual(Object.keys(perProfile).sort(), ['cody', 'scout']);
+    assert.equal(perProfile.scout[0].session_id, 'a');
+    assert.equal(unplaced, 1, 'a hit that cannot be placed under a face is counted, not guessed');
   });
 
   // ── R7: status lights, exactly the plugin's rule ──
@@ -1842,7 +1862,12 @@ async function main(): Promise<void> {
   const rich = createMockDashboard({
     port: 0,
     bearer: DASH_BEARER,
-    bodies: { 'orçamento': [{ session_id: 'sess-deep', profile: 'scout', snippet: '>>>orçamento<<< de setembro' }] },
+    bodies: {
+      'orçamento': [{ session_id: 'sess-deep', profile: 'scout', snippet: '>>>orçamento<<< de setembro' }],
+      // A phrase that lives ONLY in a message body of a session the feed already holds, so the
+      // attribution path (and the auto-expand it triggers) can be exercised end to end.
+      segredo: [{ session_id: 'chat-1', profile: 'default', snippet: 'o >>>segredo<<< está aqui' }],
+    },
     profiles: [
       profileFixture('default', { has_avatar: true }),
       profileFixture('scout', { has_avatar: false, label: 'Scout' }),
@@ -1900,12 +1925,36 @@ async function main(): Promise<void> {
     assert.ok(rich.searchCalls.length >= 2, 'the route was actually called');
   });
 
-  test('dashboard: one profile per FTS call is what makes the batch countable', async () => {
+  test('dashboard: the cross-profile FTS plan is ONE call, and it never sends profile=all', async () => {
     const backend = createBackend(settingsFor(rich.url, { apiKey: DASH_BEARER }));
-    const plan = bodySearchRequests(['default', 'scout'], 'orçamento');
     const before = rich.searchCalls.length;
-    for (const profile of plan) await backend.searchMessages('orçamento', profile);
-    assert.equal(rich.searchCalls.length - before, 2, 'two profiles, two calls — one settled query');
+    for (const profile of bodySearchPlan(['default', 'scout'], 'segredo')) {
+      await backend.searchMessages('segredo', profile);
+    }
+    assert.equal(rich.searchCalls.length - before, 1, 'one settled query, one request');
+    assert.equal(rich.searchCalls[rich.searchCalls.length - 1].profile, 'all', 'the mock records an omitted profile as the whole box');
+    assert.equal(rich.searchCalls.some((call) => call.profile === 'all' && call.q), true);
+    backend.dispose();
+  });
+
+  test('dashboard: a body hit lands under the profile that owns the session', async () => {
+    const backend = createBackend(settingsFor(rich.url, { apiKey: DASH_BEARER }));
+    const profiles = await backend.profiles();
+    const slices = await backend.sidebar('all', { recents: 50 });
+    const contacts = rosterContacts({ hasProfiles: true, profiles, declared: [] }).contacts;
+    const feed = slices.recents as never[];
+    // The sweep finds nothing — the phrase is only in a MESSAGE BODY.
+    const sweep = searchRoster({ needle: 'segredo', profiles: contacts, sessions: feed });
+    assert.deepEqual(sweep.hits, [], 'the local metadata sweep cannot see a body');
+    const hits = await backend.searchMessages('segredo', '');
+    const { perProfile, unplaced } = attributeBodyHits(feed as never[], hits);
+    const merged = mergeBodyHits(sweep, perProfile, unplaced);
+    assert.equal(merged.hits.length, 1, 'the deep hit is placed');
+    assert.equal(merged.hits[0].profile, 'default');
+    assert.equal(merged.hits[0].source, 'body');
+    const model = buildRoster({ contacts, sessions: feed as never[], expanded: [], search: merged, now: Date.now() });
+    assert.equal(model.rows[0].name, 'default', 'the profile that holds it is revealed');
+    assert.equal(model.rows[0].expanded, true, 'and auto-expanded');
     backend.dispose();
   });
 

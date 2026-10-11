@@ -24,7 +24,8 @@ import { t } from '../i18n';
 import { useAvatars } from '../Avatar';
 import {
   EMPTY_COLOURS,
-  bodySearchRequests,
+  attributeBodyHits,
+  bodySearchPlan,
   buildRoster,
   mergeBodyHits,
   rosterContacts,
@@ -241,20 +242,21 @@ export function useRoster() {
         setSearching(false);
         return;
       }
-      const plan = bodySearchRequests(contacts.map((contact) => contact.name), needle);
+      const plan = bodySearchPlan(contacts.map((contact) => contact.name), needle);
       setBodyHits(null);
       void Promise.all(
         plan.map((profile) =>
           backend
-            .searchMessages(needle, profile)
-            .then((hits) => [profile, hits] as [string, MessageHit[]])
-            .catch(() => [profile, [] as MessageHit[]] as [string, MessageHit[]]),
+            .searchMessages(needle, profile, 60)
+            .catch(() => [] as MessageHit[]),
         ),
-      ).then((pairs) => {
+      ).then((batches) => {
         if (cancelled) return;
-        const perProfile: Record<string, MessageHit[]> = {};
-        for (const [profile, hits] of pairs) perProfile[profile] = hits;
-        setBodyHits(mergeBodyHits(result, perProfile));
+        const flat = batches.flat();
+        // The response carries only `session_id`, so each hit is attributed to a profile from the
+        // feed already in hand. One that cannot be placed is counted, never guessed at.
+        const { perProfile, unplaced } = attributeBodyHits(all, flat);
+        setBodyHits(mergeBodyHits(result, perProfile, unplaced));
         setSearching(false);
       });
     }, SEARCH_DEBOUNCE_MS);
