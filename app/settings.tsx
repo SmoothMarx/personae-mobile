@@ -7,13 +7,19 @@
  * clearing the key is a destructive action that names what it affects and asks first.
  */
 
+import Constants from 'expo-constants';
 import { File, Paths } from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
 
 import { createBackend } from '../src/api/backend';
+import { normalizeError } from '../src/api/errors';
+import ConnectWizard from '../src/connect/Wizard';
+import { peerAddress, peerRoute, peersPort, peersState, type PeerRow, type PeersResult } from '../src/logic/peers';
+import { probeTcp } from '../src/native/tailscale';
+import { ADVANCED_OPEN_BY_DEFAULT } from '../src/settingsLayout';
 import { buildLogDocument, log } from '../src/logging';
 import { parseErrorForDisplay } from '../src/api/display';
 import { xhrTransport } from '../src/api/transport';
@@ -64,6 +70,15 @@ export default function SettingsScreen() {
   const routeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const routes = useMemo(() => orderRoutes(form.routes), [form.routes]);
+
+  // ── 0.7.0 — Advanced is CLOSED by default; the Connection section is the wizard ──
+  const [advancedOpen, setAdvancedOpen] = useState(ADVANCED_OPEN_BY_DEFAULT);
+
+  // ── 0.7.0 — the tailnet device picker (host endpoint, never the phone) ────────
+  const [peers, setPeers] = useState<PeersResult | null>(null);
+  const [peersOpen, setPeersOpen] = useState(false);
+  const [peersBusy, setPeersBusy] = useState(false);
+  const [peersNote, setPeersNote] = useState<string | null>(null);
 
   /**
    * Structural edits (add / remove / move) are discrete, so they persist immediately. Typing a URL
@@ -149,8 +164,10 @@ export default function SettingsScreen() {
   const exportLog = useCallback(async () => {
     const doc = buildLogDocument(
       {
-        appVersion: '0.5.0',
-        versionCode: '5',
+        // Read from the embedded config instead of a literal: the log said 0.5.0 for two releases
+        // while the app was 0.6.x, which is exactly the kind of thing a support log must not do.
+        appVersion: String(Constants.expoConfig?.version ?? 'unknown'),
+        versionCode: String(Constants.expoConfig?.android?.versionCode ?? 'unknown'),
         surface: surfaceLabel(form.surface),
         baseUrl: form.baseUrl,
         routes: form.routes.map((route, index) => ({ url: route.url, role: route.role, priority: index })),
@@ -262,6 +279,57 @@ export default function SettingsScreen() {
     ]);
   }, [update]);
 
+  /**
+   * Read the host's tailnet peers. The PHONE cannot enumerate a tailnet — this is the one route
+   * that can (see server/personae-mobile-auth). A refusal is normalised, never thrown: the picker
+   * says what happened and the manual entry under Advanced stays the way through.
+   */
+  const readPeers = useCallback(async () => {
+    setPeersBusy(true);
+    setPeersNote(null);
+    const backend = createBackend({ ...form, profiles: effectiveProfiles });
+    try {
+      setPeers(await backend.tailscalePeers());
+    } catch (error) {
+      setPeers({ available: false, peers: [], reason: normalizeError(error).status === 401 ? 'unauthorized' : 'error' });
+    } finally {
+      backend.dispose();
+      setPeersBusy(false);
+      setPeersOpen(true);
+    }
+  }, [effectiveProfiles, form]);
+
+  /**
+   * Pick a device: derive the route through `src/routes.ts`, PROVE it answers, and only then write
+   * it. A device that does not answer adds nothing and says so — the roster never depends on a
+   * route that was never checked.
+   */
+  const pickPeer = useCallback(
+    async (peer: PeerRow) => {
+      const port = peersPort(form);
+      const address = peerAddress(peer, port);
+      const route = peerRoute(peer, { port, routes: form.routes, insecureAck: form.insecureRouteAck });
+      if (!route) {
+        setPeersNote(t.connectivity.peerAlreadyRoute(address));
+        return;
+      }
+      setPeersBusy(true);
+      const answers = await probeTcp(peer.ip, port, form.probeTimeoutMs);
+      setPeersBusy(false);
+      if (!answers) {
+        setPeersNote(t.connectivity.peerNotAnswering(peer.name, address));
+        return;
+      }
+      // Plain http on a private overlay needs the explicit ack. Picking a device on your OWN
+      // tailnet is that consent, given deliberately — so it is recorded with the route, not assumed.
+      setForm((prev) => ({ ...prev, insecureRouteAck: true }));
+      update({ insecureRouteAck: true, routes: [...form.routes, route] });
+      setPeersNote(t.connectivity.peerAdded(peer.name, address));
+      setPeersOpen(false);
+    },
+    [form, update],
+  );
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
       <Text style={styles.hint}>{t.settings.autoSave}</Text>
@@ -282,9 +350,9 @@ export default function SettingsScreen() {
       ) : null}
       <View style={styles.field}>
         <Text style={styles.label}>{t.connect.title}</Text>
-        <Pressable onPress={() => router.push('/connect')} style={({ pressed }) => [styles.primary, pressed && styles.pressed]}>
-          <Text style={styles.primaryText}>{t.connect.open}</Text>
-        </Pressable>
+        {/* 0.7.0 — the wizard IS the Connection section: the same three steps, drawn in place.
+            `personae://connect` still lands on the same components (src/connect/Wizard.tsx). */}
+        <ConnectWizard embedded onDone={() => router.push('/')} />
         {settings.deviceId ? (
           <>
             <Text style={styles.help}>{t.connect.deviceLabel(settings.deviceLabel || settings.deviceId)}</Text>
@@ -304,6 +372,92 @@ export default function SettingsScreen() {
           </>
         ) : null}
       </View>
+
+      {/* ── Ligação (0.7.0): THREE affordances and no knobs ──────────────────
+          Log in (opens the Tailscale app — no app can sign in for you), Choose device (the host's
+          tailnet peer list, which a phone cannot enumerate), and the auto-connect switch. The
+          package name and both timeouts are under Advanced, intact. */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.connectivity.title}</Text>
+
+        <Pressable
+          onPress={() => void openTailscale()}
+          accessibilityRole="button"
+          accessibilityLabel={t.connectivity.logIn}
+          style={({ pressed }) => [styles.primary, pressed && styles.pressed]}
+        >
+          <Text style={styles.primaryText}>{t.connectivity.logIn}</Text>
+        </Pressable>
+        <Text style={styles.help}>{t.connectivity.logInHelp}</Text>
+
+        <Pressable
+          onPress={() => void readPeers()}
+          disabled={peersBusy}
+          accessibilityRole="button"
+          accessibilityLabel={t.connectivity.chooseDevice}
+          style={({ pressed }) => [styles.secondary, pressed && styles.pressed, peersBusy && styles.disabled]}
+        >
+          <Text style={styles.secondaryText}>{peersBusy ? t.connectivity.devicesLoading : t.connectivity.chooseDevice}</Text>
+        </Pressable>
+        <Text style={styles.help}>{t.connectivity.chooseDeviceHelp}</Text>
+        {peersNote ? <Text style={styles.help}>{peersNote}</Text> : null}
+
+        <View style={styles.rowBetween}>
+          <Text style={styles.label}>{t.connectivity.autoConnect}</Text>
+          <Switch
+            value={form.autoConnect}
+            onValueChange={(value) => {
+              setForm((prev) => ({ ...prev, autoConnect: value }));
+              update({ autoConnect: value });
+            }}
+          />
+        </View>
+        <Text style={styles.help}>{t.connectivity.autoConnectHelp}</Text>
+        {Platform.OS !== 'android' ? <Text style={styles.help}>{t.connectivity.iosNote}</Text> : null}
+      </View>
+
+      {/* The picker itself. Only what can be known is shown: installed, tunnel, and the host's list. */}
+      <Modal visible={peersOpen} transparent animationType="fade" onRequestClose={() => setPeersOpen(false)}>
+        <Pressable style={styles.sheetBackdrop} onPress={() => setPeersOpen(false)} accessibilityRole="button" accessibilityLabel={t.common.close}>
+          <Pressable style={styles.sheet} onPress={() => undefined}>
+            <Text style={styles.sheetTitle}>{t.connectivity.devicesTitle}</Text>
+            {peersState(peers ?? { available: false, peers: [] }) === 'unavailable' ? (
+              <Text style={styles.help}>{t.connectivity.devicesUnavailable(peers?.reason ?? 'unavailable')}</Text>
+            ) : peersState(peers ?? { available: false, peers: [] }) === 'empty' ? (
+              <Text style={styles.help}>{t.connectivity.devicesEmpty}</Text>
+            ) : (
+              (peers?.peers ?? []).map((peer) => (
+                <Pressable
+                  key={peer.ip}
+                  onPress={() => void pickPeer(peer)}
+                  disabled={peersBusy}
+                  accessibilityRole="button"
+                  accessibilityLabel={`${peer.name} — ${peerAddress(peer, peersPort(form))}`}
+                  style={({ pressed }) => [styles.peerRow, pressed && styles.pressed]}
+                >
+                  <Ionicons name="desktop-outline" size={18} color={colors.text} />
+                  <View style={styles.peerText}>
+                    <Text style={styles.peerName} numberOfLines={1}>
+                      {peer.ip === peers?.self?.ip ? `${peer.name} · ${t.connectivity.peerSelf}` : peer.name}
+                    </Text>
+                    <Text style={styles.help} numberOfLines={1}>
+                      {`${peerAddress(peer, peersPort(form))} · ${peer.os || '—'} · ${peer.online ? t.connectivity.peerOnline : t.connectivity.peerOffline}`}
+                    </Text>
+                  </View>
+                </Pressable>
+              ))
+            )}
+            <View style={styles.rowButtons}>
+              <Pressable onPress={() => void readPeers()} style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
+                <Text style={styles.secondaryText}>{t.connectivity.devicesRetry}</Text>
+              </Pressable>
+              <Pressable onPress={() => setPeersOpen(false)} style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
+                <Text style={styles.secondaryText}>{t.common.close}</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Interface language: one tap, applied and saved at once (no Save button). */}
       <View style={styles.field}>
@@ -332,6 +486,23 @@ export default function SettingsScreen() {
         <Text style={styles.help}>{t.settings.languageHelp}</Text>
       </View>
 
+      {/* ── Advanced (0.7.0): CLOSED by default ──────────────────────────────
+          Nothing was deleted. Connection type, address, bearer, routes, the tailnet internals,
+          status and the log all live here, one tap away. */}
+      <Pressable
+        onPress={() => setAdvancedOpen((open) => !open)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: advancedOpen }}
+        accessibilityLabel={advancedOpen ? t.settings.advancedHide : t.settings.advancedShow}
+        style={({ pressed }) => [styles.field, styles.advancedHeader, pressed && styles.pressed]}
+      >
+        <Text style={styles.label}>{t.settings.advanced}</Text>
+        <Ionicons name={advancedOpen ? 'chevron-down' : 'chevron-forward'} size={16} color={colors.muted} />
+      </Pressable>
+      {advancedOpen ? <Text style={styles.help}>{t.settings.advancedHelp}</Text> : null}
+
+      {advancedOpen ? (
+        <>
       {/* Which surface the address speaks. One choice, applied at once (single-field settings save
           themselves), because everything else on this screen means something slightly different
           per surface: the bearer is a dashboard app credential, or the :9222 API key. */}
@@ -618,20 +789,10 @@ export default function SettingsScreen() {
         <Text style={styles.help}>{t.routes.preferredHelp}</Text>
       </View>
 
-      {/* ── Ligação: the tunnel trigger ───────────────────────────────────── */}
+      {/* ── Ligação internals (Advanced): the knobs a user never reasons about ─ */}
       <View style={styles.field}>
-        <View style={styles.rowBetween}>
-          <Text style={styles.label}>{t.connectivity.autoConnect}</Text>
-          <Switch
-            value={form.autoConnect}
-            onValueChange={(value) => {
-              setForm((prev) => ({ ...prev, autoConnect: value }));
-              update({ autoConnect: value });
-            }}
-          />
-        </View>
-        <Text style={styles.help}>{t.connectivity.autoConnectHelp}</Text>
-        {Platform.OS !== 'android' ? <Text style={styles.help}>{t.connectivity.iosNote}</Text> : null}
+        <Text style={styles.label}>{t.connectivity.title}</Text>
+        <Text style={styles.help}>{t.connectivity.tailscalePackageHelp}</Text>
 
         <Field
           label={t.connectivity.tailscalePackage}
@@ -786,6 +947,8 @@ export default function SettingsScreen() {
           <Text style={styles.effectiveValue}>{t.settings.logLines(log.entries.length)}</Text>
         </View>
       </View>
+        </>
+      ) : null}
     </ScrollView>
   );
 }
@@ -962,4 +1125,20 @@ const styles = StyleSheet.create({
   diagValue: { color: colors.text, fontSize: font.small, flex: 1 },
   disabled: { opacity: 0.5 },
   pressed: { opacity: 0.8 },
+  advancedHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: space.md },
+  sheetBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  sheet: {
+    backgroundColor: colors.panel,
+    borderTopLeftRadius: radius.md,
+    borderTopRightRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: space.md,
+    gap: space.sm,
+    maxHeight: '80%',
+  },
+  sheetTitle: { color: colors.text, fontSize: font.body, fontWeight: '700' },
+  peerRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingVertical: space.sm },
+  peerText: { flex: 1, gap: 1 },
+  peerName: { color: colors.text, fontSize: font.body, fontWeight: '600' },
 });

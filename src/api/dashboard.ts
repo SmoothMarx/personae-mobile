@@ -141,6 +141,20 @@ export type DashboardMessagesResponse = {
   pagination?: { limit: number; offset: number; order: string; returned: number };
 };
 
+/**
+ * The dashboard's own answer to `POST /api/profiles` (`web_routers/profiles.py:803`):
+ * `{ok, name, path, model_set, model_error, mcp_written, skills_disabled, hub_installs}`.
+ * Everything after the profile directory exists is best-effort, which is why `model_error` can be
+ * non-empty on a success — it is surfaced rather than swallowed.
+ */
+export type ProfileCreateResult = {
+  ok?: boolean;
+  name?: string;
+  path?: string;
+  model_set?: boolean;
+  model_error?: string;
+};
+
 export type GatewayEvent = {
   type: string;
   payload: Record<string, unknown>;
@@ -587,6 +601,36 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
       });
       if (!result.found || typeof result.data !== 'string' || !result.data) return null;
       return result.data;
+    },
+
+    /**
+     * GET /api/plugins/personae-mobile-auth/tailscale/peers — the host's tailnet peers, for the
+     * "Choose device" picker (0.7.0). Readable by a paired device, which is what the phone is.
+     * The body is parsed by `src/logic/peers.ts`; this leg only carries it.
+     */
+    async tailscalePeers(): Promise<unknown> {
+      return json<Record<string, unknown>>('/api/plugins/personae-mobile-auth/tailscale/peers', { method: 'GET' });
+    },
+
+    /**
+     * POST /api/profiles — create a profile (0.7.0's "New profile").
+     *
+     * Body is the dashboard's `ProfileCreate` (web_models.py:429). `clone_from: ''` + `clone_from_default`
+     * is the honest "a fresh named profile": the dashboard clones `default`'s CONFIG when asked, and
+     * seeds the bundled skills itself. The response is the handler's own
+     * `{ok, name, path, model_set, model_error, …}`; a refusal (401/403/400) comes back through the
+     * shared error ladder, so the caller can show the real reason rather than guessing.
+     */
+    createProfile(input: { name: string; description?: string; cloneFromDefault?: boolean }): Promise<ProfileCreateResult> {
+      return json<ProfileCreateResult>('/api/profiles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: input.name,
+          description: input.description ?? '',
+          clone_from_default: input.cloneFromDefault ?? true,
+        }),
+      });
     },
 
     connect,

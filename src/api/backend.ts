@@ -13,7 +13,14 @@
  */
 
 import { createApi, type ChatStreamHandlers, type HermesMessage, type HermesSession, type HealthResponse } from './client';
-import { createDashboardClient, type DashboardProfile, type DashboardSession, type DashboardSocket } from './dashboard';
+import {
+  createDashboardClient,
+  type DashboardProfile,
+  type DashboardSession,
+  type DashboardSocket,
+  type ProfileCreateResult,
+} from './dashboard';
+import { normalizePeers, type PeersResult } from '../logic/peers';
 import { xhrTransport, type StreamHandle } from './transport';
 import { ApiError, normalizeError } from './errors';
 import { t } from '../i18n';
@@ -75,6 +82,14 @@ export type Backend = {
   chatStream(sessionId: string, text: string, handlers: ChatHandlers, profile?: string): StreamHandle;
   /** Avatar as a data URL (dashboard only; the legacy surface returns null). */
   avatar(profile: string): Promise<string | null>;
+  /**
+   * The host's tailnet peers for the "Choose device" picker (0.7.0). The legacy `:9222` surface has
+   * no such route — it declares no profiles at all, so it answers `{available:false}` rather than
+   * issuing a request that cannot work.
+   */
+  tailscalePeers(): Promise<PeersResult>;
+  /** Create a profile (dashboard only; the legacy surface has no profile list to add to). */
+  createProfile(input: { name: string; description?: string }): Promise<ProfileCreateResult>;
   /** Release sockets. Safe to call more than once. */
   dispose(): void;
 };
@@ -342,6 +357,19 @@ function createDashboardBackend(settings: Settings): Backend {
       }
     },
 
+    /** The host's tailnet peers (0.7.0). Any refusal is normalised to `available: false`. */
+    async tailscalePeers() {
+      try {
+        return normalizePeers(await client.tailscalePeers());
+      } catch (error) {
+        return normalizePeers({ available: false, reason: normalizeError(error).status === 404 ? 'unsupported' : 'error' });
+      }
+    },
+
+    createProfile(input) {
+      return client.createProfile(input);
+    },
+
     dispose() {
       try {
         socket?.close();
@@ -434,6 +462,16 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
     chatStream: (sessionId, text, handlers, profile = '') => api.chatStream(sessionId, text, handlers, profile),
 
     avatar: () => Promise.resolve(null),
+
+    /** No such route on the api_server surface, and no profiles at all: say so without a request. */
+    tailscalePeers: () => Promise.resolve(normalizePeers({ available: false, reason: 'unsupported_surface' })),
+
+    createProfile() {
+      return Promise.reject(
+        new ApiError(t.errors.server(501, t.errors.profileCreateUnsupported), { kind: 'http', status: 501 }),
+      );
+    },
+
     dispose: () => undefined,
   };
 }

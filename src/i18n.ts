@@ -154,6 +154,20 @@ const en = {
     truncated: (n: number) => `(+${n} characters)`,
   },
 
+  plus: {
+    title: 'New',
+    newGroup: 'New group',
+    newProfile: 'New profile',
+    newSession: 'New session',
+    pickProfile: 'Which profile should own it?',
+    profileName: 'Profile name',
+    profileNamePlaceholder: 'e.g. research',
+    create: 'Create',
+    created: (name: string) => `Profile "${name}" created.`,
+    createRefused: (reason: string) => `This phone cannot create profiles: ${reason}`,
+    createUnavailable: 'Only on the Dashboard connection.',
+  },
+
   settings: {
     title: 'Settings',
     surface: 'Connection type',
@@ -213,6 +227,11 @@ const en = {
     languageHelp: 'Changes straight away. Also sets the language of the support log.',
     languageEnglish: 'English',
     languagePortuguese: 'Português',
+    advanced: 'Advanced',
+    advancedHelp:
+      'Connection type, address, key, routes, tailnet internals, status and the log. Nothing here is needed for normal use.',
+    advancedShow: 'Show advanced settings',
+    advancedHide: 'Hide advanced settings',
   },
 
   routes: {
@@ -302,6 +321,24 @@ const en = {
     triggerNotSent: 'not sent',
     triggerAutoOff: 'automatic connection off',
     triggerUnavailable: 'not available on this platform',
+    logIn: 'Log in to Tailscale',
+    logInHelp:
+      'Opens the Tailscale app. Sign in there and turn the tunnel on, then come back — no app can sign in for you.',
+    chooseDevice: 'Choose device',
+    chooseDeviceHelp:
+      'Lists the machines this server can see on the tailnet, and adds the one you pick as a route once it answers.',
+    devicesTitle: 'Devices on the tailnet',
+    devicesLoading: 'Reading devices…',
+    devicesRetry: 'Read again',
+    devicesUnavailable: (reason: string) =>
+      `Could not read the device list (${reason}). Type the address under Advanced instead.`,
+    devicesEmpty: 'No other machine is visible on the tailnet right now. Type the address under Advanced instead.',
+    peerSelf: 'this server',
+    peerOnline: 'online',
+    peerOffline: 'offline',
+    peerAdded: (name: string, address: string) => `${name} added as a route (${address}).`,
+    peerNotAnswering: (name: string, address: string) => `${name} did not answer at ${address}. Nothing was added.`,
+    peerAlreadyRoute: (address: string) => `${address} is already a route.`,
   },
 
   errors: {
@@ -328,6 +365,7 @@ const en = {
     rpcFailed: 'RPC error',
     internal: 'internal error',
     archiveUnsupported: 'archiving is not supported on this connection',
+    profileCreateUnsupported: 'creating profiles is not supported on this connection',
     deleteUnsupported: 'deleting is not supported on this connection',
     renameUnsupported: 'renaming is not supported on this connection',
     ticketMissing: 'ticket missing',
@@ -597,6 +635,20 @@ const pt: Strings = {
     truncated: (n: number) => `(+${n} caracteres)`,
   },
 
+  plus: {
+    title: 'Novo',
+    newGroup: 'Novo grupo',
+    newProfile: 'Novo perfil',
+    newSession: 'Nova sessão',
+    pickProfile: 'A que perfil pertence?',
+    profileName: 'Nome do perfil',
+    profileNamePlaceholder: 'ex.: investigacao',
+    create: 'Criar',
+    created: (name: string) => `Perfil "${name}" criado.`,
+    createRefused: (reason: string) => `Este telemóvel não pode criar perfis: ${reason}`,
+    createUnavailable: 'Só na ligação ao Dashboard.',
+  },
+
   settings: {
     title: 'Definições',
     surface: 'Tipo de ligação',
@@ -656,6 +708,11 @@ const pt: Strings = {
     languageHelp: 'Muda logo. Também define a língua do registo de diagnóstico.',
     languageEnglish: 'English',
     languagePortuguese: 'Português',
+    advanced: 'Avançado',
+    advancedHelp:
+      'Tipo de ligação, endereço, chave, rotas, detalhes do tailnet, estado e o registo. Nada aqui é preciso para o uso normal.',
+    advancedShow: 'Mostrar definições avançadas',
+    advancedHide: 'Esconder definições avançadas',
   },
 
   routes: {
@@ -745,6 +802,24 @@ const pt: Strings = {
     triggerNotSent: 'não enviado',
     triggerAutoOff: 'automático desligado',
     triggerUnavailable: 'indisponível nesta plataforma',
+    logIn: 'Entrar no Tailscale',
+    logInHelp:
+      'Abre a aplicação Tailscale. Entra lá e liga o túnel, depois volta aqui — nenhuma aplicação consegue entrar por ti.',
+    chooseDevice: 'Escolher dispositivo',
+    chooseDeviceHelp:
+      'Mostra as máquinas que este servidor vê no tailnet e acrescenta a que escolheres como rota, depois de confirmar que responde.',
+    devicesTitle: 'Dispositivos no tailnet',
+    devicesLoading: 'A ler dispositivos…',
+    devicesRetry: 'Ler de novo',
+    devicesUnavailable: (reason: string) =>
+      `Não foi possível ler a lista de dispositivos (${reason}). Escreve o endereço em Avançado.`,
+    devicesEmpty: 'Não há outra máquina visível no tailnet agora. Escreve o endereço em Avançado.',
+    peerSelf: 'este servidor',
+    peerOnline: 'ligado',
+    peerOffline: 'desligado',
+    peerAdded: (name: string, address: string) => `${name} acrescentado como rota (${address}).`,
+    peerNotAnswering: (name: string, address: string) => `${name} não respondeu em ${address}. Não foi acrescentado nada.`,
+    peerAlreadyRoute: (address: string) => `${address} já é uma rota.`,
   },
 
   errors: {
@@ -771,6 +846,7 @@ const pt: Strings = {
     rpcFailed: 'erro RPC',
     internal: 'erro interno',
     archiveUnsupported: 'arquivar não é suportado nesta ligação',
+    profileCreateUnsupported: 'criar perfis não é suportado nesta ligação',
     deleteUnsupported: 'apagar não é suportado nesta ligação',
     renameUnsupported: 'renomear não é suportado nesta ligação',
     ticketMissing: 'ticket ausente',

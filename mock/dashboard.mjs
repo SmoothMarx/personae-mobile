@@ -47,6 +47,12 @@ const DEFAULTS = {
    * Keyed by a lower-cased substring; empty by default so a query with no fixture answers `[]`.
    */
   bodies: null,
+  /** GET …/personae-mobile-auth/tailscale/peers — 0.7.0's device picker source. */
+  peers: null,
+  /** Make the peers route answer the `{available:false, reason}` shape instead. */
+  peersUnavailable: false,
+  /** POST /api/profiles: any non-200 simulates the refusal the app must render honestly. */
+  profileCreateStatus: 200,
 };
 
 const AVATAR_PNG_BASE64 =
@@ -183,6 +189,8 @@ export function createMockDashboard(options = {}) {
   const calls = [];
   /** Every FTS call, so a test can prove search is one batch per settled query, not per keystroke. */
   const searchCalls = [];
+  /** Names POSTed to /api/profiles, so a test can prove what was asked for. */
+  const createdProfiles = [];
   const tickets = new Map();
   const sockets = new Set();
   let seq = 0;
@@ -358,6 +366,41 @@ export function createMockDashboard(options = {}) {
         return json(200, { profile, query: q, results: rows.slice(0, limit) });
       }
 
+      // GET /api/plugins/personae-mobile-auth/tailscale/peers — the host's tailnet peers (0.7.0).
+      // Shape copied from server/personae-mobile-auth/dashboard/plugin_api.py `peers_payload`:
+      // `{available:true, self:{…}, peers:[…]}` or `{available:false, reason}`. Read by a paired
+      // DEVICE, so it is a token route in the real plugin — here the bearer is the only credential.
+      if (path === '/api/plugins/personae-mobile-auth/tailscale/peers' && req.method === 'GET') {
+        if (config.peersUnavailable) return json(200, { available: false, reason: 'cli_missing' });
+        return json(200, config.peers ?? {
+          available: true,
+          self: { name: 'mock-server', ip: '100.64.0.1', os: 'linux', online: true },
+          peers: [
+            { name: 'mock-laptop', ip: '100.64.0.2', os: 'windows', online: true },
+            { name: 'mock-phone', ip: '100.64.0.3', os: 'android', online: false },
+          ],
+        });
+      }
+
+      // POST /api/profiles — create a profile (0.7.0's "New profile"). Shape from
+      // web_routers/profiles.py:803 → `{ok, name, path, model_set, model_error, …}`.
+      if (path === '/api/profiles' && req.method === 'POST') {
+        if (config.profileCreateStatus !== 200) {
+          return json(config.profileCreateStatus, {
+            error: 'forbidden',
+            detail: 'This credential may not create profiles.',
+          });
+        }
+        const name = String(body.name ?? '').trim();
+        if (!name) return json(422, { detail: [{ loc: ['body', 'name'], msg: 'field required' }] });
+        if (profiles.some((row) => row.name === name)) {
+          return json(400, { error: 'exists', detail: `Profile "${name}" already exists.` });
+        }
+        createdProfiles.push(name);
+        profiles.push(profileFixture(name, { label: name, has_avatar: false }));
+        return json(200, { ok: true, name, path: `/home/mock/.hermes/profiles/${name}`, model_set: true, model_error: '' });
+      }
+
       if (path === '/api/sessions' && req.method === 'GET') {
         const profile = params('profile');
         const rows = sessions.filter((s) => !profile || (s.profile ?? 'default') === profile);
@@ -471,6 +514,7 @@ export function createMockDashboard(options = {}) {
     searchCalls,
     profiles,
     sessions,
+    createdProfiles,
     tickets,
     events,
     /** The port actually bound: `0` in `config.port` means "whatever is free". */

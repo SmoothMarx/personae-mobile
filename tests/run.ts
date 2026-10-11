@@ -67,6 +67,17 @@ import {
   shouldProbeAvatar,
 } from '../src/logic/avatars';
 import { threadTitle } from '../src/logic/roster';
+import { peersPort, peerRoute, peersState, normalizePeers, type PeerRow } from '../src/logic/peers';
+import { isInlineWizard, wizardStepIds, wizardSteps, WIZARD_STEP_IDS } from '../src/connect/wizard';
+import {
+  ADVANCED_OPEN_BY_DEFAULT,
+  SETTINGS_FIELDS,
+  advancedFieldIds,
+  connectionRendersWizard,
+  isAdvanced,
+  visibleFieldIds,
+  type SettingsFieldId,
+} from '../src/settingsLayout';
 import { ROW_CHROME, ROW_WIDTH, estimatedTextWidth, rosterRowGeometry, titleFits } from '../src/roster/geometry';
 import {
   UNASSIGNED,
@@ -2363,6 +2374,163 @@ async function main(): Promise<void> {
     assert.equal(healSurface({ ...DEFAULT_SETTINGS, surface: 'gateway', baseUrl: 'http://x:9119' }).settings.surface, 'dashboard');
     assert.equal(surfaceForUrl('http://x:8080'), null);
     __resetStoreProbe();
+  });
+
+  // ═══════════════ 0.7.0 B: the wizard IS Connection, and Advanced is closed ═══════════════
+
+  test('0.7.0 B: Advanced is CLOSED by default, and nothing 0.6.1 had was deleted', () => {
+    assert.equal(ADVANCED_OPEN_BY_DEFAULT, false, 'a fresh install shows no internals');
+    const closed = visibleFieldIds(false);
+    assert.deepEqual(closed, ['connection', 'language', 'tailscale']);
+    assert.equal(closed[0], 'connection', 'Connection is the FIRST thing on the screen');
+    const hidden: SettingsFieldId[] = [
+      'surface', 'baseUrl', 'apiKey', 'profiles', 'model', 'routes',
+      'tailscalePackage', 'deadlines', 'openOnFailure', 'diagnostics', 'testConnection', 'log',
+    ];
+    for (const id of hidden) {
+      assert.ok(!closed.includes(id), `${id} must stay hidden until Advanced is opened`);
+      assert.ok(isAdvanced(id), `${id} is an advanced field`);
+    }
+    const open = visibleFieldIds(true);
+    assert.deepEqual(open, SETTINGS_FIELDS.map((field) => field.id), 'opening Advanced reveals the whole list, in order');
+    assert.equal(open.length, closed.length + advancedFieldIds().length, 'nothing was deleted');
+    assert.ok(open.length > closed.length);
+  });
+
+  test('0.7.0 B: the wizard has exactly three steps, every one drawn in place', () => {
+    assert.deepEqual(wizardStepIds(), ['service', 'sign-in', 'check']);
+    assert.deepEqual(WIZARD_STEP_IDS, ['service', 'sign-in', 'check']);
+    const steps = wizardSteps();
+    assert.equal(steps.length, 3);
+    assert.ok(steps.every((step) => step.inline), 'no step hides behind a navigation');
+    assert.ok(isInlineWizard());
+    assert.ok(connectionRendersWizard(), 'Connection IS the wizard');
+    // The in-suite language is PT; the titles are the live table's, never a cached literal.
+    assert.equal(steps[0].title, t.connect.step1);
+    assert.equal(steps[1].title, t.connect.step2);
+    assert.equal(steps[2].title, t.connect.step3);
+    assert.ok(steps.every((step) => step.title.trim().length > 0));
+  });
+
+  test('0.7.0 B: ONE wizard, TWO hosts — the step logic exists in exactly one file', () => {
+    const root = process.cwd();
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) walk(full);
+        else if (/\.(ts|tsx)$/.test(name)) files.push(full);
+      }
+    };
+    walk(join(root, 'src'));
+    walk(join(root, 'app'));
+    const owners = files.filter((file) => /t\.connect\.step[123]/.test(readFileSync(file, 'utf8')));
+    assert.deepEqual(
+      owners.map((file) => file.slice(root.length + 1)),
+      [join('src', 'connect', 'wizard.ts')],
+      'the three step headings live in wizard.ts and nowhere else — no copy-paste',
+    );
+    const route = readFileSync(join(root, 'app', 'connect.tsx'), 'utf8');
+    const settings = readFileSync(join(root, 'app', 'settings.tsx'), 'utf8');
+    assert.match(route, /ConnectWizard/, 'the deep-link route renders the shared wizard');
+    assert.match(settings, /ConnectWizard/, 'and so does Settings');
+    assert.ok(route.split('\n').length < 40, `app/connect.tsx is a wrapper, not a second wizard (${route.split('\n').length} lines)`);
+    const wizard = readFileSync(join(root, 'src', 'connect', 'Wizard.tsx'), 'utf8');
+    assert.match(wizard, /parseConnectLink/, 'the deep link is still parsed and redeemed, in the shared implementation');
+    assert.match(wizard, /useLocalSearchParams/, 'and the query still arrives as route params');
+  });
+
+  test('0.7.0 B: the Settings screen is wired to the plan (not to ad-hoc conditionals)', () => {
+    const src = readFileSync(join(process.cwd(), 'app', 'settings.tsx'), 'utf8');
+    assert.match(src, /useState\(ADVANCED_OPEN_BY_DEFAULT\)/, 'the disclosure opens closed, from the plan');
+    assert.match(src, /advancedOpen \?/, 'the advanced fields are conditional on it');
+    assert.match(src, /t\.connectivity\.logIn/, 'Tailscale offers Log in');
+    assert.match(src, /t\.connectivity\.chooseDevice/, 'Tailscale offers Choose device');
+    assert.match(src, /t\.connectivity\.autoConnect\b/, 'and the auto-connect switch');
+    assert.match(src, /probeTcp/, 'a picked device is probed before its route is written');
+    assert.ok(!/router\.push\('\/connect'\)/.test(src), 'Settings no longer pushes to the wizard route');
+  });
+
+  // ═══════════════ 0.7.0 B: the tailnet device picker ═══════════════
+
+  test('0.7.0 B: the peers payload is read in BOTH shapes; junk is unavailable, never a guess', () => {
+    const ready = normalizePeers({
+      available: true,
+      self: { name: 'personae-sk', ip: '100.64.0.11', os: 'linux', online: true },
+      peers: [
+        { name: 'Personae-DS', ip: '100.64.0.13', os: 'linux', online: true },
+        { name: 'broken' },
+      ],
+    });
+    assert.equal(ready.available, true);
+    assert.equal(peersState(ready), 'ready');
+    assert.equal(ready.self?.ip, '100.64.0.11');
+    assert.deepEqual(ready.peers, [{ name: 'Personae-DS', ip: '100.64.0.13', os: 'linux', online: true }], 'a row with no ip is dropped');
+
+    const empty = normalizePeers({ available: true, self: { name: 'solo', ip: '100.1.2.3', os: 'linux', online: true }, peers: [] });
+    assert.equal(peersState(empty), 'empty', 'a one-node tailnet is a real answer, not a failure');
+
+    const missing = normalizePeers({ available: false, reason: 'cli_missing' });
+    assert.deepEqual(missing, { available: false, peers: [], reason: 'cli_missing' });
+    assert.equal(peersState(missing), 'unavailable');
+    assert.equal(normalizePeers(null).reason, 'bad_response');
+    assert.equal(normalizePeers(undefined).reason, 'bad_response');
+    assert.equal(normalizePeers({ error: 'unauthenticated', detail: 'Unauthorized' }).reason, 'unavailable');
+    assert.equal(normalizePeers([{ name: 'x', ip: '100.0.0.1' }]).available, false, 'a bare list is not the contract');
+  });
+
+  test('0.7.0 B: a picked device becomes a tailscale ROUTE, and a duplicate is refused', () => {
+    const existing: RouteCandidate[] = [{ role: 'lan', priority: 0, url: 'http://10.0.0.15:9119', insecure: true }];
+    const peer: PeerRow = { name: 'Personae-DS', ip: '100.64.0.13', os: 'linux', online: true };
+    const picked = peerRoute(peer, { port: 9119, routes: existing, insecureAck: false });
+    assert.ok(picked, 'a new device produces a route');
+    assert.equal(picked.role, 'tailscale', 'inferred from the 100.x address, not asserted by hand');
+    assert.equal(picked.url, 'http://100.64.0.13:9119');
+    assert.equal(picked.priority, 1, 'appended below everything already in the list');
+    assert.equal(picked.insecure, true, 'it is a plain-http route and it says so');
+    assert.equal(peerRoute(peer, { port: 9119, routes: [...existing, picked], insecureAck: false }), null, 'the same address is not added twice');
+    // the port comes from the paired address, never invented
+    assert.equal(peersPort(settingsFor('http://10.0.0.15:9119')), 9119);
+    assert.equal(peersPort(settingsFor('https://personae-sk.tail0000demo.ts.net')), 443);
+    assert.equal(peersPort(settingsFor('')), 9119);
+  });
+
+  test('0.7.0 B: the peer list rides the app credential, and the legacy surface never calls it', async () => {
+    const before = dashboard.calls.length;
+    const raw = await dash.tailscalePeers();
+    const parsed = normalizePeers(raw);
+    assert.equal(parsed.available, true);
+    assert.deepEqual(parsed.peers.map((row) => row.ip), ['100.64.0.2', '100.64.0.3']);
+    assert.deepEqual(
+      dashboard.calls.slice(before).map((call) => call.path),
+      ['/api/plugins/personae-mobile-auth/tailscale/peers'],
+      'one request, to the plugin route',
+    );
+
+    // The Backend normalises it, so the screen never touches a raw body.
+    const live = createBackend(settingsFor(dashboard.url, { apiKey: DASH_BEARER }));
+    assert.equal((await live.tailscalePeers()).available, true);
+    live.dispose();
+
+    // The api_server surface has no such route: it says so without a request.
+    const legacy = createBackend(settingsFor('http://127.0.0.1:9222', { apiKey: 'k', surface: 'gateway' }));
+    const unavailable = await legacy.tailscalePeers();
+    assert.equal(unavailable.available, false);
+    assert.equal(unavailable.reason, 'unsupported_surface');
+    legacy.dispose();
+  });
+
+  test('0.7.0 B: an unavailable host answers the unavailable SHAPE, not an error', async () => {
+    const offline = createMockDashboard({ port: 0, peersUnavailable: true });
+    await offline.listen();
+    try {
+      const client = createDashboardClient(settingsFor(offline.url, { apiKey: offline.config.bearer }), { timeoutMs: 4000 });
+      const parsed = normalizePeers(await client.tailscalePeers());
+      assert.deepEqual(parsed, { available: false, peers: [], reason: 'cli_missing' });
+      assert.equal(peersState(parsed), 'unavailable');
+    } finally {
+      await offline.close();
+    }
   });
 
   // ── the sync client ──
