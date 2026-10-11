@@ -43,7 +43,8 @@
             "com.tailscale.ipn"
           ]
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "experiments": {
       "typedRoutes": false

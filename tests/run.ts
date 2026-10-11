@@ -41,9 +41,11 @@ import {
   transportSecurityNote,
   type RouteCandidate,
 } from '../src/routes';
-import { checkBaseUrl, DEFAULT_SETTINGS, splitProfiles, profilePrefix, type Settings } from '../src/settings';
+import { checkBaseUrl, DEFAULT_SETTINGS, healSurface, splitProfiles, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
 import { loadSettings, saveSettings, loadLastSeen, saveLastSeen } from '../src/settingsStore';
 import { __resetStoreProbe } from '../src/storage';
+import { candidateAddresses, dashboardAddressFor, pairPageUrl, parseConnectLink, PairingError, probeService, redeemPairing, REDEEM_PATH } from '../src/pairing';
+import { buildPut, createUiSync, EMPTY_META, type PutBody, type Remote, type SyncMeta } from '../src/sync/uiSync';
 import {
   contactsOf, countNew, groupByDay, pageLabel, paginate, probeFromHealth, toRow, statusColor,
 } from '../src/logic/roster';
@@ -2206,6 +2208,220 @@ async function main(): Promise<void> {
     // which is the structural half of "deleting a group never deletes sessions".
     assert.equal(entries.filter((entry) => entry.destructive).length, 1);
     assert.deepEqual(sortEntries().map((entry) => entry.key), ['sort-activity', 'sort-name', 'sort-sessions']);
+  });
+
+
+  // ─────────────────────────────────────────── 0.6.0: pairing, heal, sync ──
+  const fakeFetch = (routes: Record<string, (init?: RequestInit) => { status: number; body?: unknown } | Error>) =>
+    (async (url: string | URL | Request, init?: RequestInit) => {
+      const key = `${init?.method ?? 'GET'} ${String(url)}`;
+      const handler = routes[key];
+      if (!handler) return new Response('{"detail":"Not Found"}', { status: 404 });
+      const out = handler(init);
+      if (out instanceof Error) throw out;
+      return new Response(out.body === undefined ? '' : JSON.stringify(out.body), { status: out.status });
+    }) as typeof fetch;
+  const CODE = 'Ab9_-Ab9_-Ab9_-Ab9_-Ab9_-Ab9_-Ab9_-Ab9_-Ab9';
+  const LINK = `personae://connect?base=${encodeURIComponent('http://box.test:9119')}&code=${CODE}&label=the user%27s%20Pixel%208&expires=4102444800`;
+
+  test('pairing: the deep link (and the QR payload, which is the same string) parses', () => {
+    const link = parseConnectLink(LINK)!;
+    assert.deepEqual(link, { base: 'http://box.test:9119', code: CODE, label: "the user's Pixel 8", expires: 4102444800 });
+    assert.equal(parseConnectLink('https://evil.test/?code=x'), null);
+    assert.equal(parseConnectLink('personae://connect?base=ftp%3A%2F%2Fx&code=' + CODE), null);
+    assert.equal(parseConnectLink('personae://connect?base=http%3A%2F%2Fx%3A9119&code=short'), null);
+    assert.equal(parseConnectLink(`  ${LINK}  `)?.code, CODE, 'a pasted link with spaces still parses');
+  });
+
+  test('pairing: the in-app browser starts at login with next=/pair?app=1', () => {
+    assert.equal(pairPageUrl('http://box.test:9119/', 'Pixel'), 'http://box.test:9119/login?next=%2Fpair%3Fapp%3D1%26label%3DPixel');
+  });
+
+  test('pairing: redeem sends the code as the bearer and returns the device token', async () => {
+    let seenAuth = '';
+    const result = await redeemPairing(parseConnectLink(LINK)!, fakeFetch({
+      [`POST http://box.test:9119${REDEEM_PATH}`]: (init) => {
+        seenAuth = String((init?.headers as Record<string, string>).Authorization);
+        return { status: 200, body: { base_url: 'http://127.0.0.1:9119', token: 'device-token-xyz', device_id: 'dev_1', label: 'Pixel', created_at: '2026-10-11T00:00:00Z' } };
+      },
+    }));
+    assert.equal(seenAuth, `Bearer ${CODE}`);
+    assert.deepEqual(result, { baseUrl: 'http://box.test:9119', token: 'device-token-xyz', deviceId: 'dev_1', label: 'Pixel', createdAt: '2026-10-11T00:00:00Z' });
+  });
+
+  test('pairing: reused / expired / unknown / rate-limited / old server / offline are each named', async () => {
+    const link = parseConnectLink(LINK)!;
+    const reason = async (status: number, body: unknown = {}) => {
+      try {
+        await redeemPairing(link, fakeFetch({ [`POST http://box.test:9119${REDEEM_PATH}`]: () => ({ status, body }) }));
+      } catch (e) {
+        return (e as PairingError).reason;
+      }
+      return 'resolved';
+    };
+    assert.equal(await reason(410, { error: 'code_used' }), 'used');
+    assert.equal(await reason(410, { error: 'code_expired' }), 'expired');
+    assert.equal(await reason(401), 'unknown');
+    assert.equal(await reason(429), 'rate_limited');
+    assert.equal(await reason(404), 'no_pairing');
+    assert.equal(await reason(500), 'server');
+    await assert.rejects(redeemPairing(link, fakeFetch({ [`POST http://box.test:9119${REDEEM_PATH}`]: () => new Error('ECONNREFUSED') })), (e: PairingError) => e.reason === 'network');
+    // a link past its own expiry never hits the network
+    await assert.rejects(redeemPairing({ ...link, expires: 1 }, fakeFetch({})), (e: PairingError) => e.reason === 'expired');
+  });
+
+  test('wizard probe: :9119 is the dashboard, :9222 is the gateway (the correction sentence), refused is named', async () => {
+    const dash = await probeService('http://box.test:9119', fakeFetch({
+      'GET http://box.test:9119/api/health': () => ({ status: 200, body: { ok: true, version: '0.21.5', auth_required: true } }),
+      'GET http://box.test:9119/api/auth/providers': () => ({ status: 200, body: { providers: [{ name: 'basic' }, { name: 'personae-mobile' }] } }),
+    }));
+    assert.deepEqual(dash, { kind: 'dashboard', version: '0.21.5', authRequired: true, pairing: true });
+    assert.deepEqual(await probeService('http://box.test:9222', fakeFetch({})), { kind: 'gateway' });
+    assert.equal(dashboardAddressFor('http://box.test:9222'), 'http://box.test:9119');
+    assert.match(stringsFor('pt').connect.isGateway, /hermes-gateway\.service .*não tem perfis nem sessões\. O dashboard é o :9119\./);
+    assert.match(t.connect.intro, /hermes-serve\.service/);
+    assert.deepEqual(await probeService('http://box.test:1', fakeFetch({ 'GET http://box.test:1/api/health': () => new Error('connect ECONNREFUSED') })), { kind: 'refused' });
+    assert.deepEqual(candidateAddresses(['http://a:9222', 'http://a:9119', 'bad', 'http://b:9119']), ['http://a:9119', 'http://b:9119']);
+  });
+
+  test('heal: a dashboard surface pointed at :9222 (the user\'s 0.5.0 phone) moves to :9119, with a visible note', async () => {
+    __resetStoreProbe();
+    const { storeSet } = await import('../src/storage');
+    await storeSet('personae.settings.v1', JSON.stringify({ baseUrl: 'http://10.9.9.9:9222', surface: 'dashboard', language: 'en', routes: [{ role: 'lan', priority: 0, url: 'http://10.9.9.9:9222', insecure: true }] }));
+    const loaded = await loadSettings();
+    assert.equal(loaded.baseUrl, 'http://10.9.9.9:9119');
+    assert.equal(loaded.routes[0].url, 'http://10.9.9.9:9119');
+    assert.match(loaded.healNote, /messaging gateway, not the dashboard/);
+    // the heal is persisted: the next load is coherent and says nothing new
+    const again = await loadSettings();
+    assert.equal(again.baseUrl, 'http://10.9.9.9:9119');
+    assert.equal(healSurface(again).note, '');
+    assert.equal(healSurface({ ...DEFAULT_SETTINGS, surface: 'gateway', baseUrl: 'http://x:9119' }).settings.surface, 'dashboard');
+    assert.equal(surfaceForUrl('http://x:8080'), null);
+    __resetStoreProbe();
+  });
+
+  // ── the sync client ──
+  const fakeServer = () => {
+    const keys: Record<string, { entries: Record<string, { value: unknown; rev: number }>; tomb: Record<string, number> }> = {};
+    const view = () => ({ version: 1, keys: Object.fromEntries(Object.entries(keys).map(([k, s]) => [k, {
+      value: Object.fromEntries(Object.entries(s.entries).map(([n, e]) => [n, e.value])),
+      rev: Math.max(0, ...Object.values(s.entries).map((e) => e.rev), ...Object.values(s.tomb)),
+    }])) });
+    const puts: PutBody[] = [];
+    const remote: Remote & { puts: PutBody[]; offline: boolean; missing: boolean } = {
+      puts, offline: false, missing: false,
+      async get() { if (remote.offline) throw new Error('offline'); return remote.missing ? null : view(); },
+      async put(body) {
+        if (remote.offline) throw new Error('offline');
+        if (remote.missing) return null;
+        puts.push(JSON.parse(JSON.stringify(body)));
+        for (const t of body.tombstones) {
+          const s = (keys[t.key] ??= { entries: {}, tomb: {} });
+          if (s.entries[t.entry] && t.rev > s.entries[t.entry].rev) delete s.entries[t.entry];
+          s.tomb[t.entry] = Math.max(s.tomb[t.entry] ?? -1, t.rev);
+        }
+        for (const [k, item] of Object.entries(body.keys)) {
+          const s = (keys[k] ??= { entries: {}, tomb: {} });
+          for (const [n, v] of Object.entries(item.value)) {
+            if (item.rev <= (s.tomb[n] ?? -1)) continue;
+            if (!s.entries[n] || item.rev > s.entries[n].rev) s.entries[n] = { value: v, rev: item.rev };
+          }
+        }
+        return view();
+      },
+    };
+    return { remote, keys, view };
+  };
+  const harness = (remote: Remote) => {
+    const timers: { fn: () => void; ms: number }[] = [];
+    let saved: SyncMeta | null = null;
+    const adopted: Record<string, unknown> = {};
+    const sync = createUiSync({
+      remote,
+      loadMeta: async () => (saved ? JSON.parse(JSON.stringify(saved)) : null),
+      saveMeta: async (m) => { saved = JSON.parse(JSON.stringify(m)); },
+      onRemote: (k, v) => { adopted[k] = v; },
+      setTimer: (fn, ms) => { const h = { fn, ms }; timers.push(h); return h; },
+      clearTimer: (h) => { const i = timers.indexOf(h as never); if (i >= 0) timers.splice(i, 1); },
+    });
+    const run = async (max = 20) => { while (timers.length && max-- > 0) { const t0 = timers.shift()!; t0.fn(); await new Promise((r) => setTimeout(r, 0)); } };
+    return { sync, timers, adopted, run, meta: () => saved };
+  };
+  const SECTIONS = { sections: [{ id: 'g1', name: 'Work' }], members: { cody: 'g1' }, collapsed: [], order: {}, sort: { g1: 'name' } };
+
+  test('sync: seed — an empty server receives the phone\'s groups, once, with rev 1', async () => {
+    const { remote } = fakeServer();
+    const h = harness(remote);
+    assert.equal(await h.sync.start({ 'sections-v1': SECTIONS }), 'synced');
+    await h.run();
+    assert.equal(remote.puts.length, 1);
+    assert.deepEqual(remote.puts[0].keys['sections-v1'], { value: SECTIONS, rev: 1 });
+  });
+
+  test('sync: seed never overwrites a server value — the desktop\'s groups are ADOPTED', async () => {
+    const { remote } = fakeServer();
+    await remote.put({ keys: { 'sections-v1': { value: { ...SECTIONS, sort: { g1: 'activity' } }, rev: 7 } }, tombstones: [] });
+    remote.puts.length = 0;
+    const h = harness(remote);
+    await h.sync.start({ 'sections-v1': SECTIONS });
+    await h.run();
+    assert.equal(remote.puts.length, 0, 'nothing pushed over the server value');
+    assert.deepEqual((h.adopted['sections-v1'] as typeof SECTIONS).sort, { g1: 'activity' });
+  });
+
+  test('sync: a local change pushes once after the debounce, rev above the server\'s; removals are tombstones', async () => {
+    const { remote } = fakeServer();
+    await remote.put({ keys: { 'session-colors-v1': { value: { cody: { s1: '#4c8dff' }, dobbs: { s9: '#3fb950' } }, rev: 4 } }, tombstones: [] });
+    remote.puts.length = 0;
+    const h = harness(remote);
+    await h.sync.start({});
+    h.sync.noteLocal('session-colors-v1', { cody: { s1: '#f85149' } });
+    h.sync.noteLocal('session-colors-v1', { cody: { s1: '#a371f7' } }); // coalesced
+    assert.equal(h.timers.length, 1);
+    assert.equal(h.timers[0].ms, 1500);
+    await h.run();
+    assert.equal(remote.puts.length, 1);
+    const put = remote.puts[0];
+    assert.equal(put.keys['session-colors-v1'].rev, 5);
+    assert.deepEqual(put.keys['session-colors-v1'].value, { cody: { s1: '#a371f7' } });
+    assert.deepEqual(put.tombstones, [{ key: 'session-colors-v1', entry: 'dobbs', rev: 5 }]);
+    const after = await remote.get();
+    assert.deepEqual(after!.keys!['session-colors-v1'].value, { cody: { s1: '#a371f7' } });
+  });
+
+  test('sync: offline queues (local edit kept), retries with backoff, flushes on reconnect', async () => {
+    const { remote } = fakeServer();
+    const h = harness(remote);
+    await h.sync.start({});
+    remote.offline = true;
+    h.sync.noteLocal('sections-v1', SECTIONS);
+    await h.run(3); // first attempt fails, a backoff retry is scheduled... and fails again
+    assert.equal(h.sync.status(), 'offline');
+    assert.ok(h.meta()!.dirty['sections-v1'], 'the edit is still queued, persisted');
+    remote.offline = false;
+    h.sync.online();
+    await h.run();
+    assert.equal(h.sync.status(), 'synced');
+    assert.deepEqual(remote.puts.at(-1)!.keys['sections-v1'].value, SECTIONS);
+    assert.equal(h.meta()!.dirty['sections-v1'], undefined);
+  });
+
+  test('sync: a 404 (older messenger plugin) is silent local-only, no retries', async () => {
+    const { remote } = fakeServer();
+    remote.missing = true;
+    const h = harness(remote);
+    assert.equal(await h.sync.start({ 'sections-v1': SECTIONS }), 'unsupported');
+    h.sync.noteLocal('sections-v1', SECTIONS);
+    assert.equal(h.timers.length, 0);
+  });
+
+  test('sync: revs only increase across failures and restarts', async () => {
+    const meta = { ...JSON.parse(JSON.stringify(EMPTY_META)), revs: { 'sections-v1': 3 }, serverRevs: { 'sections-v1': 9 }, dirty: { 'sections-v1': SECTIONS } };
+    const body = buildPut(meta)!;
+    assert.equal(body.keys['sections-v1'].rev, 10);
+    meta.dirty['sections-v1'] = SECTIONS;
+    assert.equal(buildPut(meta)!.keys['sections-v1'].rev, 11);
   });
 
   // ─────────────────────────────────────────────────────── report ──

@@ -11,13 +11,14 @@
 
 import {
   DEFAULT_SETTINGS,
+  healSurface,
   LAST_SEEN_STORE_KEY,
   SECRET_STORE_KEY,
   SETTINGS_STORE_KEY,
   type Settings,
   type StoredSettings,
 } from './settings';
-import { DEFAULT_LANGUAGE, isLanguage } from './i18n';
+import { DEFAULT_LANGUAGE, getLanguage, isLanguage, setLanguage } from './i18n';
 import { normalizeRouteUrl, normalizeRoutes, orderRoutes, routesFromBaseUrl } from './routes';
 import { storeDelete, storeGet, storeSet } from './storage';
 
@@ -62,7 +63,7 @@ export async function loadSettings(): Promise<Settings> {
 
   const surface = parsed.surface === 'gateway' ? 'gateway' : parsed.surface === 'dashboard' ? 'dashboard' : 'dashboard';
 
-  return {
+  const loaded: Settings = {
     baseUrl: baseUrl || (routes.length ? routes[0].url : ''),
     surface,
     profiles: Array.isArray(parsed.profiles) ? parsed.profiles.filter((p) => typeof p === 'string') : [],
@@ -82,8 +83,23 @@ export async function loadSettings(): Promise<Settings> {
     everReachedGateway: asBoolean(parsed.everReachedGateway, false),
     lastTriggerResult: asString(parsed.lastTriggerResult, ''),
     lastErrorKind: asString(parsed.lastErrorKind, ''),
+    deviceId: asString(parsed.deviceId, ''),
+    deviceLabel: asString(parsed.deviceLabel, ''),
+    healNote: asString(parsed.healNote, ''),
     apiKey: apiKey || '',
   };
+  // 0.6.0: an incoherent surface/port pair is healed on load, and the screen shows why (once).
+  // The note is written in the user's language; the switch is scoped to this one call.
+  const previous = getLanguage();
+  setLanguage(loaded.language);
+  const healed = healSurface(loaded);
+  setLanguage(previous);
+  if (healed.note) {
+    const next = { ...healed.settings, healNote: healed.note };
+    await saveSettings(next).catch(() => undefined);
+    return next;
+  }
+  return loaded;
 }
 
 export async function saveSettings(settings: Settings): Promise<void> {
@@ -109,6 +125,9 @@ export async function saveSettings(settings: Settings): Promise<void> {
     everReachedGateway: settings.everReachedGateway,
     lastTriggerResult: settings.lastTriggerResult,
     lastErrorKind: settings.lastErrorKind,
+    deviceId: settings.deviceId,
+    deviceLabel: settings.deviceLabel,
+    healNote: settings.healNote,
   };
   await storeSet(SETTINGS_STORE_KEY, JSON.stringify(stored));
   if (settings.apiKey) {

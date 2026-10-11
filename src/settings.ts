@@ -67,6 +67,14 @@ export type Settings = {
   lastTriggerResult: string;
   /** The last failure class seen, e.g. `transient · HTTP 0`. */
   lastErrorKind: string;
+
+  // ── pairing (0.6.0) ───────────────────────────────────────────────────────────
+  /** Server-side id of THIS phone's paired credential ('' = a pasted/static key). Not a secret. */
+  deviceId: string;
+  /** The label the dashboard shows for this phone. */
+  deviceLabel: string;
+  /** One visible line explaining an automatic correction made on load ('' = nothing to say). */
+  healNote: string;
 };
 
 export const SETTINGS_STORE_KEY = 'personae.settings.v1';
@@ -93,6 +101,9 @@ export const DEFAULT_SETTINGS: Settings = {
   everReachedGateway: false,
   lastTriggerResult: '',
   lastErrorKind: '',
+  deviceId: '',
+  deviceLabel: '',
+  healNote: '',
 };
 
 export type StoredSettings = Omit<Settings, 'apiKey'>;
@@ -158,4 +169,42 @@ export function redactKey(key: string): string {
   if (!key) return '';
   if (key.length <= 6) return '••••';
   return `${key.slice(0, 3)}…${key.slice(-2)} (${t.settings.keyChars(key.length)})`;
+}
+
+/** The surface a URL's port implies: 9119 = dashboard, 9222 = gateway, anything else = no opinion. */
+export function surfaceForUrl(raw: string): Surface | null {
+  const checked = checkBaseUrl(raw);
+  if (!checked.ok) return null;
+  try {
+    const port = new URL(checked.value).port;
+    if (port === '9119') return 'dashboard';
+    if (port === '9222') return 'gateway';
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/**
+ * Heal an incoherent stored pair (0.6.0). Both cases point at the dashboard, because the dashboard
+ * is the only surface that gives the roster its profiles:
+ *  - surface 'dashboard' + a :9222 address (the user's phone at 0.5.0: 401s, then 404s forever) →
+ *    move the address (and every route) to :9119;
+ *  - surface 'gateway' + a :9119 address → the surface becomes 'dashboard'.
+ * Returns the settings unchanged (and `note: ''`) when the pair is already coherent.
+ */
+export function healSurface(settings: Settings): { settings: Settings; note: string } {
+  const implied = surfaceForUrl(settings.baseUrl);
+  if (settings.surface === 'dashboard' && implied === 'gateway') {
+    const fix = (url: string) => url.replace(/:9222(?=\/|$)/, ':9119');
+    const to = fix(settings.baseUrl);
+    return {
+      settings: { ...settings, baseUrl: to, routes: settings.routes.map((r) => ({ ...r, url: fix(r.url) })) },
+      note: t.connect.healed(settings.baseUrl, to),
+    };
+  }
+  if (settings.surface === 'gateway' && implied === 'dashboard') {
+    return { settings: { ...settings, surface: 'dashboard' }, note: t.connect.healedSurface };
+  }
+  return { settings, note: '' };
 }
