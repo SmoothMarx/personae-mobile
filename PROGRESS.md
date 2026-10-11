@@ -1234,3 +1234,194 @@ the 0.6.0 script, both because the old one could pass a wrong artifact:
    construction grid on white.
 4. Functionally nothing moved from 0.6.0, so the pairing/options steps in the 0.6.0 section still
    apply verbatim.
+
+
+---
+
+# 0.7.0 — five fixes on 0.6.1 (2026-10-11)
+
+Five things the user asked for after using 0.6.1 on the phone. **Four of five landed**; the fifth
+(session groups) is deferred **by name**, and this section says exactly why rather than pretending.
+
+| Phase | What | State |
+|---|---|---|
+| A | avatars at Telegram's size (54 dp face, 70 dp row, 16 dp gap, inset divider) | **landed** `c23aa00` |
+| B | the wizard IS Connection in Settings; everything else under a closed **Advanced** | **landed** `3010ab3` (server) + `7b38c75` (app) |
+| B | Tailscale: Log in / Choose device / auto-connect, over a new host endpoint | **landed** — live, verified |
+| C | one "+" at the top: New group · New profile · New session | **landed** `4d69794` |
+| D | multiselect + session groups riding `uiSync` | **DEFERRED BY NAME** — see §D below |
+
+## The artifact, measured
+
+```
+npx expo prebuild -p android --no-install        # versionName 0.7.0 / versionCode 8
+bash scripts/patch-android-signing.sh
+bash scripts/patch-android-branding.sh
+docker run … personae-android:1 ./gradlew :app:assembleRelease --no-daemon
+# BUILD SUCCESSFUL in 4m 36s · 449 actionable tasks: 421 executed, 28 up-to-date · GRADLE_EXIT=0
+# logs/gradle-v070.log: "Personae: release build signed with /signing/personae-release.keystore"
+```
+
+| Measured fact | Value |
+|---|---|
+| Path / bytes | `dist/personae-0.7.0.apk` / **114 296 465** |
+| sha256 | **fe0a8d7ef19cfbb45c388072193c4d9cb11512e00ec51d1a85f9af3b7f794d41** |
+| versionCode / versionName | **8** / **0.7.0** |
+| Signer | `CN=Personae Mobile, …`, SHA-256 `bd40e005…dd37f26` — **the same key as 0.1.0-0.6.1**, so it installs over 0.6.1 with nothing to uninstall |
+| min / target SDK | 24 / 36 |
+| Bundle markers | `personae://connect` 1 · **`tailscale/peers` 1** · **`api/profiles` 1** · `pair/redeem` 1 · `api/plugins/messenger/state` 1 · `expo-camera` 1 |
+| Live bearer in the bundle | **0 occurrences** (positive control 1) |
+| Environment facts | `100.64.0.11` 0 · `10.0.0.15` 0 · `personae` 0 · `API_SERVER_KEY=` 0 |
+| CAMERA permission / `personae://` scheme | present / present |
+
+`bash logs/verify-0.7.0.sh` → **15 PASS, 0 FAIL, RESULT: PASS** (`logs/verify-0.7.0.txt`). It derives
+the expected version from `app.json`, so a stale 0.6.1 bundle under a 0.7.0 name fails instead of
+passing, and it now also proves the 0.7.0 **features** are in the shipped bundle (`tailscale/peers`,
+`api/profiles`) rather than trusting that the source tree was what got built.
+
+## Suites (all run on this host, in this run)
+
+| Suite | Result | Floor |
+|---|---|---|
+| `npm test` | **161/161 passed, 0 failed** | 145 |
+| `npx tsc --noEmit` | **rc 0** | rc 0 |
+| `bash server/run-tests.sh tests` | **60 passed** (was 43; 17 new in `server/tests/test_tailscale.py`) | 43 |
+
+**Deviation, stated plainly.** `GOAL-0.7.0.md` §1 gives the server command as
+`~/.hermes/hermes-agent/venv/bin/python -m pytest server/tests -q`. That command **does not work on
+this host**: that venv's `pydantic_core` is built for a different interpreter, so collection dies with
+`ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'`. The runner of record is
+`server/run-tests.sh` (it borrows pytest into the dashboard's own 3.14 runtime) — it is what
+`0.6.0`/`0.6.1` used, and `verify-0.7.0.sh` runs it, then attempts the literal command and reports its
+failure as a NOTE rather than hiding it. The floor of 43 is met either way: **60 passed**.
+
+## A — avatars at the reference's size
+
+`AVATAR_SIZE` 28 → **54**, `Face` default 32 → 54, rows are **70 dp** with a **16 dp** avatar→text gap
+and dividers inset to the reference's own **x = 78** (which clears the avatar). The numbers live in
+`src/roster/geometry.ts` so they are assertable; `avatarKey()` carries the size, so the change also
+retires every 28 px blob already in AsyncStorage — no `AVATAR_VERSION` bump was needed.
+
+One measured inconsistency in the reference table, resolved deliberately and written down in the
+module: it gives the text column as "70 = 16 inset + 54 avatar + 16 gap", which does not add up
+(16+54+16 = 86). The three numbers the brief binds on (54 avatar, 16 gap, 70 row) are quoted as
+measured and `textX` is **derived** from them, so it can never drift from its own definition.
+
+Falsifiability, checked against `HEAD` before the change (`logs/phaseA-falsifiable.txt`): the old tree
+has `AVATAR_SIZE = 28`, `size ?? 32`, `width: 84` and `paddingLeft: 60` — the two new tests assert 54
+and the absence of exactly those literals, so both fail before and pass now.
+
+## B — Settings: the wizard is Connection, and Tailscale is three affordances
+
+* `src/connect/Wizard.tsx` is the one implementation of the three steps; `app/connect.tsx` is a 22-line
+  route wrapper (the `personae://connect` deep link still lands on the same components, and the
+  existing pairing tests stayed green); `app/settings.tsx` renders the same component **in place**.
+  A test asserts the step headings exist in **exactly one file** under `src/` + `app/`, so a
+  copy-paste regression fails the suite.
+* `src/settingsLayout.ts` is the screen's plan: `ADVANCED_OPEN_BY_DEFAULT = false`, Connection first,
+  and `visibleFieldIds(false)` = `['connection','language','tailscale']` while `visibleFieldIds(true)`
+  is every field 0.6.1 had — *nothing was deleted*.
+* Tailscale: **Log in** (opens the Tailscale app; the copy says no app can sign in for you),
+  **Choose device**, and the **auto-connect** switch. The package name, both timeouts and
+  "open Tailscale on failure" are intact under Advanced.
+* **Choose device** reads a new host endpoint, `GET /api/plugins/personae-mobile-auth/tailscale/peers`
+  (plugin 1.1.0 → **1.2.0**): the host runs `tailscale status --json` and returns
+  `{available, self, peers:[{name, ip, os, online}]}` over IPv4. A phone cannot enumerate a tailnet
+  (`src/native/tailscale.ts` has no such call, and Android has no API for it) — the host can. Picking a
+  device derives a `role: 'tailscale'` route through the existing `src/routes.ts` model, **probes it**,
+  and only writes it when it answers; a duplicate address is refused.
+* Gating: **owner OR paired device** (the phone is a paired device — owner-only would make the endpoint
+  useless). Anonymous → 401. Any CLI problem (missing, timeout, non-zero, unparseable) answers
+  `{available:false, reason}` and the app falls back to manual entry under Advanced — that path is a
+  pass, not a failure, and the endpoint's own test suite covers both shapes.
+
+**Live evidence, this run** (bearer read from `~/.hermes/.env` by name, never printed; a device token
+minted and revoked for the probe):
+
+```
+GET  /api/plugins/personae-mobile-auth/tailscale/peers   (env bearer)  → 200 {"available":true,"self":{…},"peers":[11 ipv4 entries]}
+GET  …/tailscale/peers                                   (DEVICE token)→ 200  (the picker works from the phone's own credential)
+GET  /pair                                                             → 200, "Autorizar Personae Mobile" still rendered
+POST /api/profiles  {}                                   (env bearer)  → 422 (field required: `name`) — reached, not refused
+POST /api/profiles  {}                                   (DEVICE token)→ 422 — a paired device IS authorised to create profiles
+POST …/devices/<id>/revoke → 200, and that device then reads peers as 401 (revocation still bites)
+```
+
+The 422 is deliberate: it is the authorisation question ("may this credential reach the handler?")
+answered **without writing anything** into `~/.hermes/profiles/`. A real profile was therefore *not*
+created on this box, and `createProfile`'s success path is proven by test against the mock dashboard
+instead (below). Honest limit, stated: no profile has been created from a phone in this run.
+
+## C — one "+" at the top
+
+`src/roster/plusMenu.ts` holds the three verbs as data: **New group** (the existing prompt),
+**New profile** (`POST /api/profiles`, then a roster refresh), **New session** (a modal listing every
+profile from `/api/profiles`, then the existing title prompt). The old standalone folder button is
+gone; the "+" replaces it. Telegram's own compose action is a 53×53 bottom-right FAB — the user asked for
+the top, and that departure is written down in the module so it does not look like an oversight.
+
+A refusal is **shown, not swallowed**: after a 401/403/400 the entry renders disabled *with the
+server's own sentence* under it, and on the legacy `:9222` surface (no profile route at all) the reason
+is the "only on the Dashboard connection" one. Drive-by fix while in `src/api/errors.ts`: `httpError`
+now also reads FastAPI's `{"detail": "…"}` envelope, which is where the dashboard puts a refusal's
+human sentence and which the error ladder had been dropping (it only knew the OpenAI-shaped
+`{"error": {message}}`). Also fixed: the support log's own version line was hardcoded `0.5.0` / `5` and
+had been wrong for two releases — it now reads the embedded config.
+
+## D — DEFERRED BY NAME (session groups)
+
+Not started, and that is a deliberate call, not an oversight.
+
+*Where it stands:* the store is ready and I found the key. `server/messenger/dashboard/ui_state.py`
+declares its shared keys as `{session-sort-v1, session-order-v1, sections-v1, session-groups-v1,
+session-colors-v1, hidden-v1, apropos-v1}` — so **`session-groups-v1` is the existing, server-side,
+desktop-shared key session grouping must ride**; the phone's `src/sync/uiSync.ts` currently syncs only
+`sections-v1` and `session-colors-v1` (profile groups and colours) and never writes it.
+
+*Why it was not attempted:* the shape of that key is defined by the desktop pane
+(`~/.hermes/desktop-plugins/messenger/plugin.js` — `profileSessionGroups` `:944`,
+`sessionGroupShell` `:845`, `sessionGroupMoveTargets` `:1110`, no `parent_session_id` on members
+`:747`/`:786`). Writing a model before reading those four sites is exactly how a *second* source of
+truth gets invented, and §5 of the goal names that as the one failure that costs the run. Reading an
+8 365-line file, porting the membership resolver, adding the sync key, and building selection mode with
+its bars is the largest single item in the release; the run budget that was left after A–C plus the
+build, the live probes and the verifier was not enough to do it **and** re-verify honestly, and shipping
+a working-looking D that can lose a group on the next sync is worse than not shipping it.
+
+*Next run's first step (exact):* read `plugin.js:944-1000`, `:1110-1180`, `:840-870` and
+`plugin.js:747/:786`, then write the model's normaliser to match `sessionGroups` byte-for-byte; add
+`session-groups-v1` to `SYNC_KEYS` in `src/sync/uiSync.ts` **and** to `sharedFromPrefs/applyShared` in
+`src/sync/useUiSync.ts`; only then build the UI. The round-trip test belongs in
+`tests/run.ts` next to tests 150-155 (the existing sync harness already fakes a server).
+
+## Pitfalls worth keeping from this run
+
+* **Do NOT restart `hermes-serve.service` from inside a tool call.** The agent's own shell lives in a
+  cgroup that the restart tears down (or, at minimum, the session is served by the dashboard it is
+  restarting): the cell dies mid-flight. Both times it happened, the restart itself succeeded — but the
+  session did not survive it. The deploy+restart was therefore done in one shot and then verified:
+  `/api/plugins/personae-mobile-auth/health` → `{"ok":true,…}`, `/pair` → 200, and the one existing
+  paired device (`dev_68c4193166bc`, "Personae Mobile") is still valid after the version bump.
+* **`expo prebuild` cannot clear a root-owned `android/`.** Gradle in Docker writes
+  `android/build`, `android/.gradle` and `android/.kotlin` as **root**, and the next prebuild dies on
+  `EACCES: permission denied, rmdir '…/android/.gradle/9.3.1'`. Remedy used (no sudo needed):
+  `docker run --rm -v $PWD:/work alpine:latest sh -c "rm -rf /work/android"` before prebuild.
+* **A file written by tooling cannot contain the literal `Authorization: Bearer …`.** It is redacted to
+  `***` *at write time*, which silently breaks any verifier that uses it. `logs/verify-0.7.0.sh` uses
+  `curl --oauth2-bearer "$LIVE_BEARER"` for exactly this reason, and the file was checked afterwards
+  (`grep -c '\*\*\*'` → 0).
+* `README.md` carries an **uncommitted** edit that is not mine (a `<img src="brand/personae-logo.png">`
+  block from an earlier session). Left alone, not staged, named here so nobody thinks it was lost.
+
+## Honest gaps (0.7.0)
+
+* **Nothing was verified on the phone.** Still no `adb` on either host and the Pixel 8 is offline: the
+  54 dp rows, the Advanced disclosure, the picker sheet and the "+" dropdown have never been rendered
+  anywhere. What is proven is the geometry as data, the logic, the bundle contents and the signer.
+* **Picking a device cannot complete off-device.** `pickPeer` probes with `probeTcp`, which needs the
+  Android module; on any non-Android runtime it answers `false` and correctly adds **nothing** (with a
+  message). So the "route written" half of Choose device is exercised by test, not by a real pick.
+* **The deep-link redeem path** is covered by the existing pairing tests (still green) and the bundle
+  marker, not by a live redemption from a phone.
+* **Item 5's profile creation** is proven authorised (422) and proven working against the mock; no real
+  profile was created on this box, so "a new profile appears in the roster on a phone" is unproven.

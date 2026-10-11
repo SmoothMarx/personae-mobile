@@ -1,0 +1,44 @@
+=== 0.7.0 release check — 2026-10-11T21:59:35Z ===
+
+--- app ---
+PASS  app tests: 161/161 passed, 0 failed (floor 145)
+PASS  typecheck: tsc --noEmit rc 0
+
+--- server plugins ---
+PASS  server tests: 60 passed in 1.92s (floor 43)
+      literal '~/.hermes/hermes-agent/venv/bin/python -m pytest server/tests -q' fails on this host
+        (ImportError while importing test module '~/Projects/personae-mobile/server/); server/run-tests.sh is the runner of record
+PASS  deployed plugins match server/ (no drift)
+PASS  hermes-serve.service active
+
+--- the live dashboard answers what 0.7.0 needs ---
+      credential read from ~/.hermes/.env (the value is never printed; only the file name is)
+PASS  GET /tailscale/peers (plugin 1.2.0) → available:true, 11 ipv4 entries
+PASS  /pair still renders (the pairing page survived the 1.2.0 deploy)
+PASS  POST /api/profiles is reachable with the owner credential (HTTP 422; 422 = the empty body was refused before any profile was written)
+
+--- app.json declares the release ---
+PASS  app.json: 0.7.0 / versionCode 8
+
+--- the artifact ---
+      path: dist/personae-0.7.0.apk
+      bytes: 114296465
+      sha256: fe0a8d7ef19cfbb45c388072193c4d9cb11512e00ec51d1a85f9af3b7f794d41
+summary: com.personae.mobile	8	0.7.0
+min-sdk: 24  target-sdk: 36
+camera permission: 1
+deep-link scheme personae: 11
+markers: personae://connect=1 tailscale/peers=1 api/profiles=1 pair/redeem=1 api/plugins/messenger/state=1 expo-camera=1 
+env facts (want 0): 100.64.0.11=0 personae=0 10.0.0.15=0 API_SERVER_KEY==0 
+positive control personae://connect: 1
+live bearer occurrences (want 0): 0
+Signer #1 certificate DN: CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT
+Signer #1 certificate SHA-256 digest: bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26
+PASS  APK is 0.7.0 / versionCode 8 (matches app.json)
+PASS  signed with the SAME Personae release key as 0.1.0-0.6.1 (installs over 0.6.1)
+PASS  CAMERA permission present
+PASS  personae:// deep link present in the manifest
+PASS  live bearer occurrences in the shipped bundle: 0
+PASS  no host address, user name or key literal in the shipped bundle
+
+RESULT: PASS — 0.7.0 verified
