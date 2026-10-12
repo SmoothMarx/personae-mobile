@@ -184,7 +184,31 @@ import {
   settle,
   shouldClaim,
 } from '../src/logic/swipe';
-import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
+import {
+  allKeys,
+  leafKeys,
+  profileMenuEntries,
+  sectionMenuEntries,
+  sessionGroupMenuEntries,
+  sessionMenuEntries,
+  sortEntries,
+} from '../src/roster/menus';
+import {
+  NO_SELECTION,
+  barVerbs,
+  beginSelection,
+  clearSelection,
+  isTicked,
+  parseSelectionKey,
+  pruneSelection,
+  selectAll,
+  selectedKeys,
+  selectionCount,
+  selectionKey,
+  tapRow,
+  toggleKey,
+  verbScope,
+} from '../src/logic/selection';
 import { showsConnectionBanner, CONNECTION_STRIP_ALWAYS } from '../src/roster/banner';
 import { horizontalInset, isShortViewport, screenInsets } from '../src/insets';
 import { sheetHeightFraction, sheetMaxHeight } from '../src/roster/sheet';
@@ -3303,12 +3327,19 @@ async function main(): Promise<void> {
   });
 
   test('menus: the session menu offers open/rename/colour/archive/delete, delete being the one irreversible verb', () => {
+    // SUPERSEDED IN PLACE (0.9.0 D): the phone's session menu is now the desktop's SHAPE — flat
+    // verbs plus one-noun submenus — so the inventory is counted over the LEAVES, not the top level.
     const entries = sessionMenuEntries({ title: 'Sessão', colour: null });
-    const keys = entries.map((entry) => entry.key);
-    for (const verb of ['open', 'rename', 'colour', 'archive', 'copy-id', 'delete']) {
+    const keys = leafKeys(entries);
+    for (const verb of ['open-here', 'rename', 'colour', 'archive', 'copy-id', 'delete']) {
       assert.ok(keys.includes(verb), `the session menu must offer ${verb}`);
     }
-    assert.deepEqual(entries.filter((entry) => entry.destructive).map((entry) => entry.key), ['delete']);
+    const destructive = (function walk(list: typeof entries): string[] {
+      return list.flatMap((entry) =>
+        entry.children?.length ? walk(entry.children) : entry.destructive ? [entry.key] : [],
+      );
+    })(entries);
+    assert.deepEqual(destructive, ['delete'], 'exactly one irreversible verb, wherever it is nested');
   });
 
   test('menus: the group menu offers rename and delete, and its delete cannot name a session', () => {
@@ -3803,6 +3834,184 @@ async function main(): Promise<void> {
     assert.equal(buildPut(meta)!.keys['sections-v1'].rev, 11);
   });
 
+  // ─────────────────────────────── 0.9.0 Phase D: menu parity ──
+
+  test('0.9.0 D: the session menu is the desktop shape — flat verbs plus one-noun submenus', () => {
+    const entries = sessionMenuEntries({ title: 'S', colour: null, groups: [{ id: 'g', name: 'Work' }] });
+    // The top level, in the desktop's own order (`plugin.js:4980-4986`).
+    assert.deepEqual(
+      entries.map((entry) => entry.key),
+      ['select', 'open', 'session-menu', 'apropos', 'group-session', 'colour', 'project'],
+      'Select · Open · Session · Apropos · Group · Appearance · Project',
+    );
+    // "ONE NOUN PER SUBMENU" — a submenu's label is a noun, and its children are the verbs.
+    for (const key of ['open', 'session-menu', 'apropos', 'group-session']) {
+      const submenu = entries.find((entry) => entry.key === key)!;
+      assert.ok(submenu.children?.length, `${key} must be a submenu`);
+    }
+    // …and the two pickers are LAST, as the ordering says.
+    assert.deepEqual(entries.slice(-2).map((entry) => entry.key), ['colour', 'project']);
+    // the submenus reach the verbs the phone previously had no door to
+    const leaves = leafKeys(entries);
+    for (const verb of ['mark-unread', 'branch', 'hide-session']) {
+      assert.ok(leaves.includes(verb), `the session menu must offer ${verb}`);
+    }
+    // Group ▸ Move to group ▸ <the profile's own groups>
+    assert.ok(allKeys(entries).includes('move-to-group'), 'the nested picker is present');
+    assert.ok(leaves.includes('move-group:g'), 'and it lists the profile\'s groups');
+    assert.ok(leaves.includes('new-session-group'), 'plus "New session group", as the desktop has');
+  });
+
+  test('0.9.0 D: every verb the phone cannot run carries a REASON, and none is silently absent', () => {
+    const entries = sessionMenuEntries({ title: 'S', colour: null, groups: [{ id: 'g', name: 'Work' }] });
+    const flat = allKeys(entries);
+    // The desktop's inventory, verb for verb. Anything not implemented must still be VISIBLE.
+    for (const verb of [
+      'open-window',
+      'open-tab',
+      'export-session',
+      'apropos-session',
+      'apropos-group',
+      'project',
+    ]) {
+      assert.ok(flat.includes(verb), `${verb} must be present, not dropped`);
+    }
+    const leaves: typeof entries = (function walk(list: typeof entries): typeof entries {
+      return list.flatMap((entry) => (entry.children?.length ? walk(entry.children) : [entry]));
+    })(entries);
+    const off = leaves.filter((entry) => entry.disabled);
+    assert.equal(off.length, 6, 'exactly the six the phone cannot do');
+    for (const entry of off) {
+      assert.ok(entry.reason && entry.reason.split(' ').length >= 5, `${entry.key} must explain itself in a sentence`);
+    }
+    // …and NOTHING that is genuinely impossible is offered as if it worked
+    assert.ok(!off.some((entry) => !entry.reason));
+    // the profile menu's two impossibles, same rule
+    const profile = profileMenuEntries({
+      label: 'cody', hidden: false, canRename: true, canArchiveAll: true,
+      sections: [], currentSectionId: '', hasSessions: true, sortMode: 'activity',
+    });
+    assert.ok(allKeys(profile).includes('sort'), 'Sort is a SUBMENU now, not a second sheet');
+    assert.equal(leafKeys(profile).includes('sort-activity'), true, 'and its modes are inside it');
+    assert.ok(leafKeys(profile).includes('open-newest'), 'Open newest session, closed this phase');
+    // a heading with no sessions cannot offer "open newest" without saying why
+    const empty = profileMenuEntries({
+      label: 'cody', hidden: false, canRename: true, canArchiveAll: true,
+      sections: [], currentSectionId: '', hasSessions: false,
+    });
+    const openNewest = empty.find((entry) => entry.key === 'open-newest')!;
+    assert.equal(openNewest.disabled, true);
+    assert.ok(openNewest.reason && openNewest.reason.length > 10);
+  });
+
+  test('0.9.0 D: the sheet DRILLS INTO a submenu and back, and a submenu opener is not a verb', () => {
+    const src = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+    assert.match(src, /const \[path, setPath\] = useState<string\[\]>\(\[\]\)/, 'the sheet holds a submenu path');
+    assert.match(src, /setPath\(\(current: string\[\]\) => \[\.\.\.current, entry\.key\]\)/, 'a submenu pushes');
+    assert.match(src, /setPath\(\(current: string\[\]\) => current\.slice\(0, -1\)\)/, 'and the back row pops');
+    assert.match(src, /if \(entry\.children\?\.length\) setPath/, 'a submenu opener never fires a verb');
+    assert.match(src, /useEffect\(\(\) => \{\s*if \(!props\.visible\) setPath\(\[\]\);/, 'the path resets on close');
+    assert.match(src, /entry\.checked \?/, 'a ticked mode shows its tick');
+    // the heading is resolved from the string table, never a raw key
+    assert.match(src, /props\.labelOf\(level\[0\]\?\.label/);
+  });
+
+  // ─────────────────────────────── 0.9.0 Phase E: multiselect ──
+
+  test('0.9.0 E: holding a row ticks it IMMEDIATELY and opens the mode (the WhatsApp model)', () => {
+    const key = selectionKey('cody', 'sess-1');
+    const state = beginSelection(NO_SELECTION, key);
+    assert.equal(state.active, true, 'the mode is on with the menu still open on top of it');
+    assert.deepEqual(state.keys, [key], 'the HELD row is ticked before anything else happens');
+    assert.equal(isTicked(state, key), true);
+    // holding the same row again does not double-tick it
+    assert.deepEqual(beginSelection(state, key).keys, [key]);
+    // …and tapping further rows GROWS the set rather than opening a transcript
+    const grown = tapRow(state, selectionKey('cody', 'sess-2'));
+    assert.equal(selectionCount(grown, [key, selectionKey('cody', 'sess-2')]), 2);
+    // while the mode is OFF the same tap is a no-op (`tapRow` never opens anything either)
+    assert.equal(tapRow(NO_SELECTION, key), NO_SELECTION);
+  });
+
+  test('0.9.0 E: emptying the set leaves the mode (the user, 2026-10-10)', () => {
+    const a = selectionKey('cody', 'a');
+    const b = selectionKey('cody', 'b');
+    let state = selectAll([a, b]);
+    state = toggleKey(state, a);
+    assert.equal(state.active, true, 'one left, so the mode stays');
+    state = toggleKey(state, b);
+    assert.deepEqual(state, NO_SELECTION, 'unselecting the LAST item stops the multiselect action');
+    assert.equal(state.active, false);
+    // Clear and Done both leave the mode, and an empty Select All never enters it
+    assert.deepEqual(clearSelection(), NO_SELECTION);
+    assert.deepEqual(selectAll([]), NO_SELECTION);
+    assert.equal(selectAll([]).active, false, 'a bar reading "0 selected" can never appear');
+  });
+
+  test('0.9.0 E: the batch resolves against what is ON SCREEN, not the raw roster', () => {
+    // The desktop's real bug (`plugin.js:3091-3103`): Select All over the raw roster found nothing,
+    // so the counter stuck at 0 and all five verbs silently did nothing. Re-created here as a test.
+    const onScreen = [selectionKey('cody', 'a'), selectionKey('cody', 'b')];
+    const offScreen = [selectionKey('cody', 'c'), selectionKey('scout', 'd')];
+    let state = selectAll([...onScreen, ...offScreen]);
+    assert.equal(selectionCount(state, onScreen), 2, 'the counter counts what it will ACT on');
+    assert.deepEqual(selectedKeys(state, onScreen), onScreen);
+    // a scrolled-away row keeps its tick in the state but contributes NOTHING to the batch
+    assert.equal(selectedKeys(state, onScreen).includes(offScreen[0]), false);
+    // when every ticked row leaves the screen, the mode ends by itself
+    state = pruneSelection(state, ['cody|z']);
+    assert.deepEqual(state, NO_SELECTION);
+    // …and a row that is not on screen can never LOOK ticked
+    assert.equal(isTicked(selectAll(offScreen), offScreen[0], onScreen), false);
+    // Select All is over the rendered rows — the same list the batch will act on
+    const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+    assert.match(src, /const visibleKeys = useMemo/, 'one source for "what is on screen"');
+    assert.match(src, /row\.kind === 'session'/, 'and it is derived from the RENDERED row kinds');
+  });
+
+  test('0.9.0 E: ONE delete path, and the confirm carries the COUNT', () => {
+    const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+    const batch = src.slice(src.indexOf('const runBatch'), src.indexOf('const header ='));
+    assert.match(batch, /roster\.deleteSession\(entry\.profile, entry\.sessionId\)/, 'the batch uses the same verb');
+    assert.match(batch, /roster\.archiveSession\(entry\.profile, entry\.sessionId\)/);
+    // 0.8.0's two-step confirm survives: the bar's Delete ARMS first, and only the second press asks.
+    assert.match(src, /if \(!batchArmed\) setBatchArmed\(true\)/, 'the first press arms');
+    assert.match(src, /t\.roster\.selection\.deleteConfirm\(busyCount\)/, 'and the confirm carries the count');
+    assert.match(src, /t\.roster\.selection\.deleteConfirm/, 'never a bare "Delete?"');
+    // Read in English, explicitly: the suite's ambient language is PT for most assertions.
+    const english = stringsFor('en');
+    assert.match(english.roster.selection.deleteConfirm(7), /7 sessions/);
+    assert.match(english.roster.selection.deleteConfirm(7), /cannot be undone/i);
+    assert.match(english.roster.selection.deleteConfirm(1), /1 session\?/, 'the singular, not "1 sessions"');
+    // …and PT says the same thing with its own plural, not an English fallback
+    assert.match(t.roster.selection.deleteConfirm(2), /2 sessões/);
+    assert.match(t.roster.selection.count(3), /3 selecionadas/);
+    // the bar's verbs are the desktop's own list, and its two impossibles say why
+    const verbs = barVerbs();
+    assert.deepEqual(
+      verbs.map((verb) => verb.key),
+      ['selectAll', 'clear', 'apropos', 'close', 'archive', 'delete', 'done'],
+    );
+    for (const verb of verbs.filter((entry) => entry.disabled)) {
+      assert.ok(verb.reason && verb.reason.length > 20, `${verb.key} must carry a reason`);
+    }
+  });
+
+  test('0.9.0 E: batch verbs once more than one row is ticked; single-object when exactly one', () => {
+    assert.equal(verbScope(0), 'none');
+    assert.equal(verbScope(1), 'single');
+    assert.equal(verbScope(2), 'batch');
+    assert.equal(verbScope(7), 'batch');
+    // it is the SCREEN that decides, from the same counter the bar reads
+    const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+    assert.match(src, /selectionCount\(selection, visibleKeys\)/, 'one count, one source');
+    assert.match(src, /\{selection\.active \? \(/, 'and the bar only exists while the mode is on');
+    // a ticked row stops OPENING and starts ticking — the mode rule, in the component
+    const components = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+    assert.match(components, /props\.selecting \? props\.onTick : props\.open \? props\.onCloseRow : props\.onOpen/);
+    assert.match(components, /name=\{props\.ticked \? 'checkmark-circle' : 'ellipse-outline'\}/);
+  });
+
   // ─────────────────────────────── 0.9.0 Phase C: session groups ──
 
   test('0.9.0 C: the model is the desktop document, shape for shape', () => {
@@ -3958,10 +4167,13 @@ async function main(): Promise<void> {
     const menus = readFileSync(join(process.cwd(), 'src', 'roster', 'menus.ts'), 'utf8');
     assert.match(menus, /export function sessionGroupMenuEntries/);
     assert.match(menus, /export function sectionMenuEntries/);
-    assert.ok(
-      !menus.slice(menus.indexOf('export function sessionGroupMenuEntries')).includes('sectionMenuEntries()'),
-      'the session-group menu does not delegate to the profile-section one',
+    // Neither menu CALLS the other: matched as a call, not as a declaration that happens to be later
+    // in the same file.
+    const groupFn = menus.slice(
+      menus.indexOf('export function sessionGroupMenuEntries'),
+      menus.indexOf('export function sectionMenuEntries'),
     );
+    assert.ok(!/sectionMenuEntries\s*\(/.test(groupFn), 'the session-group menu never calls the profile-section one');
     // numbering rule, shared with the desktop
     assert.equal(numberedGroupName([], 'Group #'), 'Group #1');
     assert.equal(numberedGroupName(['Group #2', 'Group #5', 'Other'], 'Group #'), 'Group #6');

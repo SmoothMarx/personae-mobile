@@ -335,6 +335,21 @@ export function useRoster() {
 
   const allSessions = useMemo(() => [...recents, ...runs, ...Object.values(loaded).flat()], [recents, runs, loaded]);
 
+  /**
+   * 0.9.0 D — is this session hidden from the pane's own list? Read off the raw feed rows, which is
+   * the only place the flag exists (`SearchHit`, which the roster rows are built from, carries no
+   * `hidden`).
+   */
+  const isSessionHidden = useCallback(
+    (profile: string, id: string): boolean =>
+      Boolean(
+        allSessions.find(
+          (session) => session.id === id && (session.profile ?? 'default') === (profile || 'default'),
+        )?.hidden,
+      ),
+    [allSessions],
+  );
+
   // The 'No group' label comes from the string table, so a language switch must recompute it.
   const language = useLanguage();
   const groups = useMemo(
@@ -533,6 +548,50 @@ export function useRoster() {
     [backend],
   );
 
+  /**
+   * 0.9.0 D — `Session ▸ Hide from Personae / Unhide`. The pane's own view filter, never a core
+   * mutation: the session keeps living, which is what makes this the reversible half of Archive.
+   */
+  const setHidden = useCallback(
+    async (profile: string, id: string, hidden: boolean) => {
+      try {
+        await backend.setHidden(id, hidden, profile);
+        await loadAll({ silent: true });
+      } catch (error) {
+        setNotice(normalizeError(error).message);
+      }
+    },
+    [backend, loadAll],
+  );
+
+  /** 0.9.0 D — `Session ▸ Mark as unread`: the read watermark, so the row's light comes back on. */
+  const markUnread = useCallback(
+    async (profile: string, id: string) => {
+      try {
+        await backend.markUnread(id, profile);
+        await loadAll({ silent: true });
+      } catch (error) {
+        setNotice(normalizeError(error).message);
+      }
+    },
+    [backend, loadAll],
+  );
+
+  /** 0.9.0 D — `Session ▸ Branch`: a new session continuing this transcript, then open it. */
+  const branchSession = useCallback(
+    async (profile: string, id: string) => {
+      try {
+        const created = await backend.branch(id, profile);
+        await loadAll({ silent: true });
+        if (created?.id) openSession(profile, created.id, created.title ?? undefined);
+        else setNotice(t.roster.menu.branchFailed);
+      } catch (error) {
+        setNotice(normalizeError(error).message);
+      }
+    },
+    [backend, loadAll, openSession],
+  );
+
   /** Archive every conversation of a profile. Archived, never deleted — and it says so. */
   const archiveAll = useCallback(
     async (name: string) => {
@@ -661,6 +720,10 @@ export function useRoster() {
     renameSession,
     archiveSession,
     deleteSession,
+    setHidden,
+    isSessionHidden,
+    markUnread,
+    branchSession,
     archiveAll,
     setColour,
     hide,

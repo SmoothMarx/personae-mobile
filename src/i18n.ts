@@ -75,6 +75,21 @@ const en = {
           ? '1 automatic run is hidden — turn automatic runs on in Settings.'
           : `${n} automatic runs are hidden — turn automatic runs on in Settings.`,
     },
+    // ── 0.9.0 E: multiselect, the WhatsApp model ──
+    selection: {
+      count: (n: number) => `${n} selected`,
+      selectAll: 'Select all',
+      clear: 'Clear',
+      close: 'Close',
+      archive: 'Archive',
+      delete: 'Delete',
+      done: 'Done',
+      apropos: 'Apropos',
+      deleteConfirm: (n: number) =>
+        `Delete ${n === 1 ? '1 session' : `${n} sessions`}? This cannot be undone.`,
+      partial: (failed: number, total: number) => `${failed} of ${total} did not work.`,
+    },
+
     // ── 0.9.0 C: user-authored SESSION groups (the desktop pane's Groups) ──
     sessionGroups: {
       toggle: (name: string, count: number) => `${name}, ${count} ${count === 1 ? 'session' : 'sessions'}`,
@@ -138,6 +153,29 @@ const en = {
       colour: 'Colour',
       colourNone: 'No colour',
       hide: 'Hide profile',
+      // ── 0.9.0 D: the desktop's own per-object inventory, verb for verb ──
+      select: 'Select',
+      openHere: 'Open',
+      openWindow: 'In new window',
+      openTab: 'In new tab',
+      sessionMenu: 'Session',
+      markUnread: 'Mark as unread',
+      branch: 'Branch',
+      branchFailed: 'The gateway did not return a new session.',
+      exportSession: 'Export…',
+      hideSession: 'Hide from Personae',
+      unhideSession: 'Unhide in Personae',
+      apropos: 'Apropos (On that topic, beta)',
+      aproposSession: 'From this session',
+      aproposGroup: 'Create group',
+      aproposGroupHeading: 'Apropos this group (beta)',
+      newSessionGroup: 'New session group',
+      moveToGroup: 'Move to group',
+      ungroupedPick: 'Ungrouped',
+      project: 'Assign to project',
+      openNewest: 'Open newest session',
+      moveUp: 'Move up',
+      moveDown: 'Move down',
       unhide: 'Show profile',
       archiveAll: 'Archive all conversations',
       archiveAllConfirm: (label: string) =>
@@ -436,6 +474,9 @@ const en = {
     profileCreateUnsupported: 'creating profiles is not supported on this connection',
     deleteUnsupported: 'deleting is not supported on this connection',
     renameUnsupported: 'renaming is not supported on this connection',
+    // 0.9.0 D — the two session verbs the legacy surface cannot reach.
+    flagsUnsupported: 'hiding and unread marks are not supported on this connection',
+    branchUnsupported: 'branching a session is not supported on this connection',
     ticketMissing: 'ticket missing',
     resource: 'The item',
   },
@@ -653,6 +694,21 @@ const pt: Strings = {
           ? '1 execução automática está escondida — liga as execuções automáticas nas Definições.'
           : `${n} execuções automáticas estão escondidas — liga as execuções automáticas nas Definições.`,
     },
+    // ── 0.9.0 E: seleção múltipla, o modelo do WhatsApp ──
+    selection: {
+      count: (n: number) => `${n} selecionadas`,
+      selectAll: 'Selecionar tudo',
+      clear: 'Limpar',
+      close: 'Fechar',
+      archive: 'Arquivar',
+      delete: 'Apagar',
+      done: 'Concluir',
+      apropos: 'Apropos',
+      deleteConfirm: (n: number) =>
+        `Apagar ${n === 1 ? '1 sessão' : `${n} sessões`}? Isto não pode ser anulado.`,
+      partial: (failed: number, total: number) => `${failed} de ${total} não funcionaram.`,
+    },
+
     // ── 0.9.0 C: grupos de SESSÕES criados pelo utilizador (os Groups do desktop) ──
     sessionGroups: {
       toggle: (name: string, count: number) => `${name}, ${count} ${count === 1 ? 'sessão' : 'sessões'}`,
@@ -716,6 +772,29 @@ const pt: Strings = {
       colour: 'Cor',
       colourNone: 'Sem cor',
       hide: 'Esconder perfil',
+      // ── 0.9.0 D: o inventário do desktop, verbo a verbo ──
+      select: 'Selecionar',
+      openHere: 'Abrir',
+      openWindow: 'Nova janela',
+      openTab: 'Novo separador',
+      sessionMenu: 'Sessão',
+      markUnread: 'Marcar como não lida',
+      branch: 'Ramificar',
+      branchFailed: 'O gateway não devolveu uma sessão nova.',
+      exportSession: 'Exportar…',
+      hideSession: 'Esconder da Personae',
+      unhideSession: 'Mostrar na Personae',
+      apropos: 'Apropos (Sobre o tema, beta)',
+      aproposSession: 'Desta sessão',
+      aproposGroup: 'Criar grupo',
+      aproposGroupHeading: 'Apropos este grupo (beta)',
+      newSessionGroup: 'Novo grupo de sessões',
+      moveToGroup: 'Mover para grupo',
+      ungroupedPick: 'Sem grupo',
+      project: 'Atribuir a projeto',
+      openNewest: 'Abrir a sessão mais recente',
+      moveUp: 'Subir',
+      moveDown: 'Descer',
       unhide: 'Mostrar perfil',
       archiveAll: 'Arquivar todas as conversas',
       archiveAllConfirm: (label: string) =>
@@ -1014,6 +1093,9 @@ const pt: Strings = {
     profileCreateUnsupported: 'criar perfis não é suportado nesta ligação',
     deleteUnsupported: 'apagar não é suportado nesta ligação',
     renameUnsupported: 'renomear não é suportado nesta ligação',
+    // 0.9.0 D — os dois verbos de sessão que a superfície antiga não alcança.
+    flagsUnsupported: 'esconder e marcar como não lida não é suportado nesta ligação',
+    branchUnsupported: 'ramificar uma sessão não é suportado nesta ligação',
     ticketMissing: 'ticket ausente',
     resource: 'O recurso',
   },

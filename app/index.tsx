@@ -33,6 +33,22 @@ import { t, useLanguage } from '../src/i18n';
 import { monogramFor } from '../src/logic/avatars';
 import { headerMetrics } from '../src/roster/geometry';
 import { showsConnectionBanner } from '../src/roster/banner';
+import {
+  NO_SELECTION,
+  barVerbs,
+  beginSelection,
+  clearSelection,
+  isTicked,
+  parseSelectionKey,
+  pruneSelection,
+  selectAll,
+  selectedKeys,
+  selectionCount,
+  selectionKey,
+  tapRow,
+  toggleKey,
+  type SelectionState,
+} from '../src/logic/selection';
 import { screenInsets } from '../src/insets';
 import type { SortMode } from '../src/logic/sections';
 import {
@@ -110,6 +126,13 @@ export default function RosterScreen() {
    * `src/logic/swipe.ts`; this is only where the answer is remembered.
    */
   const [swipe, setSwipe] = useState<SwipeState>(CLOSED_SWIPE);
+  /**
+   * 0.9.0 E — the multiselect MODE. Entered by holding a row: that row ticks immediately and the
+   * menu opens on top of the live selection. Not persisted: a relaunch must not come back mid-batch.
+   */
+  const [selection, setSelection] = useState<SelectionState>(NO_SELECTION);
+  /** The batch delete ARMS on the first press and fires on the second, carrying the count. */
+  const [batchArmed, setBatchArmed] = useState(false);
   const [promptValue, setPromptValue] = useState('');
   const pendingProfile = useRef<string | null>(null);
   const pendingSession = useRef<{ profile: string; id: string } | null>(null);
@@ -178,6 +201,47 @@ export default function RosterScreen() {
         return t.roster.groups.rename;
       case 'delete-section':
         return t.roster.groups.delete;
+      // ── 0.9.0 D: the desktop's per-object inventory ──
+      case 'select':
+        return t.roster.menu.select;
+      case 'openHere':
+        return t.roster.menu.openHere;
+      case 'openWindow':
+        return t.roster.menu.openWindow;
+      case 'openTab':
+        return t.roster.menu.openTab;
+      case 'sessionMenu':
+        return t.roster.menu.sessionMenu;
+      case 'markUnread':
+        return t.roster.menu.markUnread;
+      case 'branch':
+        return t.roster.menu.branch;
+      case 'exportSession':
+        return t.roster.menu.exportSession;
+      case 'hideSession':
+        return t.roster.menu.hideSession;
+      case 'unhideSession':
+        return t.roster.menu.unhideSession;
+      case 'apropos':
+        return t.roster.menu.apropos;
+      case 'aproposSession':
+        return t.roster.menu.aproposSession;
+      case 'aproposGroup':
+        return t.roster.menu.aproposGroup;
+      case 'aproposGroupHeading':
+        return t.roster.menu.aproposGroupHeading;
+      case 'moveToGroup':
+        return t.roster.menu.moveToGroup;
+      case 'ungrouped':
+        return t.roster.menu.ungroupedPick;
+      case 'project':
+        return t.roster.menu.project;
+      case 'openNewest':
+        return t.roster.menu.openNewest;
+      case 'moveUp':
+        return t.roster.menu.moveUp;
+      case 'moveDown':
+        return t.roster.menu.moveDown;
       default:
         return key;
     }
@@ -216,6 +280,31 @@ export default function RosterScreen() {
       message: `${t.roster.profileErrorTitle}: ${normalizeError(roster.contactError).message}`,
     };
   }, [roster.contactError, roster.diagnostic]);
+
+  /**
+   * 0.9.0 E — the batch resolves against WHAT IS ON SCREEN. This is the desktop's own fix
+   * (`plugin.js:3091-3103`, where `profiles.list` carried no `sessions` array and every batch verb
+   * silently did nothing): the keys come from the rendered rows, and nothing else can be acted on.
+   */
+  const visibleKeys = useMemo(
+    () =>
+      roster.listRows
+        .filter((row): row is Extract<RosterListRow, { kind: 'session' }> => row.kind === 'session')
+        .map((row) => selectionKey(row.model.profile, row.model.id)),
+    [roster.listRows],
+  );
+  /** A tick whose row is gone stops counting; when none survive, the mode ends by itself. */
+  useEffect(() => {
+    setSelection((current) => (current.active ? pruneSelection(current, visibleKeys) : current));
+  }, [visibleKeys]);
+  const ticked = selectionCount(selection, visibleKeys);
+
+  /** Holding a row: it ticks IMMEDIATELY, and the menu opens on top of that live selection. */
+  const beginSelectionOn = useCallback((profile: string, id: string) => {
+    setSwipe(CLOSED_SWIPE);
+    setBatchArmed(false);
+    setSelection((current) => beginSelection(current, selectionKey(profile, id)));
+  }, []);
 
   const renderItem = useCallback(
     ({ item }: { item: RosterListRow }) => {
@@ -297,10 +386,17 @@ export default function RosterScreen() {
           onMenu={() =>
             openMenu({ kind: 'session', profile: item.model.profile, id: item.model.id, title: item.model.title })
           }
+          selecting={selection.active}
+          ticked={isTicked(selection, selectionKey(item.model.profile, item.model.id), visibleKeys)}
+          onTick={() => {
+            // While the mode is on, tapping a row GROWS the set instead of opening it.
+            const key = selectionKey(item.model.profile, item.model.id);
+            setSelection((current) => (current.active ? toggleKey(current, key) : beginSelection(current, key)));
+          }}
         />
       );
     },
-    [openMenu, roster, settings.surface, swipe],
+    [openMenu, roster, selection, settings.surface, swipe, visibleKeys],
   );
 
   /**
@@ -311,6 +407,32 @@ export default function RosterScreen() {
    * 0.9.0 F (item 2) — what the banner decision reads. `rowCount` is what would paint right now, so
    * "the list genuinely cannot load" is a fact about the screen rather than about the socket.
    */
+  /**
+   * 0.9.0 E — the batch verbs. ONE delete path: the batch uses the same `roster.deleteSession` the
+   * single-row swipe and the long-press menu use, so there is exactly one way a delete happens.
+   * 0.8.0's two-step confirm survives: the bar's Delete ARMS first, and the confirm that follows
+   * carries the COUNT.
+   */
+  const runBatch = useCallback(
+    async (verb: 'archive' | 'delete') => {
+      const keys = selectedKeys(selection, visibleKeys);
+      const targets = keys.map((key) => parseSelectionKey(key)).filter((entry) => entry.sessionId);
+      if (!targets.length) return;
+      const results = await Promise.allSettled(
+        targets.map((entry) =>
+          verb === 'archive'
+            ? roster.archiveSession(entry.profile, entry.sessionId)
+            : roster.deleteSession(entry.profile, entry.sessionId),
+        ),
+      );
+      const failed = results.filter((result) => result.status === 'rejected').length;
+      if (failed) roster.say(t.roster.selection.partial(failed, targets.length));
+      setSelection(NO_SELECTION);
+      setBatchArmed(false);
+    },
+    [roster, selection, visibleKeys],
+  );
+
   const bannerInput = {
     stage: roster.diagnostic.stage,
     contactError: Boolean(roster.contactError),
@@ -504,6 +626,66 @@ export default function RosterScreen() {
         }
       />
 
+      {/* ── 0.9.0 E: the selection bar. It replaces nothing — it appears under the header while the
+             MODE is on, and every verb acts on the whole tick set. `Emptying the set leaves the mode`
+             is structural (`pruneSelection`/`toggleKey`), so this bar cannot render "0 selected". */}
+      {selection.active ? (
+        <View style={styles.selectBar}>
+          <Text style={styles.selectCount}>{t.roster.selection.count(ticked)}</Text>
+          <View style={styles.selectVerbs}>
+            {barVerbs().map((verb) => {
+              const busyCount = ticked;
+              const off = verb.disabled || ((verb.key === 'archive' || verb.key === 'delete' || verb.key === 'clear' || verb.key === 'apropos' || verb.key === 'close') && busyCount === 0);
+              const label =
+                verb.key === 'delete' && batchArmed && busyCount > 1
+                  ? `${t.roster.selection.delete} ${busyCount}?`
+                  : t.roster.selection[verb.labelKey as 'selectAll' | 'clear' | 'close' | 'archive' | 'delete' | 'done' | 'apropos'];
+              return (
+                <Pressable
+                  key={verb.key}
+                  disabled={off}
+                  onPress={() => {
+                    if (verb.key === 'selectAll') setSelection(selectAll(visibleKeys));
+                    else if (verb.key === 'clear') {
+                      setSelection(clearSelection());
+                      setBatchArmed(false);
+                    } else if (verb.key === 'done') {
+                      setSelection(clearSelection());
+                      setBatchArmed(false);
+                    } else if (verb.key === 'archive') void runBatch('archive');
+                    else if (verb.key === 'delete') {
+                      // The load-bearing two-step: arm first, then the confirm carries the COUNT.
+                      if (!batchArmed) setBatchArmed(true);
+                      else {
+                        Alert.alert(
+                          t.roster.selection.delete,
+                          t.roster.selection.deleteConfirm(busyCount),
+                          [
+                            { text: t.roster.menu.cancel, style: 'cancel', onPress: () => setBatchArmed(false) },
+                            { text: t.roster.selection.delete, style: 'destructive', onPress: () => void runBatch('delete') },
+                          ],
+                        );
+                      }
+                    } else roster.say(verb.reason ?? '');
+                  }}
+                  accessibilityRole="button"
+                  accessibilityState={{ disabled: off }}
+                  accessibilityLabel={verb.reason ? `${label} — ${verb.reason}` : label}
+                  style={({ pressed }) => [styles.selectButton, off && styles.selectButtonOff, pressed && styles.pressed]}
+                >
+                  <Ionicons
+                    name={verb.icon as never}
+                    size={14}
+                    color={verb.key === 'delete' ? colors.red : off ? colors.faint : colors.text}
+                  />
+                  <Text style={[styles.selectButtonText, verb.key === 'delete' && styles.selectDanger]}>{label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      ) : null}
+
       {/* ── the "+" (0.7.0): New group · New profile · New session ─────────────── */}
       <ActionSheet
         visible={plusOpen}
@@ -560,6 +742,9 @@ export default function RosterScreen() {
                 canArchiveAll: true,
                 sections: roster.sections.sections,
                 currentSectionId: roster.sections.members[profileMenu.name] ?? '',
+                hasSessions: Boolean(roster.model.rows.find((row) => row.name === profileMenu.name)?.sessions.length),
+                // `manual` (the user's own order) ticks NONE of the three modes, which is the truth.
+                sortMode: roster.sections.sort.all ?? 'activity',
               })
             : []
         }
@@ -599,6 +784,20 @@ export default function RosterScreen() {
               roster.hide(target.name);
               closeMenu();
               break;
+            case 'open-newest': {
+              const first = roster.model.rows.find((row) => row.name === target.name)?.sessions[0];
+              if (first) roster.openSession(target.name, first.sessionId, first.snippet);
+              closeMenu();
+              break;
+            }
+            case 'sort-activity':
+            case 'sort-name':
+            case 'sort-sessions': {
+              const mode: SortMode = key === 'sort-name' ? 'name' : key === 'sort-sessions' ? 'sessions' : 'activity';
+              roster.sectionActions.setSort('all', mode);
+              closeMenu();
+              break;
+            }
             case 'archive-all':
               Alert.alert(t.roster.menu.archiveAll, t.roster.menu.archiveAllConfirm(target.label), [
                 { text: t.roster.menu.cancel, style: 'cancel' },
@@ -659,9 +858,9 @@ export default function RosterScreen() {
             ? sessionMenuEntries({
                 title: sessionMenu.title,
                 colour: null,
-                inGroup: Boolean(
-                  roster.sessionGroups[sessionMenu.profile]?.members?.[sessionMenu.id] ?? null,
-                ),
+                inGroup: Boolean(roster.sessionGroups[sessionMenu.profile]?.members?.[sessionMenu.id] ?? null),
+                hidden: roster.isSessionHidden(sessionMenu.profile, sessionMenu.id),
+                groups: roster.sessionGroups[sessionMenu.profile]?.groups ?? [],
               })
             : []
         }
@@ -683,6 +882,28 @@ export default function RosterScreen() {
             case 'colour':
               setColourFor({ kind: 'session', profile: target.profile, sessionId: target.id });
               break;
+            // ── 0.9.0 D: `Session ▸` — the verbs that act on this transcript ──
+            case 'open-here':
+              roster.openSession(target.profile, target.id, target.title);
+              closeMenu();
+              break;
+            case 'mark-unread':
+              void roster.markUnread(target.profile, target.id);
+              closeMenu();
+              break;
+            case 'branch':
+              void roster.branchSession(target.profile, target.id);
+              closeMenu();
+              break;
+            case 'hide-session':
+              void roster.setHidden(target.profile, target.id, !roster.isSessionHidden(target.profile, target.id));
+              closeMenu();
+              break;
+            // ── 0.9.0 E: the held row ticks IMMEDIATELY and the mode opens with the menu ──
+            case 'select':
+              closeMenu();
+              beginSelectionOn(target.profile, target.id);
+              break;
             // ── 0.9.0 C: filing, and only filing. Every verb is one write through
             //    `sessionGroupActions`, which pushes the shared document like any other pref. ──
             case 'new-session-group':
@@ -691,6 +912,11 @@ export default function RosterScreen() {
               break;
             case 'file-into-group':
               setFilingSession({ profile: target.profile, id: target.id, title: target.title });
+              break;
+            case 'move-group':
+              // `move-group:` (nothing after the colon) means Ungrouped.
+              roster.sessionGroupActions.file(target.profile, [target.id], target.id.split(':')[1] || null);
+              closeMenu();
               break;
             case 'remove-from-group':
               roster.sessionGroupActions.file(target.profile, [target.id], null);
@@ -954,5 +1180,22 @@ const styles = StyleSheet.create({
   sheetRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md, borderRadius: radius.sm },
   sheetLabel: { color: colors.text, fontSize: font.body, flex: 1 },
   rowPressed: { backgroundColor: colors.panelAlt },
+  // ── 0.9.0 E: the selection bar ──
+  selectBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.panel,
+  },
+  selectCount: { color: colors.muted, fontSize: font.small, fontWeight: '600' },
+  selectVerbs: { flex: 1, flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'flex-end', gap: 4 },
+  selectButton: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 6, borderRadius: radius.sm },
+  selectButtonOff: { opacity: 0.6 },
+  selectButtonText: { color: colors.text, fontSize: 12, fontWeight: '600' },
+  selectDanger: { color: colors.red },
   pressed: { opacity: 0.8 },
 });

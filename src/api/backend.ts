@@ -73,6 +73,12 @@ export type Backend = {
   archiveSession(id: string, profile?: string): Promise<void>;
   /** Delete one session — the only irreversible verb in the roster. */
   deleteSession(id: string, profile?: string): Promise<void>;
+  /** 0.9.0 D — `Session ▸ Hide from Personae / Unhide`. `hidden` is NOT `archived`. */
+  setHidden(id: string, hidden: boolean, profile?: string): Promise<void>;
+  /** 0.9.0 D — `Session ▸ Mark as unread` (the read watermark, not a flag on a message). */
+  markUnread(id: string, profile?: string): Promise<void>;
+  /** 0.9.0 D — `Session ▸ Branch`: a new session that continues this transcript. */
+  branch(id: string, profile?: string): Promise<HermesSession | null>;
   /**
    * 0.9.0 Phase A/I — the portable-preference document. `null` means the state plugin is not mounted
    * on this host, which is an ordinary answer (older server), never an error.
@@ -286,6 +292,28 @@ function createDashboardBackend(settings: Settings): Backend {
         }
       }
       await client.deleteSession(id, profile);
+    },
+
+    /** 0.9.0 D — the pane's own view filter, never a core mutation (the desktop's own rule). */
+    async setHidden(id, hidden, profile = '') {
+      await client.patchFlags(id, { hidden }, profile);
+    },
+
+    /** 0.9.0 D — the read watermark: `unread: true` is what the desktop's verb does. */
+    async markUnread(id, profile = '') {
+      await client.patchFlags(id, { unread: true }, profile);
+    },
+
+    /** 0.9.0 D — `session.branch_stored`: a whole-session branch, server-side. */
+    async branch(id, profile = '') {
+      const live = await shared();
+      const result = await live.rpc<Record<string, unknown>>('session.branch_stored', {
+        session_id: id,
+        ...(profile ? { profile } : {}),
+      });
+      const newId = String(result?.session_id ?? result?.id ?? '');
+      if (!newId) return null;
+      return { id: newId, title: (result?.title as string) ?? null, message_count: 0, last_active: Date.now() / 1000 };
     },
 
     /** The portable-preference document, or `null` when the state plugin is not mounted. */
@@ -531,6 +559,26 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
       return stateVerb(
         () => api.stateCall(`/sessions/${encodeURIComponent(id)}/delete`, { method: 'POST' }, profile),
         () => new ApiError(t.errors.server(501, t.errors.deleteUnsupported), { kind: 'http', status: 501 }),
+      );
+    },
+
+    /** 0.9.0 D — the hide flag is a dashboard route; this surface answers 501 out loud. */
+    setHidden() {
+      return Promise.reject(
+        new ApiError(t.errors.server(501, t.errors.flagsUnsupported), { kind: 'http', status: 501 }),
+      );
+    },
+
+    markUnread() {
+      return Promise.reject(
+        new ApiError(t.errors.server(501, t.errors.flagsUnsupported), { kind: 'http', status: 501 }),
+      );
+    },
+
+    /** 0.9.0 D — branching needs the WS RPC channel, which only the dashboard surface speaks. */
+    branch() {
+      return Promise.reject(
+        new ApiError(t.errors.server(501, t.errors.branchUnsupported), { kind: 'http', status: 501 }),
       );
     },
 

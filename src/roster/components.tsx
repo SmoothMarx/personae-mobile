@@ -7,7 +7,7 @@
  */
 
 import { Ionicons } from '@expo/vector-icons';
-import React, { useEffect, useRef } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Animated, Image, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 
 import { t } from '../i18n';
@@ -312,6 +312,10 @@ export function SessionRow(props: {
   onConfirmDelete: () => void;
   onOpen: () => void;
   onMenu: () => void;
+  /** 0.9.0 E — the multiselect MODE: while it is on, a tap ticks instead of opening. */
+  selecting?: boolean;
+  ticked?: boolean;
+  onTick?: () => void;
 }) {
   const { model } = props;
   /** The latest props, so the gesture handlers created once are never stale. */
@@ -418,11 +422,14 @@ export function SessionRow(props: {
 
       <Animated.View style={[styles.swipeSurface, { transform: [{ translateX }] }]} {...pan.panHandlers}>
         <Pressable
-          onPress={props.open ? props.onCloseRow : props.onOpen}
+          // 0.9.0 E: while the mode is on a row STOPS OPENING and starts ticking (the desktop's
+          // `:3022-3023` rule). The long press still opens the menu, so the set can grow from it.
+          onPress={props.selecting ? props.onTick : props.open ? props.onCloseRow : props.onOpen}
           onLongPress={props.onMenu}
           delayLongPress={350}
           accessibilityRole="button"
           accessibilityLabel={model.title}
+          accessibilityState={props.selecting ? { selected: Boolean(props.ticked) } : undefined}
           accessibilityHint={props.open ? undefined : t.roster.swipe.a11yHint}
           // Both verbs stay reachable WITHOUT a gesture (this, and the long-press menu above).
           accessibilityActions={rowAccessibilityActions(props.surface)}
@@ -438,9 +445,20 @@ export function SessionRow(props: {
           style={({ pressed }) => [
             styles.sessionRow,
             model.color ? { borderLeftColor: model.color, borderLeftWidth: 2 } : null,
+            props.ticked && styles.sessionRowTicked,
             pressed && styles.rowPressed,
           ]}
         >
+          {/* The tick replaces the dot column while the mode is on, so the row does not shift. */}
+          {props.selecting ? (
+            <View style={styles.sessionDot}>
+              <Ionicons
+                name={props.ticked ? 'checkmark-circle' : 'ellipse-outline'}
+                size={16}
+                color={props.ticked ? colors.accent : colors.faint}
+              />
+            </View>
+          ) : null}
           <View style={styles.sessionDot}>
             {props.automatic ? <Ionicons name="time-outline" size={12} color={colors.faint} /> : <Dot rollup={rollup} size={7} />}
           </View>
@@ -509,14 +527,47 @@ export function ActionSheet(props: {
   /**
    * `disabled` + `reason` exist for 0.7.0's "+": a verb that cannot work right now is shown, dimmed,
    * with the sentence explaining why — never hidden and never a silent no-op.
+   *
+   * 0.9.0 D — `children` is a SUBMENU (one noun, its verbs inside). The sheet drills into it in
+   * place, which is what makes the desktop's `Session ▸`, `Group ▸` and `Apropos ▸` reachable on a
+   * phone without a second sheet and without flattening the nouns back into one list.
    */
-  entries: { key: string; label: string; icon: string; destructive?: boolean; disabled?: boolean; reason?: string }[];
+  entries: {
+    key: string;
+    label: string;
+    icon: string;
+    destructive?: boolean;
+    disabled?: boolean;
+    reason?: string;
+    checked?: boolean;
+    children?: {
+      key: string;
+      label: string;
+      icon: string;
+      destructive?: boolean;
+      disabled?: boolean;
+      reason?: string;
+      checked?: boolean;
+    }[];
+  }[];
   labelOf: (key: string) => string;
   onPick: (key: string) => void;
   onClose: () => void;
   children?: React.ReactNode;
 }) {
   const insets = useSafeAreaInsets();
+  /** 0.9.0 D — the submenu path, reset every time the sheet closes. */
+  const [path, setPath] = useState<string[]>([]);
+  useEffect(() => {
+    if (!props.visible) setPath([]);
+  }, [props.visible]);
+  type SheetEntry = (typeof props.entries)[number];
+  const stack = path.reduce<SheetEntry[] | null>(
+    (level, key) => (level ? level.find((entry: SheetEntry) => entry.key === key)?.children ?? null : null),
+    props.entries,
+  );
+  const level = stack ?? props.entries;
+  const heading = path.length ? props.labelOf(level[0]?.label ?? path[path.length - 1]) : '';
   /**
    * 0.9.0 F (landscape) — the cap is a function of the VIEWPORT, not a constant: '80%' of a short
    * landscape height leaves almost nothing to scroll in, so a short viewport gets more of itself.
@@ -534,10 +585,26 @@ export function ActionSheet(props: {
           </Text>
           {/* Only the entries scroll: the title stays put, and so do the prompt actions (below). */}
           <ScrollView style={styles.sheetScroll} bounces={false}>
-            {props.entries.map((entry) => (
+            {/* 0.9.0 D — inside a submenu: the way back, then the noun's own verbs. */}
+            {path.length ? (
+              <Pressable
+                onPress={() => setPath((current: string[]) => current.slice(0, -1))}
+                accessibilityRole="button"
+                accessibilityLabel={t.common.back}
+                style={({ pressed }) => [styles.sheetRow, pressed && styles.rowPressed]}
+              >
+                <Ionicons name="chevron-back" size={18} color={colors.accent} />
+                <Text style={[styles.sheetLabel, { color: colors.accent }]}>{t.common.back}</Text>
+              </Pressable>
+            ) : null}
+            {path.length ? <Text style={styles.sheetSection}>{heading}</Text> : null}
+            {level.map((entry) => (
               <Pressable
                 key={entry.key}
-                onPress={() => props.onPick(entry.key)}
+                onPress={() => {
+                  if (entry.children?.length) setPath((current: string[]) => [...current, entry.key]);
+                  else props.onPick(entry.key);
+                }}
                 disabled={entry.disabled}
                 accessibilityRole="button"
                 accessibilityState={{ disabled: Boolean(entry.disabled) }}
@@ -564,6 +631,11 @@ export function ActionSheet(props: {
                     </Text>
                   ) : null}
                 </View>
+                {/* A submenu announces itself; a tick says which mode is on. */}
+                {entry.children?.length ? (
+                  <Ionicons name="chevron-forward" size={16} color={colors.faint} />
+                ) : null}
+                {entry.checked ? <Ionicons name="checkmark" size={16} color={colors.accent} /> : null}
               </Pressable>
             ))}
           </ScrollView>
@@ -643,6 +715,8 @@ const styles = StyleSheet.create({
    *  is what a LONG one scrolls inside. */
   sheetScroll: { flexGrow: 0 },
   sheetTitle: { color: colors.text, fontSize: font.body, fontWeight: '700', paddingBottom: space.sm },
+  /** 0.9.0 D: the submenu's own heading, inside the sheet. */
+  sheetSection: { color: colors.faint, fontSize: 11, fontWeight: '700', textTransform: 'uppercase', paddingVertical: 4 },
   sheetRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md, borderRadius: radius.sm },
   sheetLabel: { color: colors.text, fontSize: font.body, flex: 1 },
   sheetLabelDanger: { color: colors.red },
@@ -808,6 +882,8 @@ const styles = StyleSheet.create({
   /** The row itself rides on this, so the actions stay hidden until it slides. */
   swipeSurface: { backgroundColor: colors.bg },
   sessionText: { flex: 1, gap: 1 },
+  /** 0.9.0 E: a ticked row, so the set reads at a glance without a second column. */
+  sessionRowTicked: { backgroundColor: colors.panel },
   sessionTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
   sessionPreview: { color: colors.muted, fontSize: font.small },
   autoChip: {
