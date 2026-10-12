@@ -22,6 +22,19 @@
  * `titleMaxWidth` is the width the title actually gets. It exists so "a long profile name does not
  * truncate at 54 dp" is a test rather than an eyeball: the avatar grew by 26 dp (28 → 54) and that
  * 26 dp comes out of the row's CHROME (the age column and its gaps), never out of the title.
+ *
+ * 0.8.0 A — MORE AIR BETWEEN PROFILE ROWS. The operator asked for "a little bit more space between
+ * profile rows". The cell IS the space (the divider sits at the bottom of the cell), so the ask is
+ * the cell's height: the vertical padding goes 8 → **11** per side and the cell renders **76 dp**
+ * (was 70, +8.6%). Deliberately the middle of the road: a bigger jump starts reading as a layout
+ * bug, a smaller one is invisible on a phone. The two lines keep their 27 dp pitch, and the divider
+ * inset and the horizontal inset are untouched.
+ *
+ * 0.8.0 B — AVATARS 15% BIGGER. `AVATAR_SIZE` 54 → 62 (54 × 1.15 = 62.1, taken down to a whole
+ * number so no face has a half-pixel edge). Everything downstream stays DERIVED: `textX` becomes
+ * 16 + 62 + 16 = 94 and the divider inset is `max(78, inset + avatar)` = 78, which still clears the
+ * face. This is a deliberate departure from the Telegram reference measured for 0.7.0 (54 dp) —
+ * the operator asked for +15%, so do not "fix" it back.
  */
 
 import { AVATAR_SIZE } from '../logic/avatars';
@@ -68,7 +81,9 @@ export type RosterRowGeometry = {
 
 export function rosterRowGeometry(width: number = ROW_WIDTH): RosterRowGeometry {
   const linePitch = 27;
-  const paddingVertical = 8;
+  // 0.8.0 A: 8 → 11. "A little bit more space between profile rows" IS the cell's height, because
+  // the divider sits at the bottom of the cell — so the air the operator asked for is this number.
+  const paddingVertical = 11;
   const inset = ROW_CHROME.inset;
   const avatarGap = 16;
   const textX = inset + AVATAR_SIZE + avatarGap;

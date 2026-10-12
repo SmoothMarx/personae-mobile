@@ -379,7 +379,10 @@ test('0.7.0 A: the row is 54 / 16 / 70, the divider clears the avatar, and a lon
   assert.equal(g.avatarGap, 16, 'the reference gap between avatar and text');
   assert.equal(g.inset, 16, 'the reference inset');
   assert.equal(g.textX, g.inset + g.avatar + g.avatarGap, 'textX is DERIVED — it cannot drift from the three measured numbers');
-  assert.equal(g.height, 70, 'the reference chat row 8:4771 is 360 × 70');
+  // SUPERSEDED IN 0.8.0 (phase A). This assertion read `assert.equal(g.height, 70, 'the reference
+  // chat row 8:4771 is 360 × 70')` through 0.7.x. It moved to 76 for "more air between profile
+  // rows"; the 0.8.0 A test below is the live one. Kept here so the move is visible in the history.
+  assert.equal(g.height, 76, '0.8.0 A: 70 → 76, for more air between profile rows');
   assert.equal(g.height, g.linePitch * 2 + g.paddingVertical * 2, 'two 27 dp lines + padding make the height');
   assert.equal(g.dividerInset, 78, "the reference divider's own inset");
   assert.ok(g.dividerInset > g.inset + g.avatar, 'and it clears the avatar, which is why it is inset at all');
@@ -416,6 +419,25 @@ test('0.7.0 A: the row is built from geometry.ts — no pre-0.7.0 magic numbers 
     !/size \?\? 32|width: 84|paddingLeft: 60|marginLeft: 60/.test(src),
     'the 32 dp face, the 84 dp age column and the 60 dp text offsets are gone',
   );
+});
+
+// ─────────────────────────────── 0.8.0 A: more air between profile rows ──
+
+test('0.8.0 A: the profile cell is 76 dp — "a little bit more space between rows" is the height', () => {
+  const g = rosterRowGeometry();
+  assert.equal(g.paddingVertical, 11, 'the vertical padding moved 8 → 11 per side');
+  assert.equal(g.height, 76, 'so the cell renders 76 dp');
+  assert.ok(g.height > 70, 'it grew — 0.7.0 rendered a 70 dp cell');
+  assert.ok(g.height < 80, 'and not so much that it reads as a layout bug (+8.6%)');
+  assert.equal(g.linePitch, 27, 'the title/preview pitch is untouched');
+  assert.equal(g.linePitch * 2 + g.paddingVertical * 2, g.height, 'the height is still exactly its parts');
+  // What did NOT move: the horizontal inset, the divider inset, the avatar and the text sizes.
+  assert.equal(g.inset, 16);
+  assert.equal(g.dividerInset, 78);
+  assert.equal(g.titleSize, 19);
+  assert.equal(g.previewSize, 18);
+  // The rise is parametric: a narrow phone gets the same air, and the same arithmetic.
+  assert.equal(rosterRowGeometry(320).height, 76);
 });
 
 test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {
