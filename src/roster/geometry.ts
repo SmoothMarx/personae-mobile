@@ -121,6 +121,61 @@ export function estimatedTextWidth(text: string, fontSize: number): number {
   return Math.ceil(text.length * fontSize * 0.5);
 }
 
+// ───────────────────────────────────── the session row's own column (0.8.0 C) ──
+
+/**
+ * 0.8.0 C — "when showing session list, make it less indented", and "the status dot should sit
+ * UNDER the profile picture, offset a bit to the left".
+ *
+ * Through 0.7.x a session row was padded to the profile row's TEXT column (86 dp then, 94 dp now
+ * that the face is 62) — the sessions were pushed as far right as the profile's name, which is what
+ * the operator is asking to undo. The row's left padding becomes the DOT COLUMN instead:
+ *
+ *   dotX      30   the dot column starts here, not at the text column
+ *   column    14   the dot column's own width (unchanged from 0.7.0)
+ *   centre    37   derived: 30 + 14 / 2 — the dot is centred in its column
+ *   gap        8   the same `space.sm` the row already used
+ *   textX     52   derived: 30 + 14 + 8 — 34 dp less indented than 0.7.0's 86, 42 dp less than the
+ *                  profile text column is now
+ *
+ * Why 30: the face spans [16, 78] (centre 43) and the dot's centre is 37, so the dot sits **6 dp
+ * left of the face's centre** — the operator's "offset a bit to the left". It is deliberately NOT
+ * derived from AVATAR_SIZE: the ask is a position under the picture, and deriving it would drag the
+ * whole list sideways whenever the face changes size.
+ *
+ * Automatic (cron/webhook) rows keep this exact column and swap the dot for a clock glyph, so both
+ * row species stay aligned.
+ */
+export const SESSION_DOT_COLUMN = 14;
+
+export type SessionRowGeometry = {
+  /** The dot column's left edge — the session row's left padding. */
+  dotX: number;
+  dotColumn: number;
+  /** Derived: the dot's centre, so "offset a bit to the left" is a number, not an eyeball. */
+  dotCentre: number;
+  gap: number;
+  /** Derived: where the session's title text starts. */
+  textX: number;
+};
+
+export function sessionRowGeometry(): SessionRowGeometry {
+  const dotX = 30;
+  const gap = 8;
+  return {
+    dotX,
+    dotColumn: SESSION_DOT_COLUMN,
+    dotCentre: dotX + SESSION_DOT_COLUMN / 2,
+    gap,
+    textX: dotX + SESSION_DOT_COLUMN + gap,
+  };
+}
+
+/** The profile face's centre on the same axis — the dot's anchor of reference (43 at 62 dp). */
+export function faceCentre(geometry: RosterRowGeometry = rosterRowGeometry()): number {
+  return geometry.inset + geometry.avatar / 2;
+}
+
 /** Does this title fit the row's title column at the reference's title size? */
 export function titleFits(name: string, geometry: RosterRowGeometry = rosterRowGeometry()): boolean {
   return estimatedTextWidth(name, geometry.titleSize) <= geometry.titleMaxWidth;

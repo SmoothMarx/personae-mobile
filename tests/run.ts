@@ -79,7 +79,7 @@ import {
   visibleFieldIds,
   type SettingsFieldId,
 } from '../src/settingsLayout';
-import { DIVIDER_REFERENCE_INSET, ROW_CHROME, ROW_WIDTH, estimatedTextWidth, rosterRowGeometry, titleFits } from '../src/roster/geometry';
+import { DIVIDER_REFERENCE_INSET, ROW_CHROME, ROW_WIDTH, SESSION_DOT_COLUMN, estimatedTextWidth, faceCentre, rosterRowGeometry, sessionRowGeometry, titleFits } from '../src/roster/geometry';
 import {
   UNASSIGNED,
   addSection,
@@ -431,8 +431,11 @@ test('0.7.0 A: the row is built from geometry.ts — no pre-0.7.0 magic numbers 
   assert.match(src, /rosterRowGeometry/, "the row's numbers come from the measured geometry module");
   assert.match(src, /props\.size \?\? AVATAR_SIZE/, 'Face defaults to the 54 dp avatar');
   assert.match(src, /marginLeft: ROW_METRICS\.dividerInset/, 'the divider is inset past the avatar');
-  assert.match(src, /paddingLeft: ROW_METRICS\.textX/, 'the sessions under a row align to the text column');
-  assert.match(src, /minHeight: ROW_METRICS\.height/, 'the row cannot collapse below 70 dp');
+  // SUPERSEDED IN 0.8.0 (phase C): this read `assert.match(src, /paddingLeft: ROW_METRICS\.textX/,
+  // 'the sessions under a row align to the text column')`. The operator asked for a less indented
+  // session list, so the sessions now align to the DOT column. See the 0.8.0 C test.
+  assert.match(src, /paddingLeft: SESSION_METRICS\.dotX/, 'the sessions align to the dot column instead');
+  assert.match(src, /minHeight: ROW_METRICS\.height/, 'the row cannot collapse below its height');
   assert.ok(
     !/size \?\? 32|width: 84|paddingLeft: 60|marginLeft: 60/.test(src),
     'the 32 dp face, the 84 dp age column and the 60 dp text offsets are gone',
@@ -528,6 +531,56 @@ test('0.8.0 B: the longest real profile label on this box still renders in full 
     `"${longest}" must not ellipsize: it needs ${estimatedTextWidth(longest, g.titleSize)} dp of ${g.titleMaxWidth} dp`,
   );
   assert.ok(titleFits(longest, rosterRowGeometry(320)), 'nor on a 320 dp phone');
+});
+
+// ─────────────────────────────── 0.8.0 C: less indent, the dot under the face ──
+
+test('0.8.0 C: a session row is padded to the DOT column (x 30, centre 37), not the text column', () => {
+  const s = sessionRowGeometry();
+  const g = rosterRowGeometry();
+  assert.equal(s.dotX, 30, 'the row starts at the dot column, not at 86/94');
+  assert.equal(s.dotColumn, SESSION_DOT_COLUMN, 'the 0.7.0 dot column keeps its width');
+  assert.equal(s.dotColumn, 14);
+  assert.equal(s.dotCentre, 37, 'derived: 30 + 14 / 2');
+  assert.equal(s.dotCentre, s.dotX + s.dotColumn / 2, 'so the centre cannot drift from the parts');
+  assert.equal(s.gap, 8, 'the gap stays `space.sm`, the one the row already used');
+  assert.equal(s.textX, 52, 'so the title starts at 30 + 14 + 8');
+  assert.ok(s.textX >= 48 && s.textX <= 56, 'and it lands in the 48-56 band the design names');
+  // 0.8.0's own comparison; 0.7.0 padded a session row to its text column of 86.
+  assert.equal(86 - s.textX, 34, '34 dp less indented than 0.7.0');
+  assert.equal(g.textX - s.textX, 42, 'and 42 dp less than the profile text column is now');
+});
+
+test('0.8.0 C: the dot sits under the picture, offset to the left of its centre', () => {
+  const s = sessionRowGeometry();
+  const g = rosterRowGeometry();
+  const centre = g.inset + g.avatar / 2;
+  // The brief for this phase says "the face spans [16, 78] at 62 dp, centre 43" and concludes the dot
+  // is 6 dp left of it. THAT ARITHMETIC IS STALE: 16 + 62 = 78, so the centre is 47 — 43 was the
+  // centre of 0.7.0's 54 dp face (16 + 27). The face grew in phase B, the dot column did not move,
+  // and the offset is therefore 10 dp. The operator's "offset a bit to the left" holds either way;
+  // the binding numbers (x 30 / centre 37 / text in [48,56]) are asserted in the test above.
+  assert.equal(centre, 47, 'the 62 dp face spans [16, 78], so its centre is 47 (not 43)');
+  assert.equal(faceCentre(g), centre, 'and the helper agrees instead of restating the number');
+  assert.equal(centre - s.dotCentre, 10, 'the dot centre is 10 dp left of the face centre');
+  // Under the picture, not beside it: the dot's box falls inside the face's box on the x axis.
+  assert.ok(s.dotX >= g.inset, 'the dot column starts no further left than the face');
+  assert.ok(s.dotX + s.dotColumn <= g.inset + g.avatar, 'and the whole dot column is under the face');
+  assert.ok(s.dotCentre < centre, 'strictly left of centre, never right of it');
+  assert.ok(s.dotCentre > g.inset, 'but still inside the face, not hanging off its left edge');
+});
+
+test('0.8.0 C: the wiring is the geometry — both row species share the column', () => {
+  const src = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+  assert.match(src, /sessionRowGeometry/, 'the session row takes its numbers from geometry.ts');
+  assert.match(src, /paddingLeft: SESSION_METRICS\.dotX/, 'left padding is the dot column');
+  assert.match(src, /sessionDot: \{ width: SESSION_METRICS\.dotColumn/, 'the dot column keeps its width');
+  assert.match(src, /gap: SESSION_METRICS\.gap/);
+  // The clock glyph for automatic runs lives INSIDE the same sessionDot view, so cron rows line up
+  // with conversation rows instead of drifting to their own column.
+  assert.match(src, /<View style=\{styles\.sessionDot\}>/, 'one dot column for both row species');
+  assert.match(src, /time-outline/, 'automatic runs swap the dot for the clock in that same column');
+  assert.ok(!/paddingLeft: ROW_METRICS\.textX/.test(src), 'the old text-column indent is gone, not shadowed');
 });
 
 test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {

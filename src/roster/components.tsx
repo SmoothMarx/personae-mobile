@@ -15,12 +15,15 @@ import { AVATAR_SIZE } from '../logic/avatars';
 import type { DotState, Rollup } from '../logic/lights';
 import { dotColorKey, showBadge } from '../logic/lights';
 import type { RosterProfileRow, SessionRowModel } from '../logic/rosterFeed';
-import { rosterRowGeometry } from './geometry';
+import { rosterRowGeometry, sessionRowGeometry } from './geometry';
 import { SWATCHES } from '../rosterPrefs';
 import { colors, font, radius, space } from '../theme';
 
 /** The row's numbers, derived from the reference and asserted in `tests/run.ts`. */
 const G = rosterRowGeometry();
+
+/** 0.8.0 C: the session row's own column — the dot under the face, not the profile text column. */
+const S = sessionRowGeometry();
 
 /** One profile row's shared metrics, used by the profile row AND the sessions under it. */
 export const ROW_METRICS = {
@@ -31,6 +34,18 @@ export const ROW_METRICS = {
   avatarGap: G.avatarGap,
   textX: G.textX,
   dividerInset: G.dividerInset,
+};
+
+/**
+ * 0.8.0 C — what a session row is padded to: the DOT column, not the text column. Exported so the
+ * wiring is checkable without a renderer, exactly like `ROW_METRICS`.
+ */
+export const SESSION_METRICS = {
+  dotX: S.dotX,
+  dotColumn: S.dotColumn,
+  dotCentre: S.dotCentre,
+  gap: S.gap,
+  textX: S.textX,
 };
 
 export function dotColour(state: DotState): string {
@@ -217,7 +232,11 @@ export function ProfileRow(props: {
   );
 }
 
-/** One session under its profile: light, title, preview, age. Automatic runs are marked. */
+/**
+ * One session under its profile: light, title, preview, age — padded to the DOT column since 0.8.0
+ * C, so the list reads less indented and the dot lands under the face. Automatic runs are marked,
+ * and they swap the dot for a clock glyph in that same column.
+ */
 export function SessionRow(props: {
   model: SessionRowModel;
   automatic: boolean;
@@ -541,14 +560,16 @@ const styles = StyleSheet.create({
   sessionRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: space.sm,
-    paddingLeft: ROW_METRICS.textX,
+    gap: SESSION_METRICS.gap,
+    // 0.8.0 C: the DOT column, not the profile's text column — the list reads less indented, and the
+    // dot lands under the face (centre 37 vs the face's 43, i.e. 6 dp left of it).
+    paddingLeft: SESSION_METRICS.dotX,
     paddingRight: space.md,
     paddingVertical: space.sm,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
   },
-  sessionDot: { width: 14, alignItems: 'center' },
+  sessionDot: { width: SESSION_METRICS.dotColumn, alignItems: 'center' },
   sessionText: { flex: 1, gap: 1 },
   sessionTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
   sessionPreview: { color: colors.muted, fontSize: font.small },
