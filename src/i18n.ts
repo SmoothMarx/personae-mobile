@@ -519,6 +519,35 @@ const en = {
     syncOff: 'This dashboard has no shared-layout store; groups stay on this phone.',
   },
 
+  // ── notifications (0.8.0 H): device-side, and never called "push" ──────
+  notify: {
+    title: 'Notifications',
+    help: 'The app tells you when a session reaches a checkpoint while the app is open. This is not push: nothing is sent from a server, and it does not work with the app closed.',
+    master: 'Warn me about checkpoints',
+    masterHelp: 'Off by default. Nothing is asked for and nothing polls until you turn this on.',
+    waiting: 'Waiting on me',
+    waitingHelp: 'A session asked a question and is blocked until you answer.',
+    finished: 'Finished',
+    finishedHelp: 'A session finished its turn.',
+    waitingUnavailable:
+      'This connection does not report whether a session is waiting, so this cannot be used here.',
+    permission: 'Permission',
+    permissionAsk: 'Allow notifications',
+    permissionAsking: 'Asking…',
+    permissionDenied:
+      'Notifications are blocked for Personae. Open Android Settings → Apps → Personae → Notifications to allow them.',
+    granted: 'Allowed',
+    denied: 'Blocked',
+    notAsked: 'Not asked yet',
+    waitingTitle: 'Waiting on you',
+    finishedTitle: 'Session finished',
+    waitingBody: (name: string) => `${name} is waiting for your answer.`,
+    finishedBody: (name: string) => `${name} finished. Tap to open it.`,
+    activityBody: (name: string) => `${name} has new activity. Tap to open it.`,
+    channelName: 'Session checkpoints',
+    channelHelp: 'Waiting and finished checkpoints from your sessions.',
+  },
+
   common: {
     back: 'Back',
     close: 'Close',
@@ -1026,6 +1055,35 @@ const pt: Strings = {
     dismiss: 'OK',
     syncOn: 'Grupos, ordenação e cores sincronizam com o computador.',
     syncOff: 'Este dashboard não tem arquivo partilhado de layout; os grupos ficam neste telefone.',
+  },
+
+  // ── notificações (0.8.0 H): locais, nunca chamadas "push" ────────────
+  notify: {
+    title: 'Notificações',
+    help: 'A app avisa quando uma sessão chega a um ponto de paragem enquanto está aberta. Isto não é push: nada é enviado de um servidor e não funciona com a app fechada.',
+    master: 'Avisar-me dos pontos de paragem',
+    masterHelp: 'Desligado por omissão. Nada é pedido e nada é consultado enquanto não ligares isto.',
+    waiting: 'À espera de mim',
+    waitingHelp: 'Uma sessão fez uma pergunta e está parada até responderes.',
+    finished: 'Concluída',
+    finishedHelp: 'Uma sessão terminou a sua vez.',
+    waitingUnavailable:
+      'Esta ligação não diz se uma sessão está à espera, por isso isto não pode ser usado aqui.',
+    permission: 'Permissão',
+    permissionAsk: 'Autorizar notificações',
+    permissionAsking: 'A pedir…',
+    permissionDenied:
+      'As notificações estão bloqueadas para a Personae. Abre Definições do Android → Aplicações → Personae → Notificações para autorizar.',
+    granted: 'Autorizadas',
+    denied: 'Bloqueadas',
+    notAsked: 'Ainda não pedidas',
+    waitingTitle: 'À espera de ti',
+    finishedTitle: 'Sessão concluída',
+    waitingBody: (name: string) => `${name} está à espera da tua resposta.`,
+    finishedBody: (name: string) => `${name} terminou. Toca para abrir.`,
+    activityBody: (name: string) => `${name} tem atividade nova. Toca para abrir.`,
+    channelName: 'Pontos de paragem das sessões',
+    channelHelp: 'Pontos de paragem «à espera» e «concluída» das tuas sessões.',
   },
 
   common: {

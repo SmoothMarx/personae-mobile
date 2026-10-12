@@ -42,7 +42,7 @@ import {
   transportSecurityNote,
   type RouteCandidate,
 } from '../src/routes';
-import { checkBaseUrl, DEFAULT_SESSION_TYPES, DEFAULT_SETTINGS, healSurface, normalizeSessionTypes, splitProfiles, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
+import { checkBaseUrl, DEFAULT_NOTIFY, DEFAULT_SESSION_TYPES, DEFAULT_SETTINGS, healSurface, normalizeNotify, normalizeSessionTypes, splitProfiles, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
 import { loadSettings, saveSettings, loadLastSeen, saveLastSeen } from '../src/settingsStore';
 import { __resetStoreProbe } from '../src/storage';
 import { candidateAddresses, dashboardAddressFor, pairPageUrl, parseConnectLink, settingsAfterPairing, PairingError, probeService, redeemPairing, REDEEM_PATH } from '../src/pairing';
@@ -80,6 +80,25 @@ import {
   type SettingsFieldId,
 } from '../src/settingsLayout';
 import { DIVIDER_REFERENCE_INSET, HEADER_ICON_SCALE, MIN_TOUCH_TARGET, ROW_CHROME, ROW_WIDTH, SESSION_DOT_COLUMN, estimatedTextWidth, faceCentre, headerMetrics, rosterRowGeometry, sessionRowGeometry, titleFits } from '../src/roster/geometry';
+import {
+  WATERMARK_MAX_AGE_MS,
+  WATERMARK_MAX_ENTRIES,
+  activityMs,
+  capabilityOfSnapshot,
+  checkpointKey,
+  detectCheckpoints,
+  markNotified,
+  notificationFor,
+  notificationsWanted,
+  permissionLabel,
+  permissionStateOf,
+  pruneWatermark,
+  snapshotOf,
+  surfaceCapability,
+  type CheckpointSession,
+  type Watermark,
+} from '../src/logic/checkpoints';
+import { DEFAULT_POLL_MS, createCheckpointWatcher } from '../src/logic/watcher';
 import {
   UNASSIGNED,
   addSection,
@@ -1056,6 +1075,340 @@ test('0.8.0 G: the pressable box scales too, and the REAL touch target stays >= 
   assert.match(src, /<Ionicons name="settings-outline" size=\{H\.settings\}/);
   // No glyph is left on a literal: 20/16 would silently un-scale one of the three.
   assert.ok(!/size=\{20\}|size=\{16\}/.test(src), 'no header glyph keeps its old literal size');
+});
+
+// ─────────────────── 0.8.0 H: checkpoint notifications ──
+
+/** A row as the dashboard serves it, with only the fields under test present. */
+function snapshotRow(id: string, extra: Partial<CheckpointSession> = {}): CheckpointSession {
+  return { id, profile: 'cody', title: `Sessão ${id}`, source: 'desktop', ...extra };
+}
+
+test('0.8.0 H: the surface says which checkpoints it can actually report', () => {
+  // MEASURED on the live dashboard (2026-10-12): every recents row carries `is_active`, and NO row
+  // carries `waiting` / `needs_input`. So "finished" is exactly knowable and "waiting" is not.
+  const live = [snapshotRow('a', { is_active: true, last_active: 1_700_000_000 }), snapshotRow('b', { is_active: false })];
+  const capability = surfaceCapability(live);
+  assert.deepEqual(capability, { waiting: false, finished: true, basis: 'is_active' });
+
+  // A surface that serves the waiting field (even as `false`) can report it.
+  assert.equal(surfaceCapability([snapshotRow('a', { waiting: false })]).waiting, true);
+  assert.equal(surfaceCapability([snapshotRow('a', { needs_input: false })]).waiting, true);
+  assert.equal(surfaceCapability([snapshotRow('a', { needsInput: false })]).waiting, true);
+  // A surface with neither cannot report "finished" exactly: the fallback basis is 'activity'.
+  const bare = [snapshotRow('a', { last_active: 1 })];
+  assert.deepEqual(surfaceCapability(bare), { waiting: false, finished: false, basis: 'activity' });
+  assert.equal(capabilityOfSnapshot(snapshotOf(live)).basis, 'is_active');
+  assert.deepEqual(surfaceCapability([]), { waiting: false, finished: false, basis: 'activity' });
+});
+
+test('0.8.0 H: a first poll baseline fires nothing, and then each transition fires once', () => {
+  const first = snapshotOf([snapshotRow('a', { is_active: true, last_active: 1_700_000_000 })]);
+  assert.deepEqual(detectCheckpoints({ previous: null, current: first, kinds: { waiting: true, finished: true } }), [],
+    'nothing to compare on the first poll — no false alarm at startup');
+
+  // The turn ends: is_active true → false, with last_active advanced. That is the exact "finished".
+  const before = first;
+  const after = snapshotOf([snapshotRow('a', { is_active: false, last_active: 1_700_000_900 })]);
+  const events = detectCheckpoints({
+    previous: before,
+    current: after,
+    kinds: { waiting: true, finished: true },
+    capability: surfaceCapability([snapshotRow('a', { is_active: true })]),
+  });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'finished');
+  assert.equal(events[0].sessionId, 'a');
+  assert.equal(events[0].profile, 'cody');
+  assert.equal(events[0].basis, 'is_active', 'the exact rule, not the fallback');
+
+  // Dedupe: the same transition, seen again, is nothing.
+  const seen = markNotified({}, events);
+  assert.deepEqual(
+    detectCheckpoints({ previous: before, current: after, kinds: { waiting: true, finished: true }, seen }),
+    [],
+    'the same (session, kind, last_active) never fires twice',
+  );
+  // A LATER checkpoint on the same session is a new key, and does fire.
+  const later = snapshotOf([snapshotRow('a', { is_active: true, last_active: 1_700_001_000 })]);
+  const finishedLater = snapshotOf([snapshotRow('a', { is_active: false, last_active: 1_700_001_900 })]);
+  const second = detectCheckpoints({ previous: later, current: finishedLater, kinds: { waiting: true, finished: true }, seen });
+  assert.equal(second.length, 1, 'a new last_active is a new checkpoint');
+  assert.notEqual(second[0].key, events[0].key);
+});
+
+test('0.8.0 H: "still running" and "no change" are not checkpoints', () => {
+  const active = snapshotRow('a', { is_active: true, last_active: 1_700_000_000 });
+  const capability = surfaceCapability([active]);
+  // Still running, nothing moved.
+  assert.deepEqual(
+    detectCheckpoints({ previous: snapshotOf([active]), current: snapshotOf([active]), kinds: { waiting: true, finished: true }, capability }),
+    [],
+  );
+  // is_active went false but the activity did NOT advance: a stale flag, not a finished turn.
+  const stale = snapshotOf([snapshotRow('a', { is_active: false, last_active: 1_700_000_000 })]);
+  assert.deepEqual(detectCheckpoints({ previous: snapshotOf([active]), current: stale, kinds: { waiting: true, finished: true }, capability }), []);
+  // A brand-new session is not a checkpoint either: there is no transition to have happened.
+  const mixed = snapshotOf([snapshotRow('a', { is_active: true, last_active: 1_700_000_000 }), snapshotRow('new', { is_active: false, last_active: 1_700_000_500 })]);
+  assert.deepEqual(detectCheckpoints({ previous: snapshotOf([active]), current: mixed, kinds: { waiting: true, finished: true }, capability }), []);
+  // The kind switch is respected: nothing fires with both off, whatever happened.
+  const after = snapshotOf([snapshotRow('a', { is_active: false, last_active: 1_700_000_900 })]);
+  assert.deepEqual(detectCheckpoints({ previous: snapshotOf([active]), current: after, kinds: { waiting: false, finished: false }, capability }), []);
+  assert.deepEqual(
+    detectCheckpoints({ previous: snapshotOf([active]), current: after, kinds: { waiting: true, finished: false }, capability }),
+    [],
+    'the waiting switch does not turn on finished notifications',
+  );
+});
+
+test('0.8.0 H: a waiting checkpoint fires, and only when the surface can see one', () => {
+  const before = snapshotOf([snapshotRow('a', { waiting: false, last_active: 1_700_000_000 })]);
+  const nowWaiting = snapshotOf([snapshotRow('a', { waiting: true, last_active: 1_700_000_100 })]);
+  const capable = surfaceCapability([snapshotRow('x', { waiting: false })]);
+  const events = detectCheckpoints({ previous: before, current: nowWaiting, kinds: { waiting: true, finished: true }, capability: capable });
+  assert.equal(events.length, 1);
+  assert.equal(events[0].kind, 'waiting');
+  assert.equal(events[0].basis, 'is_active');
+  // `needs_input` is the same state under the other name the dashboard uses.
+  const needsInput = snapshotOf([snapshotRow('a', { needs_input: true, last_active: 1_700_000_100 })]);
+  assert.equal(detectCheckpoints({ previous: before, current: needsInput, kinds: { waiting: true, finished: true }, capability: capable })[0].kind, 'waiting');
+  // A surface that serves NO waiting field never reports one — asserted, so the Settings switch's
+  // disabled-with-reason state rests on a fact rather than a hope.
+  const blind = surfaceCapability([snapshotRow('a', { is_active: true })]);
+  assert.deepEqual(
+    detectCheckpoints({ previous: before, current: nowWaiting, kinds: { waiting: true, finished: true }, capability: blind }),
+    [],
+    'the live dashboard serves no `waiting` field, so this cannot fire there today',
+  );
+  // Already waiting in the previous poll is not a new checkpoint.
+  assert.deepEqual(
+    detectCheckpoints({ previous: nowWaiting, current: nowWaiting, kinds: { waiting: true, finished: true }, capability: capable }),
+    [],
+  );
+});
+
+test('0.8.0 H: the fallback basis is used, and named, when is_active is not served', () => {
+  const before = snapshotOf([snapshotRow('a', { last_active: 1_700_000_000 })]);
+  const after = snapshotOf([snapshotRow('a', { last_active: 1_700_000_900 })]);
+  const bare = surfaceCapability([snapshotRow('a', { last_active: 1 })]);
+  const events = detectCheckpoints({ previous: before, current: after, kinds: { waiting: true, finished: true }, capability: bare });
+  assert.equal(events.length, 1, 'new activity still tells the user something happened');
+  assert.equal(events[0].basis, 'activity', 'and the event says WHICH rule fired');
+  // The copy differs, so the app can never claim "finished" on a surface that cannot see it.
+  const content = notificationFor(events[0]);
+  assert.equal(content.body, t.notify.activityBody('Sessão a'));
+  assert.notEqual(content.body, t.notify.finishedBody('Sessão a'));
+});
+
+test('0.8.0 H: the thread on screen is suppressed, and so is a hidden session type', () => {
+  const before = snapshotOf([
+    snapshotRow('open', { is_active: true, last_active: 1_700_000_000 }),
+    snapshotRow('other', { is_active: true, last_active: 1_700_000_000 }),
+    snapshotRow('cron-1', { source: 'cron', is_active: true, last_active: 1_700_000_000 }),
+  ]);
+  const after = snapshotOf([
+    snapshotRow('open', { is_active: false, last_active: 1_700_000_900 }),
+    snapshotRow('other', { is_active: false, last_active: 1_700_000_900 }),
+    snapshotRow('cron-1', { source: 'cron', is_active: false, last_active: 1_700_000_900 }),
+  ]);
+  const capability = surfaceCapability([snapshotRow('a', { is_active: true })]);
+  // Phase D's filter: automatic runs are OFF by default, so a cron run never notifies.
+  const withTypes = detectCheckpoints({
+    previous: before,
+    current: after,
+    kinds: { waiting: true, finished: true },
+    types: DEFAULT_SESSION_TYPES,
+    capability,
+  });
+  assert.deepEqual(withTypes.map((event) => event.sessionId), ['open', 'other'], 'the cron run is silent');
+  // …and with the type switched ON it does notify, so the silence above is the filter and not a bug.
+  assert.deepEqual(
+    detectCheckpoints({ previous: before, current: after, kinds: { waiting: true, finished: true }, types: { sessions: true, automatic: true }, capability })
+      .map((event) => event.sessionId),
+    ['cron-1', 'open', 'other'],
+  );
+  // The thread being read right now is suppressed.
+  assert.deepEqual(
+    detectCheckpoints({ previous: before, current: after, kinds: { waiting: true, finished: true }, types: DEFAULT_SESSION_TYPES, openThreadId: 'open', capability })
+      .map((event) => event.sessionId),
+    ['other'],
+  );
+});
+
+test('0.8.0 H: the watermark is capped, pruned by age, and survives as data alone', () => {
+  const now = 1_700_000_000_000;
+  const fresh: Watermark = { a: now - 1000, b: now - 2000 };
+  assert.deepEqual(markNotified(fresh, [], now), fresh, 'nothing notified, nothing changed');
+  const old = now - 30 * 24 * 60 * 60 * 1000;
+  assert.deepEqual(pruneWatermark({ a: now - 1000, stale: old }, now), { a: now - 1000 }, 'a 30-day-old entry is gone');
+  assert.equal(WATERMARK_MAX_AGE_MS, 7 * 24 * 60 * 60 * 1000);
+  const many: Watermark = {};
+  for (let i = 0; i < WATERMARK_MAX_ENTRIES + 50; i += 1) many[`k${i}`] = now - i;
+  const capped = pruneWatermark(many, now);
+  assert.equal(Object.keys(capped).length, WATERMARK_MAX_ENTRIES, 'the map cannot grow without bound');
+  assert.ok('k0' in capped, 'the newest survives');
+  assert.ok(!(`k${WATERMARK_MAX_ENTRIES + 49}` in capped), 'the oldest is dropped first');
+  // The key is (sessionId, kind, last_active) — three parts, so two kinds never collide.
+  assert.notEqual(checkpointKey('a', 'waiting', 1), checkpointKey('a', 'finished', 1));
+  assert.equal(checkpointKey('a', 'finished', 1), checkpointKey('a', 'finished', 1), 'and it is stable');
+  assert.equal(activityMs(1_700_000_000), 1_700_000_000_000, 'epoch seconds become ms');
+  assert.equal(activityMs(1_700_000_000_000), 1_700_000_000_000, 'ms stays ms');
+  assert.equal(activityMs(null), null);
+});
+
+test('0.8.0 H: the watcher is single-flight, foreground-only, and resumes at once', async () => {
+  let foreground = true;
+  const skips: string[] = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
+  let resolves: (() => void)[] = [];
+  const scheduled: { run: () => void; ms: number }[] = [];
+  let cancelled = 0;
+
+  const watcher = createCheckpointWatcher({
+    poll: async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await new Promise<void>((resolve) => resolves.push(resolve));
+      inFlight -= 1;
+    },
+    isForeground: () => foreground,
+    intervalMs: DEFAULT_POLL_MS,
+    schedule: (run, ms) => {
+      scheduled.push({ run, ms });
+      return () => {
+        cancelled += 1;
+      };
+    },
+    onSkip: (reason) => skips.push(reason),
+  });
+
+  assert.equal(DEFAULT_POLL_MS, 30_000, 'a 30 s poll, not a tight loop');
+  assert.equal(watcher.running, false);
+  await watcher.tick();
+  assert.equal(watcher.polls, 0, 'nothing polls before start()');
+  assert.deepEqual(skips, ['stopped']);
+
+  /** Let the promise chain settle without a fake clock: a few microtask turns is enough. */
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  };
+
+  watcher.start();
+  assert.equal(watcher.running, true);
+  assert.equal(watcher.polls, 1, 'start() polls at once, so the user never waits 30 s for the first pass');
+  // While that pass is still in flight, two more ticks are refused: single-flight.
+  await watcher.tick();
+  await watcher.tick();
+  assert.equal(watcher.polls, 1, 'one fetch, however many ticks arrive');
+  assert.deepEqual(skips.slice(1), ['inflight', 'inflight']);
+  assert.equal(scheduled.length, 0, 'and the next timer is only armed once a pass settles');
+  resolves.shift()?.();
+  await flush();
+  assert.equal(maxInFlight, 1, 'two polls never overlap');
+  assert.equal(scheduled.length, 1, 'the chain arms exactly ONE timer for the next pass');
+  assert.equal(scheduled[0].ms, DEFAULT_POLL_MS, '30 s later, not immediately');
+
+  // Backgrounded: no poll at all, and the chain goes DORMANT — the armed timer is allowed to fire,
+  // the pass refuses, and nothing re-arms behind the app's back.
+  foreground = false;
+  const armedBefore = scheduled.length;
+  await watcher.tick();
+  assert.equal(watcher.polls, 1, 'nothing polls while the app is in the background');
+  assert.deepEqual(skips[skips.length - 1], 'background');
+  assert.equal(scheduled.length, armedBefore, 'and a refused pass does not arm another timer');
+
+  // Back in the foreground: resume polls IMMEDIATELY rather than waiting another 30 s, and the chain
+  // picks itself back up.
+  foreground = true;
+  void watcher.resume();
+  await flush();
+  assert.equal(watcher.polls, 2, 'resume is an immediate pass');
+  assert.equal(scheduled.length, armedBefore, 'the chain re-arms once that pass settles, not before');
+  resolves.shift()?.();
+  await flush();
+  assert.equal(scheduled.length, armedBefore + 1, 'and then the chain is running again');
+  watcher.stop();
+  assert.equal(watcher.running, false);
+  const afterStop = cancelled;
+  await watcher.tick();
+  assert.equal(watcher.polls, 2, 'and a stopped watcher is silent');
+  assert.ok(cancelled >= afterStop, 'with its pending timer cancelled');
+});
+
+test('0.8.0 H: the permission is three states, and only the master switch asks', () => {
+  assert.equal(permissionStateOf(null), 'not-asked');
+  assert.equal(permissionStateOf(undefined), 'not-asked');
+  assert.equal(permissionStateOf({ granted: true }), 'granted');
+  assert.equal(permissionStateOf({ status: 'granted' }), 'granted');
+  assert.equal(permissionStateOf({ status: 'undetermined', canAskAgain: true }), 'not-asked');
+  assert.equal(permissionStateOf({ status: 'denied', canAskAgain: true }), 'not-asked', 'it can still be asked');
+  assert.equal(permissionStateOf({ status: 'denied', canAskAgain: false }), 'denied', 'a real block');
+  assert.equal(permissionLabel('granted'), t.notify.granted);
+  assert.equal(permissionLabel('denied'), t.notify.denied);
+  assert.equal(permissionLabel('not-asked'), t.notify.notAsked);
+  // Nothing at all is wanted until the master switch is on — that is what keeps the permission
+  // unasked at cold start and the poll stopped.
+  assert.deepEqual(DEFAULT_NOTIFY, { enabled: false, waiting: true, finished: true });
+  assert.equal(notificationsWanted(DEFAULT_NOTIFY), false);
+  assert.equal(notificationsWanted({ enabled: true, waiting: false, finished: false }), false, 'both kinds off = silent');
+  assert.equal(notificationsWanted({ enabled: true, waiting: true, finished: false }), true);
+  // A 0.7.0 blob has no `notifications` key and must load as OFF, per field.
+  assert.deepEqual(normalizeNotify(undefined), { enabled: false, waiting: true, finished: true });
+  assert.deepEqual(normalizeNotify({ enabled: true }), { enabled: true, waiting: true, finished: true });
+  assert.deepEqual(normalizeNotify('junk'), { enabled: false, waiting: true, finished: true });
+  assert.deepEqual(normalizeNotify({ finished: false }), { enabled: false, waiting: true, finished: false });
+});
+
+test('0.8.0 H: the app wires it — channel, handler, tap-to-open, and no "push" anywhere', () => {
+  const layout = readFileSync(join(process.cwd(), 'app', '_layout.tsx'), 'utf8');
+  assert.match(layout, /installHandler\(\)/, 'the presentation handler is installed once');
+  assert.match(layout, /ensureChannel\(\)/, 'and the Android channel with it');
+  assert.match(layout, /onResponse\(/, 'a tapped notification is handled');
+  assert.match(layout, /pathname: '\/thread\/\[id\]', params: \{ id: sessionId, profile \}/, 'and opens that session');
+  assert.match(layout, /useCheckpoints\(\{ openThreadId \}\)/, 'the watcher runs from the layout, once');
+  assert.match(layout, /usePathname\(\)/, 'the thread being read comes from the route');
+  const native = readFileSync(join(process.cwd(), 'src', 'notifications.ts'), 'utf8');
+  assert.match(native, /shouldShowBanner: true/, 'SDK 57 renamed the presentation keys: read the installed types');
+  assert.match(native, /shouldShowList: true/);
+  assert.ok(!/shouldShowAlert/.test(native), 'the deprecated key is not used');
+  assert.match(native, /AndroidImportance\.HIGH/, 'high importance, so it is a heads-up warning');
+  assert.match(native, /trigger: null/, 'shown now, never scheduled for later');
+  assert.equal(native.split("import * as Notifications").length - 1, 1, 'one module owns the native API');
+  // Settings asks from the master switch, and the hook only ever reads.
+  const screen = readFileSync(join(process.cwd(), 'app', 'settings.tsx'), 'utf8');
+  assert.match(screen, /askPermission\(\)/, 'the request lives behind the switch');
+  assert.match(screen, /readPermission\(\)/, 'and the state is read on open');
+  assert.match(screen, /disabled=\{!capability\.waiting\}/, 'a kind this surface cannot report is off-with-reason');
+  assert.match(screen, /t\.notify\.waitingUnavailable/, 'and carries the reason');
+  const hook = readFileSync(join(process.cwd(), 'src', 'useCheckpoints.ts'), 'utf8');
+  assert.ok(!/askPermission/.test(hook), 'the hook NEVER asks for a permission');
+  assert.ok(!/getPermissionsAsync|requestPermissionsAsync/.test(hook), 'nor touches the native permission API');
+  assert.match(hook, /surfaceCapability\(rows\)/, 'the capability comes from the rows actually served');
+  // §5: device-side notifications must never be described as "push". What is scanned for is the
+  // CLAIM ("push notification(s) ..."), not the word: prose that says this is not push, or that
+  // closed-app delivery would need FCM, is the honest part and stays. (`router.push(...)` is the
+  // navigation API, not a claim about delivery.)
+  const words = ['src/notifications.ts', 'src/logic/checkpoints.ts', 'src/useCheckpoints.ts', 'src/i18n.ts'];
+  for (const file of words) {
+    const source = readFileSync(join(process.cwd(), file), 'utf8');
+    for (const line of source.split('\n')) {
+      if (!/push[-\s]notifications?\b/i.test(line)) continue;
+      if (/\bnot\b|\bnever\b|nothing|\bno\b|isn't/i.test(line)) continue;
+      assert.fail(`${file}: device-side notifications called "push": ${line.trim().slice(0, 90)}`);
+    }
+  }
+  // The dependency is expo-notifications, installed to match the SDK — and no gesture library crept
+  // in beside it.
+  const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
+  assert.match(pkg.dependencies['expo-notifications'] ?? '', /^~57\./, 'installed for SDK 57');
+  const manifest = JSON.parse(readFileSync(join(process.cwd(), 'app.json'), 'utf8')) as {
+    expo: { android: { permissions: string[] }; plugins: unknown[] };
+  };
+  assert.ok(manifest.expo.android.permissions.includes('android.permission.POST_NOTIFICATIONS'));
+  assert.ok(manifest.expo.plugins.some((plugin) => plugin === 'expo-notifications'), 'the config plugin is declared');
 });
 
 test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {
@@ -3025,7 +3378,7 @@ async function main(): Promise<void> {
     // SUPERSEDED IN 0.8.0 (phase D): this read `['connection', 'language', 'tailscale']`. The
     // Session-types checkboxes are a user-facing ask from the operator's own list, so they are on
     // the main screen — right after the language, and still not behind Advanced.
-    assert.deepEqual(closed, ['connection', 'language', 'sessionTypes', 'tailscale']);
+    assert.deepEqual(closed, ['connection', 'language', 'sessionTypes', 'notifications', 'tailscale']);
     assert.equal(closed[0], 'connection', 'Connection is the FIRST thing on the screen');
     assert.ok(!isAdvanced('sessionTypes'), 'the session-type checkboxes are NOT internals');
     assert.equal(visibleFieldIds(false).indexOf('sessionTypes'), 2, 'they sit after the language');

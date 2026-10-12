@@ -32,6 +32,7 @@ import { contactsOf, probeFromHealth, statusColor, type Probe } from '../src/log
 import {
   checkBaseUrl,
   surfaceLabel,
+  DEFAULT_NOTIFY,
   DEFAULT_SESSION_TYPES,
   DEFAULT_SETTINGS,
   redactKey,
@@ -39,6 +40,14 @@ import {
   type Settings,
 } from '../src/settings';
 import { anySessionType, sessionTypeChoices, type SessionType } from '../src/logic/rosterFeed';
+import {
+  permissionLabel,
+  surfaceCapability,
+  type CheckpointSession,
+  type PermissionState,
+  type SurfaceCapability,
+} from '../src/logic/checkpoints';
+import { askPermission, readPermission } from '../src/notifications';
 import {
   checkRoute,
   moveRoute,
@@ -172,6 +181,79 @@ export default function SettingsScreen() {
 
   const [logNote, setLogNote] = useState('');
   const [logStatus, setLogStatus] = useState<string | null>(null);
+
+  // ── 0.8.0 H: checkpoint notifications ──────────────────────────────────────
+  /**
+   * The permission is READ on open and only ever REQUESTED from the master switch — a cold start
+   * never prompts. The capability is measured from one probe of the connection, because "this
+   * connection does not report whether a session is waiting" has to be a fact about the server, not
+   * a guess (the live dashboard serves `is_active` but no `waiting` field).
+   */
+  const [permission, setPermission] = useState<PermissionState>('not-asked');
+  const [asking, setAsking] = useState(false);
+  const [capability, setCapability] = useState<SurfaceCapability>({
+    waiting: false,
+    finished: false,
+    basis: 'is_active',
+  });
+
+  useEffect(() => {
+    let alive = true;
+    void readPermission().then((value) => {
+      if (alive) setPermission(value);
+    });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const probeCapability = useCallback(async () => {
+    if (!form.baseUrl.trim() || !form.apiKey) return;
+    const backend = createBackend({ ...form, profiles: effectiveProfiles });
+    try {
+      const slices = await backend.sidebar('all', { recents: 40, cron: 0 });
+      setCapability(surfaceCapability([...(slices.recents ?? []), ...(slices.cron ?? [])] as CheckpointSession[]));
+    } catch {
+      /* an unreachable host leaves the switches where they are; the banner says why */
+    } finally {
+      backend.dispose();
+    }
+  }, [effectiveProfiles, form]);
+
+  useEffect(() => {
+    void probeCapability();
+    // Deliberately keyed on the address and the credential: those are what change what the server
+    // can answer. Re-probing on every keystroke would be a request per keystroke for decoration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.baseUrl, form.apiKey, form.surface]);
+
+  /** The master switch. Turning it ON is the one and only moment the permission is requested. */
+  const toggleNotifications = useCallback(
+    async (enabled: boolean) => {
+      const next = { ...(form.notifications ?? DEFAULT_NOTIFY), enabled };
+      setForm((prev) => ({ ...prev, notifications: next }));
+      update({ notifications: next });
+      if (!enabled) {
+        setAsking(false);
+        return;
+      }
+      setAsking(true);
+      const state = await askPermission();
+      setPermission(state);
+      setAsking(false);
+      void probeCapability();
+    },
+    [form.notifications, probeCapability, update],
+  );
+
+  const setNotifyKind = useCallback(
+    (kind: 'waiting' | 'finished', enabled: boolean) => {
+      const next = { ...(form.notifications ?? DEFAULT_NOTIFY), [kind]: enabled };
+      setForm((prev) => ({ ...prev, notifications: next }));
+      update({ notifications: next });
+    },
+    [form.notifications, update],
+  );
 
   /**
    * Export log (PLAN-UI.md §9): one .txt in the cache dir, handed to the OS share sheet. Nothing is
@@ -534,6 +616,70 @@ export default function SettingsScreen() {
         })}
         <Text style={styles.help}>{t.settings.sessionTypesHelp}</Text>
         {anySessionType(form.sessionTypes) ? null : <Text style={styles.warning}>{t.settings.typeNoneWarning}</Text>}
+      </View>
+
+      {/* ── Notifications (0.8.0 H) ─────────────────────────────────────────
+          DEVICE-SIDE local notifications, never called "push": they can only fire while the app is
+          running, because the phone's own poll is the only thing that knows a checkpoint happened.
+          The master switch is off by default and the Android permission is requested from THIS
+          switch — once, on the way on. The permission state is shown as it really is. */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.notify.title}</Text>
+        <View style={styles.rowBetween}>
+          <Text style={styles.label}>{t.notify.master}</Text>
+          <Switch
+            value={Boolean(form.notifications?.enabled)}
+            onValueChange={(value) => void toggleNotifications(value)}
+            accessibilityLabel={t.notify.master}
+          />
+        </View>
+        <Text style={styles.help}>{t.notify.masterHelp}</Text>
+
+        {form.notifications?.enabled ? (
+          <>
+            <View style={styles.rowBetween}>
+              <Text style={styles.label}>{t.notify.waiting}</Text>
+              <Switch
+                value={Boolean(form.notifications?.waiting)}
+                onValueChange={(value) => setNotifyKind('waiting', value)}
+                disabled={!capability.waiting}
+                accessibilityLabel={t.notify.waiting}
+                accessibilityState={{ disabled: !capability.waiting }}
+              />
+            </View>
+            <Text style={styles.help}>{capability.waiting ? t.notify.waitingHelp : t.notify.waitingUnavailable}</Text>
+
+            <View style={styles.rowBetween}>
+              <Text style={styles.label}>{t.notify.finished}</Text>
+              <Switch
+                value={Boolean(form.notifications?.finished)}
+                onValueChange={(value) => setNotifyKind('finished', value)}
+                accessibilityLabel={t.notify.finished}
+              />
+            </View>
+            <Text style={styles.help}>{t.notify.finishedHelp}</Text>
+            {capability.basis === 'activity' ? <Text style={styles.warning}>{t.notify.waitingUnavailable}</Text> : null}
+          </>
+        ) : null}
+
+        <View style={styles.rowBetween}>
+          <Text style={styles.label}>{t.notify.permission}</Text>
+          <Text style={styles.help}>{permissionLabel(permission)}</Text>
+        </View>
+        {permission === 'denied' ? (
+          <Text style={styles.warning}>{t.notify.permissionDenied}</Text>
+        ) : permission === 'not-asked' && form.notifications?.enabled ? (
+          <Pressable
+            onPress={() => void toggleNotifications(true)}
+            disabled={asking}
+            accessibilityRole="button"
+            accessibilityLabel={t.notify.permissionAsk}
+            style={({ pressed }) => [styles.secondary, pressed && styles.pressed, asking && styles.disabled]}
+          >
+            <Text style={styles.secondaryText}>{asking ? t.notify.permissionAsking : t.notify.permissionAsk}</Text>
+          </Pressable>
+        ) : null}
+        <Text style={styles.help}>{t.notify.help}</Text>
       </View>
 
       {/* ── Advanced (0.7.0): CLOSED by default ──────────────────────────────

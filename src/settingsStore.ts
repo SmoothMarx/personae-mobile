@@ -13,6 +13,7 @@ import {
   DEFAULT_SETTINGS,
   healSurface,
   LAST_SEEN_STORE_KEY,
+  normalizeNotify,
   normalizeSessionTypes,
   SECRET_STORE_KEY,
   SETTINGS_STORE_KEY,
@@ -86,6 +87,8 @@ export async function loadSettings(): Promise<Settings> {
     // off" — never as `undefined`, which would make `types[name]` throw at the first filter. Only a
     // real boolean is trusted, per bucket, so a half-written key cannot take the other down with it.
     sessionTypes: normalizeSessionTypes(parsed.sessionTypes),
+    // 0.8.0 H: same ADDITIVE rule — a blob without `notifications` loads with the master switch OFF.
+    notifications: normalizeNotify(parsed.notifications),
     everReachedGateway: asBoolean(parsed.everReachedGateway, false),
     lastTriggerResult: asString(parsed.lastTriggerResult, ''),
     lastErrorKind: asString(parsed.lastErrorKind, ''),
@@ -129,6 +132,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     openTailscaleOnFailure: settings.openTailscaleOnFailure,
     insecureRouteAck: settings.insecureRouteAck,
     sessionTypes: settings.sessionTypes,
+    notifications: settings.notifications,
     everReachedGateway: settings.everReachedGateway,
     lastTriggerResult: settings.lastTriggerResult,
     lastErrorKind: settings.lastErrorKind,

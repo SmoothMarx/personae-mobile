@@ -23,13 +23,15 @@
         "backgroundColor": "#0b0f14"
       },
       "permissions": [
-        "android.permission.INTERNET"
+        "android.permission.INTERNET",
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "plugins": [
       "expo-router",
       "expo-secure-store",
       "expo-status-bar",
+      "expo-notifications",
       [
         "expo-build-properties",
         {

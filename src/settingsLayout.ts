@@ -19,12 +19,13 @@ import { WIZARD_STEP_IDS } from './connect/wizard';
 
 export const ADVANCED_OPEN_BY_DEFAULT = false;
 
-export type SettingsArea = 'connection' | 'tailscale' | 'sessions' | 'advanced';
+export type SettingsArea = 'connection' | 'tailscale' | 'sessions' | 'notifications' | 'advanced';
 
 export type SettingsFieldId =
   | 'connection'
   | 'language'
   | 'sessionTypes'
+  | 'notifications'
   | 'tailscale'
   | 'surface'
   | 'baseUrl'
@@ -56,6 +57,8 @@ export const SETTINGS_FIELDS: readonly SettingsField[] = [
   // main screen, right after the language — not behind Advanced. "An option in settings where users
   // can check/uncheck the type of sessions they want to see" is an ask from the operator's own list.
   { id: 'sessionTypes', area: 'sessions' },
+  // 0.8.0 H: the checkpoint switches are user-facing too — on the main screen, after Session types.
+  { id: 'notifications', area: 'notifications' },
   { id: 'tailscale', area: 'tailscale' },
   { id: 'surface', area: 'advanced' },
   { id: 'baseUrl', area: 'advanced' },

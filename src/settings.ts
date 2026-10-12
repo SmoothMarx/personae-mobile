@@ -42,6 +42,25 @@ export type SessionTypes = {
 
 export const DEFAULT_SESSION_TYPES: SessionTypes = { sessions: true, automatic: false };
 
+/**
+ * 0.8.0 H — checkpoint notifications. DEVICE-SIDE local notifications, not push: they can only fire
+ * while the app is running, because the only thing that knows about a checkpoint is this phone's own
+ * poll (see `src/logic/checkpoints.ts`).
+ *
+ * The master switch is OFF by default and the permission is NOT requested at cold start: it is asked
+ * for exactly once, when the user turns the master switch on. Nothing polls before that.
+ */
+export type NotifySettings = {
+  /** The master switch. Off until the user asks. */
+  enabled: boolean;
+  /** "Waiting on me" — a session blocked on the user. */
+  waiting: boolean;
+  /** "Finished" — a turn that ended. */
+  finished: boolean;
+};
+
+export const DEFAULT_NOTIFY: NotifySettings = { enabled: false, waiting: true, finished: true };
+
 export type Settings = {
   /** Origin of the chosen surface, e.g. http://10.0.0.15:9119 . Empty = not configured. */
   baseUrl: string;
@@ -88,6 +107,9 @@ export type Settings = {
    */
   sessionTypes: SessionTypes;
 
+  // ── checkpoint notifications (0.8.0 H) ──────────────────────────────────────
+  notifications: NotifySettings;
+
   // ── diagnostics (persisted; read-only on screen) ─────────────────────────────
   /** Has the whole chain (tunnel + route + gateway) ever worked on this phone? */
   everReachedGateway: boolean;
@@ -128,6 +150,8 @@ export const DEFAULT_SETTINGS: Settings = {
   insecureRouteAck: false,
   // 0.8.0 D: conversations are the default view; cron/webhook runs are off until asked for.
   sessionTypes: DEFAULT_SESSION_TYPES,
+  // 0.8.0 H: off until the user asks — nothing polls and no permission is requested until then.
+  notifications: DEFAULT_NOTIFY,
   everReachedGateway: false,
   lastTriggerResult: '',
   lastErrorKind: '',
@@ -149,6 +173,18 @@ export function normalizeSessionTypes(value: unknown): SessionTypes {
     sessions: typeof row.sessions === 'boolean' ? row.sessions : DEFAULT_SESSION_TYPES.sessions,
     automatic: typeof row.automatic === 'boolean' ? row.automatic : DEFAULT_SESSION_TYPES.automatic,
   };
+}
+
+/**
+ * Coerce a stored `notifications` object. Same rule as `sessionTypes`: per-field, default on a
+ * missing or malformed value, so a 0.7.0 blob (no such key) loads as "off, both kinds armed" and a
+ * half-written key cannot take the other fields down with it.
+ */
+export function normalizeNotify(value: unknown): NotifySettings {
+  const row = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const bool = (key: keyof NotifySettings): boolean =>
+    typeof row[key] === 'boolean' ? (row[key] as boolean) : DEFAULT_NOTIFY[key];
+  return { enabled: bool('enabled'), waiting: bool('waiting'), finished: bool('finished') };
 }
 
 /**
