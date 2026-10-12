@@ -21,12 +21,19 @@ export type AvatarStore = {
 };
 
 /**
- * 0.7.0: 28 → **54**, matching Telegram's own chat row (reference measured 2026-10-11: avatar slot
+ * 0.7.0: 28 → 54, matching Telegram's own chat row (reference measured 2026-10-11: avatar slot
  * 58 × 58 holding a 54 × 54 circle, on a 360 × 70 row). `avatarKey()` carries the size, so this one
  * number also retires every 28 px blob sitting in AsyncStorage — no `AVATAR_VERSION` bump needed.
  * The row geometry that goes with it lives in `src/roster/geometry.ts`.
+ *
+ * 0.8.0 B — **62**, the operator's "make the profile pictures 15% bigger": 54 × 1.15 = 62.1, taken
+ * down to a whole number so no face has a half-pixel edge. This is a DELIBERATE departure from the
+ * Telegram reference (54 dp) — do not "fix" it back to 54. `Face` defaults to this constant and the
+ * row's `textX` (16 + 62 + 16 = 94) and divider inset are derived from it, so the knock-ons follow
+ * instead of being re-hardcoded. Because `avatarKey()` carries the size, the 54 px blobs already in
+ * AsyncStorage can never be served again — asserted, not assumed, in the 0.8.0 B test.
  */
-export const AVATAR_SIZE = 54;
+export const AVATAR_SIZE = 62;
 export const AVATAR_VERSION = 'v1';
 
 /** Cache key: profile + size, versioned so a format change cannot serve a stale blob. */

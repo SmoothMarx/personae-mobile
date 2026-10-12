@@ -79,6 +79,9 @@ export type RosterRowGeometry = {
   titleMaxWidth: number;
 };
 
+/** The reference's own divider inset, kept as the FLOOR the derived value may not go below. */
+export const DIVIDER_REFERENCE_INSET = 78;
+
 export function rosterRowGeometry(width: number = ROW_WIDTH): RosterRowGeometry {
   const linePitch = 27;
   // 0.8.0 A: 8 → 11. "A little bit more space between profile rows" IS the cell's height, because
@@ -96,7 +99,9 @@ export function rosterRowGeometry(width: number = ROW_WIDTH): RosterRowGeometry 
     inset,
     avatarGap,
     textX,
-    dividerInset: 78,
+    // 0.8.0 B: DERIVED, never a bare digit again — the divider has to clear whatever the face is.
+    // At 62 dp the face ends at 78, which is exactly the reference inset, so the floor is what wins.
+    dividerInset: Math.max(DIVIDER_REFERENCE_INSET, inset + AVATAR_SIZE),
     titleSize: 19,
     previewSize: 18,
     linePitch,

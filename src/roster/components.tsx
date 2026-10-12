@@ -24,7 +24,7 @@ const G = rosterRowGeometry();
 
 /** One profile row's shared metrics, used by the profile row AND the sessions under it. */
 export const ROW_METRICS = {
-  /** 54: the face the reference draws, and what `avatarKey()` caches. */
+  /** 62: 0.8.0 B's +15% face (was 54), and what `avatarKey()` caches. */
   avatar: AVATAR_SIZE,
   height: G.height,
   inset: G.inset,
@@ -69,7 +69,7 @@ export function Dot({ rollup, size = 8 }: { rollup: Rollup; size?: number }) {
   );
 }
 
-/** 54 dp face, monogram until the avatar lands — never blocking the paint (F1; 0.7.0 size). */
+/** 62 dp face (0.8.0 B: 54 + 15%), monogram until the avatar lands — never blocking the paint (F1). */
 export function Face(props: { url: string | null; monogram: string; size?: number; tint?: string | null }) {
   const size = props.size ?? AVATAR_SIZE;
   const round = { width: size, height: size, borderRadius: size / 2 };
@@ -210,7 +210,8 @@ export function ProfileRow(props: {
           </Text>
         </Pressable>
       ) : null}
-      {/* The divider clears the avatar (inset 78 > 16 + 54), so the row reads as a 70 dp cell. */}
+      {/* The divider is DERIVED to clear the avatar (max(78, 16 + 62) = 78), so the row still
+          reads as one cell — 76 dp since 0.8.0 A. */}
       <View style={styles.divider} />
     </View>
   );

@@ -12,6 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { connect as netConnect } from 'node:net';
 import { join } from 'node:path';
 import { createMockGateway } from '../mock/server.mjs';
@@ -78,7 +79,7 @@ import {
   visibleFieldIds,
   type SettingsFieldId,
 } from '../src/settingsLayout';
-import { ROW_CHROME, ROW_WIDTH, estimatedTextWidth, rosterRowGeometry, titleFits } from '../src/roster/geometry';
+import { DIVIDER_REFERENCE_INSET, ROW_CHROME, ROW_WIDTH, estimatedTextWidth, rosterRowGeometry, titleFits } from '../src/roster/geometry';
 import {
   UNASSIGNED,
   addSection,
@@ -363,11 +364,11 @@ test('f1: the cache key is profile + size, and the monogram is the fallback', ()
   assert.equal(monogramFor('cody'), 'C');
   assert.equal(monogramFor('cody', 'Beta'), 'B');
   assert.equal(monogramFor(''), '?');
-  assert.equal(AVATAR_SIZE, 54, '0.7.0 A: the reference row draws a 54 dp face');
+  assert.equal(AVATAR_SIZE, 62, '0.8.0 B: 54 × 1.15 = 62.1, taken down to a whole number');
   assert.equal(
     avatarKey('cody'),
-    'personae.avatar.v1.54.cody',
-    'the default size IS the row size, so a 28 px blob in AsyncStorage can never be served again',
+    'personae.avatar.v1.62.cody',
+    'the default size IS the row size, so a 54 px blob in AsyncStorage can never be served again',
   );
 });
 
@@ -375,7 +376,9 @@ test('f1: the cache key is profile + size, and the monogram is the fallback', ()
 
 test('0.7.0 A: the row is 54 / 16 / 70, the divider clears the avatar, and a long name fits', () => {
   const g = rosterRowGeometry();
-  assert.equal(g.avatar, 54, 'the reference ellipse 8:4776 is 54 × 54');
+  // SUPERSEDED IN 0.8.0 (phase B): this read `assert.equal(g.avatar, 54, ...)`. The operator asked
+  // for faces 15% bigger, so the live value is 62 — see the 0.8.0 B test below.
+  assert.equal(g.avatar, 62, '0.8.0 B: 54 → 62');
   assert.equal(g.avatarGap, 16, 'the reference gap between avatar and text');
   assert.equal(g.inset, 16, 'the reference inset');
   assert.equal(g.textX, g.inset + g.avatar + g.avatarGap, 'textX is DERIVED — it cannot drift from the three measured numbers');
@@ -385,15 +388,27 @@ test('0.7.0 A: the row is 54 / 16 / 70, the divider clears the avatar, and a lon
   assert.equal(g.height, 76, '0.8.0 A: 70 → 76, for more air between profile rows');
   assert.equal(g.height, g.linePitch * 2 + g.paddingVertical * 2, 'two 27 dp lines + padding make the height');
   assert.equal(g.dividerInset, 78, "the reference divider's own inset");
-  assert.ok(g.dividerInset > g.inset + g.avatar, 'and it clears the avatar, which is why it is inset at all');
+  // SUPERSEDED IN 0.8.0 (phase B): this demanded a strict `>` — "clears the avatar". At 62 dp the
+  // face's right edge lands exactly ON 78, so the honest predicate is "does not sit under the face"
+  // (>=). The divider is the cell's bottom border, drawn below the avatar, so flush is fine and the
+  // 0.7.0 value is what the derivation keeps as its floor.
+  assert.ok(g.dividerInset >= g.inset + g.avatar, 'the divider never starts under the avatar');
   assert.equal(g.titleSize, 19);
   assert.equal(g.previewSize, 18);
-  // The widest profile name on this box is 15 characters (`design-guardian`, measured 2026-10-11).
-  // The assertion keeps room for 20, i.e. five more than any profile that exists.
+  // The widest profile name on this box is 15 characters (`design-guardian`, measured 2026-10-11
+  // and re-measured 2026-10-12 against the live /api/profiles: only `default` carries a
+  // display_name, so every other row's label IS its profile name).
   const LONG = 'personae-mobile-cody';
   assert.equal(LONG.length, 20);
   assert.ok(titleFits('design-guardian', g), 'the longest real profile name fits');
-  assert.ok(titleFits(LONG, g), `20 characters at ${g.titleSize} dp must fit ${g.titleMaxWidth} dp`);
+  // SUPERSEDED IN 0.8.0 (phase B): at a 62 dp face this 20-character string no longer fits — it
+  // needs 190 dp of the 188 dp column, and 19 characters is the limit. The real names are 15
+  // characters or fewer, so nothing on this box truncates; see the 0.8.0 B test.
+  assert.ok(
+    estimatedTextWidth(LONG, g.titleSize) > g.titleMaxWidth,
+    '20 characters now overflow by 2 dp — the +8 dp the face took came out of the title column',
+  );
+  assert.ok(titleFits('personae-mobile-cod', g), '19 characters is the limit at 62 dp');
   // Falsifiable: the 26 dp the avatar took (28 → 54) had to come out of the CHROME. At the
   // reference's 19 dp title, the pre-0.7.0 age column (84 dp) would not have held this name.
   const withOldChrome = 360 - (16 + 54 + 16) - 6 - 84 - 4 - 12;
@@ -405,7 +420,10 @@ test('0.7.0 A: the row is 54 / 16 / 70, the divider clears the avatar, and a lon
   assert.equal(ROW_WIDTH, 360);
   // A narrow phone is still not a truncation: the geometry is width-parametric.
   assert.ok(rosterRowGeometry(320).titleMaxWidth < g.titleMaxWidth);
-  assert.ok(rosterRowGeometry(320).titleMaxWidth >= 156, 'even at 320 dp the column holds 16 characters');
+  // SUPERSEDED IN 0.8.0 (phase B): this demanded >= 156 (16 characters at 54 dp). At 62 dp a 320 dp
+  // canvas leaves 148 dp, i.e. 15 characters — still enough for the longest real name on this box.
+  assert.ok(rosterRowGeometry(320).titleMaxWidth >= 143, 'even at 320 dp the column holds 15 characters');
+  assert.ok(titleFits('design-guardian', rosterRowGeometry(320)), 'and that is the longest real name');
 });
 
 test('0.7.0 A: the row is built from geometry.ts — no pre-0.7.0 magic numbers survive', () => {
@@ -438,6 +456,78 @@ test('0.8.0 A: the profile cell is 76 dp — "a little bit more space between ro
   assert.equal(g.previewSize, 18);
   // The rise is parametric: a narrow phone gets the same air, and the same arithmetic.
   assert.equal(rosterRowGeometry(320).height, 76);
+});
+
+// ─────────────────────────────── 0.8.0 B: profile pictures 15% bigger ──
+
+test('0.8.0 B: the face is 62 dp and every knock-on is DERIVED from it', () => {
+  const g = rosterRowGeometry();
+  assert.equal(AVATAR_SIZE, 62, '54 × 1.15 = 62.1, taken down to 62 so no face has a half-pixel edge');
+  assert.equal(g.avatar, 62, 'the row draws the constant instead of restating the number');
+  assert.equal(g.textX, 94, 'textX follows: 16 inset + 62 face + 16 gap');
+  assert.equal(g.textX, g.inset + g.avatar + g.avatarGap, 'and it is still DERIVED, never a literal');
+  assert.ok(g.dividerInset >= 78, 'the divider clears the face, whose right edge is at 16 + 62 = 78');
+  assert.equal(g.dividerInset, Math.max(DIVIDER_REFERENCE_INSET, g.inset + g.avatar), 'derived, with 78 as the floor');
+  // The departure from the Telegram reference measured for 0.7.0 is written down where the number
+  // lives, so the next reader does not "fix" 62 back to 54.
+  const src = readFileSync(join(process.cwd(), 'src', 'logic', 'avatars.ts'), 'utf8');
+  assert.match(src, /DELIBERATE departure/, 'the departure from Telegram\'s 54 dp is recorded in avatars.ts');
+  assert.match(src, /AVATAR_SIZE = 62/);
+  const row = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+  assert.match(row, /const G = rosterRowGeometry\(\)/, 'the two rows keep taking their numbers from geometry.ts');
+});
+
+test('0.8.0 B: cached art cannot survive the resize — avatarKey() carries the size', async () => {
+  const written: Record<string, string> = {};
+  const store = {
+    getItem: async (key: string) => written[key] ?? null,
+    setItem: async (key: string, value: string) => {
+      written[key] = value;
+    },
+  };
+  let calls = 0;
+  const fetchOnce = async () => {
+    calls += 1;
+    return PNG;
+  };
+  // A 0.7.0 install leaves a 54 px blob behind; the 0.8.0 face must not be served it.
+  const old = createAvatarCache({ store });
+  assert.equal(await old.load('cody', 54, fetchOnce), PNG);
+  assert.equal(written[avatarKey('cody', 54)], PNG, 'the 54 px blob is in the store');
+  assert.equal(calls, 1);
+
+  const fresh = createAvatarCache({ store });
+  assert.equal(await fresh.load('cody', 62, fetchOnce), PNG, 'the new size is fetched, not inherited');
+  assert.equal(calls, 2, 'the stale blob was not served for the 62 dp face');
+  assert.equal(written[avatarKey('cody', 62)], PNG, 'and it caches under its own key');
+  assert.equal(fresh.peek('cody', 62), PNG, 'so the next paint is served from memory');
+  assert.equal(fresh.peek('cody', 54), null, 'while 54 is a different entry entirely');
+});
+
+test('0.8.0 B: the longest real profile label on this box still renders in full at 62 dp', () => {
+  const g = rosterRowGeometry();
+  let names: string[] = [];
+  try {
+    names = readdirSync(join(homedir(), '.hermes', 'profiles'), { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    /* not this box — the declared list below is the same one the live probe returned */
+  }
+  if (!names.length) {
+    names = ['archivist', 'bd-lead', 'bizzy-talk', 'cody', 'default', 'design-guardian', 'dobbs', 'gordon', 'homie',
+      'ip-coordinator', 'marv', 'marvin', 'matt', 'onboarding-lead', 'product-owner', 'scholes', 'secretary',
+      'stamos', 'style-warden', 'tuchman', 'vintage', 'watchdog'];
+  }
+  // `label: row.label || row.name` in the backend, and only `default` carries a display_name on the
+  // live box — so the longest LABEL is the longest profile NAME.
+  const longest = names.slice().sort((a, b) => b.length - a.length)[0] ?? 'default';
+  assert.ok(longest.length >= 15, `this box really has a long-ish name (${longest}, ${longest.length} chars)`);
+  assert.ok(
+    titleFits(longest, g),
+    `"${longest}" must not ellipsize: it needs ${estimatedTextWidth(longest, g.titleSize)} dp of ${g.titleMaxWidth} dp`,
+  );
+  assert.ok(titleFits(longest, rosterRowGeometry(320)), 'nor on a 320 dp phone');
 });
 
 test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {
