@@ -166,6 +166,17 @@ import {
   shouldClaim,
 } from '../src/logic/swipe';
 import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
+import {
+  DEVICE_LOCAL_SETTING_IDS,
+  PORTABLE_PREFERENCE_KEY,
+  PORTABLE_SETTING_IDS,
+  SCOPE_LABEL_KEY,
+  scopeOfRow,
+  scopeOfSetting,
+  settingsRows,
+  siblingBelow,
+  visiblePageIds,
+} from '../src/settingsPages';
 import { PLUS_KEYS, profileFromPickerKey, profilePickerEntries, profileSlug, plusMenuEntries } from '../src/roster/plusMenu';
 
 // Most assertions below were written against the Portuguese copy, so the suite runs in PT
@@ -3749,6 +3760,77 @@ async function main(): Promise<void> {
     assert.equal(body.keys['sections-v1'].rev, 10);
     meta.dirty['sections-v1'] = SECTIONS;
     assert.equal(buildPut(meta)!.keys['sections-v1'].rev, 11);
+  });
+
+  // ─────────────────────────────── 0.9.0 Phase B: Settings as a page of rows ──
+  /** The row help sentences, read out of the string table — the page's own promises. */
+  const PAGE_HELP_TEXT: Record<string, string> = {
+    agentHelp: t.settings.pages.agentHelp,
+    notificationsHelp: t.settings.pages.notificationsHelp,
+    gatewayHelp: t.settings.pages.gatewayHelp,
+    advancedHelp: t.settings.pages.advancedHelp,
+  };
+
+  test('0.9.0 B: Settings is a page of rows, and Notifications is a SIBLING of Agent Preferences', () => {
+    const rows = settingsRows();
+    assert.deepEqual(
+      rows.map((row) => row.id),
+      ['agent', 'notifications', 'gateway', 'advanced'],
+      'the index is a list of section rows, in this order',
+    );
+    assert.deepEqual(visiblePageIds(), ['agent', 'notifications', 'gateway', 'advanced']);
+    assert.equal(siblingBelow('notifications'), 'agent', 'Notifications sits UNDER Agent Preferences');
+    assert.equal(siblingBelow('gateway'), null, 'Gateway Settings is a top-level row, not a sibling');
+    assert.equal(rows.filter((row) => row.sibling).length, 1, 'exactly one row is a sibling');
+    // every row opens a sub-page that is NOT the index, and every one explains itself in a sentence
+    for (const row of rows) {
+      assert.notEqual(row.id, 'index');
+      assert.ok(PAGE_HELP_TEXT[row.help].split(' ').length >= 6, `${row.id} help must be a sentence`);
+    }
+  });
+
+  test('0.9.0 B: the portable/device-local split is visible, and matches the SERVER key list', () => {
+    // every scope has words, never a bare colour
+    assert.deepEqual(Object.keys(SCOPE_LABEL_KEY).sort(), ['device-local', 'mixed', 'portable']);
+    // a gateway anything is device-local BY CLASS, never by accident
+    for (const id of ['baseUrl', 'apiKey', 'surface', 'routes', 'tailscale', 'connection', 'language']) {
+      assert.equal(scopeOfSetting(id), 'device-local', `${id} must never sync`);
+    }
+    for (const id of ['sessionTypes', 'notifications']) {
+      assert.notEqual(scopeOfSetting(id), 'device-local', `${id} is portable`);
+    }
+    assert.equal(scopeOfSetting('made-up'), 'unknown', 'an unclassified setting says so');
+    // the rows carry the scope the user sees
+    assert.equal(scopeOfRow('gateway'), 'device-local');
+    assert.equal(scopeOfRow('agent'), 'portable');
+    assert.equal(scopeOfRow('notifications'), 'mixed', 'the switches sync; the OS permission cannot');
+    // …and the app's portable keys are EXACTLY the document's accepted keys (read out of the plugin)
+    const plugin = readFileSync(
+      join(process.cwd(), 'server/personae-mobile-state/dashboard/preferences.py'),
+      'utf8',
+    );
+    const block = plugin.slice(plugin.indexOf('PORTABLE_KEYS'), plugin.indexOf('DEVICE_LOCAL_KEYS'));
+    const serverKeys = [...block.matchAll(/"([a-z-]+)"/g)].map((match) => match[1]).sort();
+    assert.deepEqual(
+      Object.values(PORTABLE_PREFERENCE_KEY).slice().sort(),
+      serverKeys,
+      'the page promises the same portable set the server document accepts',
+    );
+  });
+
+  test('0.9.0 B: promoting Settings to a page deleted nothing', () => {
+    // 0.7.0's field plan is the record of what the screen holds; every field must be classified
+    const unclassified = SETTINGS_FIELDS.map((field) => field.id).filter(
+      (id) => scopeOfSetting(id) === 'unknown',
+    );
+    assert.deepEqual(unclassified, [], 'a field on the screen that is not in the split is a bug');
+    // …and the two classes are disjoint by construction, so no setting is both
+    const both = PORTABLE_SETTING_IDS.filter((id) => (DEVICE_LOCAL_SETTING_IDS as readonly string[]).includes(id));
+    assert.deepEqual(both, []);
+    // the advanced disclosure survives as its own row, with its own page
+    assert.ok(settingsRows().some((row) => row.id === 'advanced'));
+    assert.equal(ADVANCED_OPEN_BY_DEFAULT, false, '0.7.0\'s closed-by-default disclosure is untouched');
+    assert.ok(visibleFieldIds(true).length >= visibleFieldIds(false).length);
   });
 
   // ─────────────────────────────── 0.9.0 Phase A: the state surface ──

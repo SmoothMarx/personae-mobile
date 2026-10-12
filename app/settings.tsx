@@ -20,6 +20,14 @@ import ConnectWizard from '../src/connect/Wizard';
 import { peerAddress, peerRoute, peersPort, peersState, type PeerRow, type PeersResult } from '../src/logic/peers';
 import { probeTcp } from '../src/native/tailscale';
 import { ADVANCED_OPEN_BY_DEFAULT } from '../src/settingsLayout';
+import {
+  SCOPE_LABEL_KEY,
+  scopeOfRow,
+  settingsRows,
+  siblingBelow,
+  type PreferenceScope,
+  type SettingsPageId,
+} from '../src/settingsPages';
 import { buildLogDocument, log } from '../src/logging';
 import { parseErrorForDisplay } from '../src/api/display';
 import { xhrTransport } from '../src/api/transport';
@@ -64,6 +72,21 @@ import { colors, font, radius, space } from '../src/theme';
 
 type TestResult = { label: string; probe: Probe; ms: number | null; detail: string };
 
+/** The sub-page title key, kept as a literal map so `t.settings.pages` is read statically typed. */
+const SETTINGS_PAGE_TITLE_KEY = {
+  agent: 'agentTitle',
+  notifications: 'notificationsTitle',
+  gateway: 'gatewayTitle',
+  advanced: 'advancedTitle',
+} as const;
+
+const SETTINGS_PAGE_HELP_KEY = {
+  agent: 'agentHelp',
+  notifications: 'notificationsHelp',
+  gateway: 'gatewayHelp',
+  advanced: 'advancedHelp',
+} as const;
+
 export default function SettingsScreen() {
   const { settings, ready, savedAt, update } = useSettings();
   const router = useRouter();
@@ -76,6 +99,12 @@ export default function SettingsScreen() {
   const hydrated = useRef(false);
 
   const { diagnostic, busy, recheck, openTailscale } = useConnectivity();
+  /**
+   * 0.9.0 Phase B — Settings is a PAGE OF ROWS. `index` is the main page; every other value is the
+   * sub-page a row opens, drawn inside this same route so a back tap is one state change and the
+   * wizard's in-progress state is never thrown away by a navigation.
+   */
+  const [page, setPage] = useState<SettingsPageId>('index');
   const [newRoute, setNewRoute] = useState('');
   const [routeProblem, setRouteProblem] = useState<string | null>(null);
   const routeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -429,8 +458,65 @@ export default function SettingsScreen() {
     [form, update],
   );
 
+  /**
+   * 0.9.0 Phase B — the main page. Section rows, each opening its sub-page, and every row carrying the
+   * scope chip that makes the portable/device-local split visible (goal §5). Notifications sits UNDER
+   * Agent Preferences as a sibling row — it is not a top-bar destination and not a sixth icon.
+   */
+  const scopeLabel = (scope: PreferenceScope): string =>
+    scope === 'portable' ? t.settings.scopePortable : scope === 'mixed' ? t.settings.scopeMixed : t.settings.scopeDeviceLocal;
+
+  if (page === 'index') {
+    return (
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        <Text style={styles.pageTitle}>{t.settings.pagesTitle}</Text>
+        <Text style={styles.help}>{t.settings.pagesHelp}</Text>
+        {settingsRows().map((row) => {
+          const parent = siblingBelow(row.id);
+          return (
+            <Pressable
+              key={row.id}
+              onPress={() => setPage(row.id)}
+              accessibilityRole="button"
+              accessibilityLabel={`${t.settings.pages[SETTINGS_PAGE_TITLE_KEY[row.id]]} — ${t.settings.pages[SETTINGS_PAGE_HELP_KEY[row.id]]}`}
+              style={({ pressed }) => [styles.pageRow, parent ? styles.pageRowSibling : null, pressed && styles.pressed]}
+            >
+              <View style={styles.pageRowText}>
+                <Text style={styles.label}>{t.settings.pages[SETTINGS_PAGE_TITLE_KEY[row.id]]}</Text>
+                <Text style={styles.help}>{t.settings.pages[SETTINGS_PAGE_HELP_KEY[row.id]]}</Text>
+              </View>
+              <View style={styles.scopeChip}>
+                <Text style={styles.scopeChipText}>{scopeLabel(row.scope)}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+            </Pressable>
+          );
+        })}
+        {/* The split, said out loud once, on the page where it matters. */}
+        <Text style={styles.help}>{t.settings.scopeHelp}</Text>
+      </ScrollView>
+    );
+  }
+
+  const backRow = (
+    <Pressable
+      onPress={() => setPage('index')}
+      accessibilityRole="button"
+      accessibilityLabel={t.settings.pagesTitle}
+      style={({ pressed }) => [styles.pageBack, pressed && styles.pressed]}
+    >
+      <Ionicons name="chevron-back" size={16} color={colors.accent} />
+      <Text style={styles.pageBackText}>{t.settings.pagesTitle}</Text>
+      <View style={styles.scopeChip}>
+        <Text style={styles.scopeChipText}>{scopeLabel(scopeOfRow(page as Exclude<SettingsPageId, 'index'>))}</Text>
+      </View>
+    </Pressable>
+  );
+
   return (
     <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      {backRow}
+      <Text style={styles.pageTitle}>{t.settings.pages[SETTINGS_PAGE_TITLE_KEY[page]]}</Text>
       <Text style={styles.hint}>{t.settings.autoSave}</Text>
       {savedAt ? (
         <Text style={styles.savedLine}>
@@ -438,6 +524,9 @@ export default function SettingsScreen() {
         </Text>
       ) : null}
 
+      {/* ── 0.9.0 B: GATEWAY SETTINGS — everything about reaching the gateway ── */}
+      {page === 'gateway' ? (
+        <>
       {/* 0.6.0 — Connection first: the heal note (once), the wizard, and this phone's paired identity. */}
       {settings.healNote ? (
         <View style={[styles.field, { borderColor: colors.amber, borderWidth: 1, borderRadius: radius.md, padding: space.md }]}>
@@ -558,6 +647,12 @@ export default function SettingsScreen() {
         </Pressable>
       </Modal>
 
+        </>
+      ) : null}
+
+      {/* ── 0.9.0 B: AGENT PREFERENCES — language + which session types the list shows ── */}
+      {page === 'agent' ? (
+        <>
       {/* Interface language: one tap, applied and saved at once (no Save button). */}
       <View style={styles.field}>
         <Text style={styles.label}>{t.settings.language}</Text>
@@ -618,6 +713,12 @@ export default function SettingsScreen() {
         {anySessionType(form.sessionTypes) ? null : <Text style={styles.warning}>{t.settings.typeNoneWarning}</Text>}
       </View>
 
+        </>
+      ) : null}
+
+      {/* ── 0.9.0 B: NOTIFICATIONS — a SIBLING row of Agent Preferences, not a sixth top-bar icon ── */}
+      {page === 'notifications' ? (
+        <>
       {/* ── Notifications (0.8.0 H) ─────────────────────────────────────────
           DEVICE-SIDE local notifications, never called "push": they can only fire while the app is
           running, because the phone's own poll is the only thing that knows a checkpoint happened.
@@ -682,6 +783,12 @@ export default function SettingsScreen() {
         <Text style={styles.help}>{t.notify.help}</Text>
       </View>
 
+        </>
+      ) : null}
+
+      {/* ── 0.9.0 B: ADVANCED — 0.7.0's disclosure, unchanged, now its own sub-page ── */}
+      {page === 'advanced' ? (
+        <>
       {/* ── Advanced (0.7.0): CLOSED by default ──────────────────────────────
           Nothing was deleted. Connection type, address, bearer, routes, the tailnet internals,
           status and the log all live here, one tap away. */}
@@ -1145,6 +1252,8 @@ export default function SettingsScreen() {
       </View>
         </>
       ) : null}
+        </>
+      ) : null}
     </ScrollView>
   );
 }
@@ -1196,6 +1305,31 @@ function DiagRow(props: { label: string; value: string }) {
 }
 
 const styles = StyleSheet.create({
+  // ── 0.9.0 B: Settings as a page of rows ────────────────────────────────
+  pageTitle: { color: colors.text, fontSize: font.title, fontWeight: '700' },
+  pageRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    backgroundColor: colors.panel,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    padding: space.md,
+  },
+  /** the user's "sibling row under Agent Preferences": the same row, indented, so it reads as part of it. */
+  pageRowSibling: { marginLeft: space.lg, marginTop: -space.sm + 2 },
+  pageRowText: { flex: 1, gap: 2 },
+  scopeChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.pill,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  scopeChipText: { color: colors.muted, fontSize: 10, fontWeight: '600' },
+  pageBack: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: space.xs },
+  pageBackText: { color: colors.accent, fontSize: font.body, fontWeight: '600', flex: 1 },
   screen: { flex: 1, backgroundColor: colors.bg },
   content: { padding: space.md, paddingBottom: space.xl * 2, gap: space.md },
   hint: { color: colors.faint, fontSize: font.small },

@@ -260,6 +260,26 @@ const en = {
       'Connection type, address, key, routes, tailnet internals, status and the log. Nothing here is needed for normal use.',
     advancedShow: 'Show advanced settings',
     advancedHide: 'Hide advanced settings',
+    // ── 0.9.0 B: Settings as a page of rows ──────────────────────────────
+    pagesTitle: 'Settings',
+    pagesHelp: 'Each row opens its own page. Everything below it is unchanged.',
+    pages: {
+      agentTitle: 'Agent Preferences',
+      agentHelp: 'The language of this app and which session types the list shows.',
+      notificationsTitle: 'Notifications',
+      notificationsHelp: 'Which checkpoints warn you, and the phone permission they need.',
+      gatewayTitle: 'Gateway Settings',
+      gatewayHelp: 'How this phone reaches the gateway: pairing, Tailscale, address and key.',
+      advancedTitle: 'Advanced',
+      advancedHelp: 'Connection type, address, key, routes, tailnet internals, status and the log.',
+    },
+    scopeTitle: 'What syncs',
+    scopePortable: 'Syncs',
+    scopeDeviceLocal: 'This phone only',
+    scopeMixed: 'Partly syncs',
+    scopeHelp:
+      'A setting is either shared with the desktop or kept on this phone. A gateway address or a key is never shared: the desktop dials itself and this phone dials the tailnet.',
+    scopeOpen: 'See what is shared',
   },
 
   routes: {
@@ -798,6 +818,26 @@ const pt: Strings = {
       'Tipo de ligação, endereço, chave, rotas, detalhes do tailnet, estado e o registo. Nada aqui é preciso para o uso normal.',
     advancedShow: 'Mostrar definições avançadas',
     advancedHide: 'Esconder definições avançadas',
+    // ── 0.9.0 B: Settings as a page of rows ──────────────────────────────
+    pagesTitle: 'Definições',
+    pagesHelp: 'Cada linha abre a sua própria página. Nada abaixo mudou.',
+    pages: {
+      agentTitle: 'Preferências do Agente',
+      agentHelp: 'A língua desta app e que tipos de sessão aparecem na lista.',
+      notificationsTitle: 'Notificações',
+      notificationsHelp: 'Que pontos de controlo avisam, e a permissão do telefone que precisam.',
+      gatewayTitle: 'Definições do Gateway',
+      gatewayHelp: 'Como este telefone chega ao gateway: emparelhamento, Tailscale, endereço e chave.',
+      advancedTitle: 'Avançado',
+      advancedHelp: 'Tipo de ligação, endereço, chave, rotas, interior do tailnet, estado e registo.',
+    },
+    scopeTitle: 'O que sincroniza',
+    scopePortable: 'Sincroniza',
+    scopeDeviceLocal: 'Só neste telefone',
+    scopeMixed: 'Sincroniza em parte',
+    scopeHelp:
+      'Cada definição ou é partilhada com o desktop, ou fica neste telefone. Um endereço de gateway ou uma chave nunca são partilhados: o desktop liga a si próprio e este telefone liga ao tailnet.',
+    scopeOpen: 'Ver o que é partilhado',
   },
 
   routes: {
