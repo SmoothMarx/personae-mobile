@@ -1,0 +1,28 @@
+name: personae-mobile-state
+version: 1.0.0
+kind: backend
+author: cody (Personae Mobile)
+description: >-
+  The state surface Personae Mobile 0.9.0 needs and the gateway's JSON-RPC does not offer,
+  without re-implementing anything core already does.
+
+  POST /sessions/{id}/archive and POST /sessions/{id}/delete call the DASHBOARD'S OWN endpoint
+  functions in-process (hermes_cli/web_routers/sessions.py rename_session_endpoint /
+  delete_session_endpoint), so profile scoping, the 409 active-write guard, the idempotent
+  already-absent delete and the corrupt-store 503 are the dashboard's, never a second copy. The one
+  rule added here is the 0.9.0 goal's: a PINNED session is not archivable, answered as
+  409 with error "pinned" instead of failing silently. "hidden" is never collapsed into "archived".
+
+  GET/POST /preferences is the per-user preference document (revision + preferences) with per-KEY
+  last-write-wins, so a phone editing notifications and a desktop editing session types both keep
+  their edit. Portable preferences only: device-local keys (gateway URL + bearer, routes, pairing,
+  device identity, OS notification permission, push token, language, timeouts, diagnostics) are
+  refused BY NAME WITH THE REASON, because syncing "Gateway Settings" would overwrite the desktop's
+  localhost dial with the phone's tailnet address and break the desktop. GET /preferences/keys
+  publishes that split so no client has to guess at it.
+
+  Stored per profile at state/preferences-<profile>.json (0600, atomic temp+rename, flock). No secret
+  is ever read, written or logged by this backend.
+
+  Deployed under ~/.hermes/plugins/ (user data): no core file is edited and `hermes update` cannot
+  clobber it. See SERVER-PATCH.md.

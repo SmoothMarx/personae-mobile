@@ -1,0 +1,11 @@
+{
+  "name": "personae-mobile-state",
+  "label": "Personae Mobile - State",
+  "description": "Archive/delete verbs routed at the dashboard's own endpoints (pinned sessions refused), plus the portable-preference document for Personae Mobile and the desktop pane.",
+  "version": "1.0.0",
+  "icon": "database",
+  "api": "plugin_api.py",
+  "tab": {
+    "hidden": true
+  }
+}

@@ -22,6 +22,7 @@ _TMP = tempfile.mkdtemp(prefix="personae-server-tests-")
 os.environ["HERMES_HOME"] = _TMP  # audit log -> temp, never the live dashboard-auth.log
 os.environ["PERSONAE_MOBILE_AUTH_STATE_DIR"] = os.path.join(_TMP, "auth-state")
 os.environ["MESSENGER_STATE_DIR"] = os.path.join(_TMP, "messenger-state")
+os.environ["PERSONAE_STATE_DIR"] = os.path.join(_TMP, "personae-state")
 
 # A strong, obviously-fake bearer for the tests (never a real credential).
 TEST_BEARER = "T3st-Only_" + "".join(chr(65 + (i * 7) % 26) + chr(97 + (i * 11) % 26) + str(i % 10)
@@ -48,6 +49,18 @@ def auth_state_dir():
     store.reset_for_tests()
     yield d
     store.reset_for_tests()
+
+
+@pytest.fixture()
+def state_dir():
+    """personae-mobile-state's own store: emptied for each test, never the live one."""
+    d = Path(os.environ["PERSONAE_STATE_DIR"])
+    if d.exists():
+        for f in d.iterdir():
+            if f.is_file():
+                f.unlink()
+    d.mkdir(parents=True, exist_ok=True)
+    yield d
 
 
 @pytest.fixture()

@@ -16,12 +16,15 @@ CHECK=0
 
 declare -A FILES=(
   [personae-mobile-auth]="__init__.py plugin.yaml store.py qr.py dashboard/manifest.json dashboard/plugin_api.py"
+  [personae-mobile-state]="__init__.py plugin.yaml dashboard/manifest.json dashboard/plugin_api.py dashboard/preferences.py"
   [messenger]="__init__.py plugin.yaml dashboard/manifest.json dashboard/plugin_api.py dashboard/ui_state.py"
 )
 
+PLUGIN_NAMES=(personae-mobile-auth personae-mobile-state messenger)
+
 drift=0
 changed=0
-for plugin in personae-mobile-auth messenger; do
+for plugin in "${PLUGIN_NAMES[@]}"; do
   dest="$PLUGINS/$plugin"
   for f in ${FILES[$plugin]}; do
     src="$HERE/$plugin/$f"
@@ -47,7 +50,7 @@ if [ "$CHECK" = 1 ]; then
   exit "$drift"
 fi
 
-for plugin in personae-mobile-auth messenger; do
+for plugin in "${PLUGIN_NAMES[@]}"; do
   if ! grep -qE "^\s+- ${plugin}\s*$" "$HERMES_HOME_DIR/config.yaml" 2>/dev/null; then
     HERMES_HOME="$HERMES_HOME_DIR" hermes plugins enable "$plugin"
     changed=1

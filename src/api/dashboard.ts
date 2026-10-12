@@ -32,7 +32,28 @@
 import { ApiError, httpError, normalizeError } from './errors';
 import { t } from '../i18n';
 import { addSecret, log } from '../logging';
+import { STATE_PLUGIN_PREFIX } from './client';
 import { checkBaseUrl, joinUrl, type Settings } from '../settings';
+
+/**
+ * 0.9.0 Phase A — the state surface, mounted by the `personae-mobile-state` dashboard plugin.
+ * One prefix, one place: every method below is scoped to it.
+ */
+export const STATE_PREFIX = STATE_PLUGIN_PREFIX;
+
+/**
+ * The per-user portable-preference document (Phase A) — `{revision, preferences:{…}}` with a
+ * per-key rev. `preferences` is the plain key → value map a reader uses; `revs` is what a *writer*
+ * needs to make a correct patch, and `revision` is the one it declares as "the revision I last saw".
+ */
+export type PreferenceDocument = {
+  version?: number;
+  /** Monotonic. A writer declares the last one it saw; a stale one is merged, never a clobber. */
+  revision: number;
+  preferences: Record<string, unknown>;
+  revs?: Record<string, number>;
+  updated_at?: string | null;
+};
 
 export type DashboardProfile = {
   name: string;
@@ -585,6 +606,69 @@ export function createDashboardClient(settings: Settings, options: DashboardOpti
         `/api/sessions/${encodeURIComponent(sessionId)}`,
         { method: 'DELETE' },
         { profile: profile && profile !== 'default' ? profile : undefined },
+      );
+    },
+
+    // ── 0.9.0 Phase A: the state surface (`/api/plugins/personae-mobile-state`) ──
+    // Its archive/delete verbs call the dashboard's OWN endpoint functions server-side, so the
+    // profile scoping, the active-write 409 and the idempotent delete are the same ones the two
+    // methods above reach — one behaviour, two doors. Reached through `json`, so the credential,
+    // the route resolution and the error ladder are the client's, not a second copy's.
+
+    /** `GET /health` — proves the plugin is mounted. Never throws: `false` is an answer. */
+    async stateAvailable(): Promise<boolean> {
+      try {
+        const body = await json<{ ok?: boolean }>(`${STATE_PREFIX}/health`, { method: 'GET' });
+        return body?.ok === true;
+      } catch {
+        return false;
+      }
+    },
+
+    /** Archive one session. A pinned session is refused `409` with `code: 'pinned'`. */
+    stateArchive(sessionId: string, profile = ''): Promise<Record<string, unknown>> {
+      return json<Record<string, unknown>>(
+        `${STATE_PREFIX}/sessions/${encodeURIComponent(sessionId)}/archive`,
+        { method: 'POST' },
+        { profile: profile && profile !== 'default' ? profile : undefined },
+      );
+    },
+
+    /** Delete one session — the same irreversible verb as `deleteSession`, via the state surface. */
+    stateDelete(sessionId: string, profile = ''): Promise<Record<string, unknown>> {
+      return json<Record<string, unknown>>(
+        `${STATE_PREFIX}/sessions/${encodeURIComponent(sessionId)}/delete`,
+        { method: 'POST' },
+        { profile: profile && profile !== 'default' ? profile : undefined },
+      );
+    },
+
+    /** The portable-preference document (Phase I reads it). */
+    statePreferences(profile = ''): Promise<PreferenceDocument> {
+      return json<PreferenceDocument>(
+        `${STATE_PREFIX}/preferences`,
+        { method: 'GET' },
+        { profile: profile && profile !== 'default' ? profile : undefined },
+      );
+    },
+
+    /** Merge a patch. `revision` is the one this client last saw; a stale one is never a clobber. */
+    statePutPreferences(
+      patch: { revision?: number; preferences: Record<string, unknown> },
+      profile = '',
+    ): Promise<PreferenceDocument> {
+      return json<PreferenceDocument>(
+        `${STATE_PREFIX}/preferences`,
+        { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) },
+        { profile: profile && profile !== 'default' ? profile : undefined },
+      );
+    },
+
+    /** What syncs and what never does — published by the server so no client guesses at it. */
+    statePreferenceKeys(): Promise<{ portable: string[]; device_local: Record<string, string> }> {
+      return json<{ portable: string[]; device_local: Record<string, string> }>(
+        `${STATE_PREFIX}/preferences/keys`,
+        { method: 'GET' },
       );
     },
 

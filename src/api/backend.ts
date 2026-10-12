@@ -18,6 +18,7 @@ import {
   type DashboardProfile,
   type DashboardSession,
   type DashboardSocket,
+  type PreferenceDocument,
   type ProfileCreateResult,
 } from './dashboard';
 import { normalizePeers, type PeersResult } from '../logic/peers';
@@ -72,6 +73,13 @@ export type Backend = {
   archiveSession(id: string, profile?: string): Promise<void>;
   /** Delete one session — the only irreversible verb in the roster. */
   deleteSession(id: string, profile?: string): Promise<void>;
+  /**
+   * 0.9.0 Phase A/I — the portable-preference document. `null` means the state plugin is not mounted
+   * on this host, which is an ordinary answer (older server), never an error.
+   */
+  preferences(): Promise<PreferenceDocument | null>;
+  /** Merge a patch. `revision` is the one this client last saw; a stale one is merged, not applied. */
+  putPreferences(patch: { revision?: number; preferences: Record<string, unknown> }): Promise<PreferenceDocument | null>;
   /** Lazy page of one profile's sessions, used when a row is expanded (R9). */
   profileSessions(profile: string, limit?: number): Promise<HermesSession[]>;
   /** Authoritative title for one session, or null (F4's second link in the chain). */
@@ -142,10 +150,36 @@ export function createBackend(settings: Settings, options: { transport?: typeof 
 
 // ───────────────────────────────────────────────── dashboard ──
 
+/**
+ * 0.9.0 Phase A — the state plugin's verbs, ATTEMPTED then reported.
+ *
+ * `unreachable` is the sentence a surface with no such route answers with. The verb is always tried
+ * first: a `404` is the *measured* answer "this host does not mount the plugin", never an assumption
+ * made in advance from the surface's name.
+ */
+async function stateVerb(
+  call: () => Promise<unknown>,
+  unreachable: () => ApiError,
+): Promise<void> {
+  try {
+    await call();
+  } catch (error) {
+    const normalized = normalizeError(error);
+    if (normalized.status === 404) throw unreachable();
+    throw normalized;
+  }
+}
+
 function createDashboardBackend(settings: Settings): Backend {
   const client = createDashboardClient(settings, {});
   let socket: DashboardSocket | null = null;
   let socketPromise: Promise<DashboardSocket> | null = null;
+  /**
+   * Whether this host mounts the state plugin. Probed ONCE per backend, because a host either has it
+   * or does not; a mid-session `404` flips it back to `false` rather than retrying forever.
+   */
+  let stateProbe: Promise<boolean> | null = null;
+  const stateUp = () => (stateProbe ??= client.stateAvailable());
 
   /** One lazily-opened socket serves every avatar fetch, so the roster never opens N of them. */
   const shared = async (): Promise<DashboardSocket> => {
@@ -221,12 +255,64 @@ function createDashboardBackend(settings: Settings): Backend {
       return (body.sessions ?? []).map(toHermesSession);
     },
 
+    /**
+     * Archive one session. Through the state surface when the host mounts it — that is the route
+     * that refuses a PINNED session out loud instead of silently archiving it — and through the
+     * dashboard's own flags verb otherwise. One behaviour, two doors, never a second implementation.
+     */
     async archiveSession(id, profile = '') {
+      if (await stateUp()) {
+        try {
+          await client.stateArchive(id, profile);
+          return;
+        } catch (error) {
+          const normalized = normalizeError(error);
+          if (normalized.status !== 404) throw normalized; // 409 'pinned' is a refusal, not a fallback
+          stateProbe = Promise.resolve(false);
+        }
+      }
       await client.patchFlags(id, { archived: true }, profile);
     },
 
     async deleteSession(id, profile = '') {
+      if (await stateUp()) {
+        try {
+          await client.stateDelete(id, profile);
+          return;
+        } catch (error) {
+          const normalized = normalizeError(error);
+          if (normalized.status !== 404) throw normalized;
+          stateProbe = Promise.resolve(false);
+        }
+      }
       await client.deleteSession(id, profile);
+    },
+
+    /** The portable-preference document, or `null` when the state plugin is not mounted. */
+    async preferences() {
+      if (!(await stateUp())) return null;
+      try {
+        return await client.statePreferences('');
+      } catch (error) {
+        if (normalizeError(error).status === 404) {
+          stateProbe = Promise.resolve(false);
+          return null;
+        }
+        throw error;
+      }
+    },
+
+    async putPreferences(patch) {
+      if (!(await stateUp())) return null;
+      try {
+        return await client.statePutPreferences(patch, '');
+      } catch (error) {
+        if (normalizeError(error).status === 404) {
+          stateProbe = Promise.resolve(false);
+          return null;
+        }
+        throw error;
+      }
     },
 
     async sessionTitle(id, profile = '') {
@@ -424,18 +510,51 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
       return (body.data ?? []).map((row) => ({ ...row, profile: row.profile ?? (profile || 'default') }));
     },
 
-    archiveSession() {
-      // The archive/hide flags are a dashboard route; this surface answers 501 out loud rather
-      // than pretending the action happened (the same choice `rename` already makes here).
-      return Promise.reject(
-        new ApiError(t.errors.server(501, t.errors.archiveUnsupported), { kind: 'http', status: 501 }),
+    /**
+     * 0.9.0 Phase A — archive, routed at the SAME verbs the dashboard uses.
+     *
+     * The `501 archiveUnsupported` stub that used to live here was a refusal without a request: it
+     * could not tell "this surface has no such route" from "this host changed". It is now an attempt
+     * through this surface's own credential and error ladder, and a `404` — the measured answer that
+     * this host does not mount the dashboard's plugin routes — is turned into the same sentence the
+     * button shows, so what the UI promises and what the call answers cannot drift.
+     */
+    archiveSession(id, profile = '') {
+      return stateVerb(
+        () => api.stateCall(`/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' }, profile),
+        () => new ApiError(t.errors.server(501, t.errors.archiveUnsupported), { kind: 'http', status: 501 }),
       );
     },
 
-    deleteSession() {
-      return Promise.reject(
-        new ApiError(t.errors.server(501, t.errors.deleteUnsupported), { kind: 'http', status: 501 }),
+    /** 0.9.0 Phase A — delete, the same way (and the same single irreversible verb). */
+    deleteSession(id, profile = '') {
+      return stateVerb(
+        () => api.stateCall(`/sessions/${encodeURIComponent(id)}/delete`, { method: 'POST' }, profile),
+        () => new ApiError(t.errors.server(501, t.errors.deleteUnsupported), { kind: 'http', status: 501 }),
       );
+    },
+
+    /** No plugin routes on this surface either: a `404` is reported as "not mounted", never thrown. */
+    async preferences() {
+      try {
+        return await api.stateCall<PreferenceDocument>('/preferences', { method: 'GET' }, '');
+      } catch (error) {
+        if (normalizeError(error).status === 404) return null;
+        throw error;
+      }
+    },
+
+    async putPreferences(patch) {
+      try {
+        return await api.stateCall<PreferenceDocument>(
+          '/preferences',
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) },
+          '',
+        );
+      } catch (error) {
+        if (normalizeError(error).status === 404) return null;
+        throw error;
+      }
     },
 
     async sessionTitle(id, profile = '') {

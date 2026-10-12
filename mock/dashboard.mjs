@@ -53,6 +53,14 @@ const DEFAULTS = {
   peersUnavailable: false,
   /** POST /api/profiles: any non-200 simulates the refusal the app must render honestly. */
   profileCreateStatus: 200,
+  /**
+   * 0.9.0 Phase A — is the `personae-mobile-state` plugin mounted on this host? `false` makes every
+   * one of its routes answer 404, which is what an older server (or the legacy `:9222` surface)
+   * does, and is the case the app's fallback must survive.
+   */
+  statePlugin: true,
+  /** The portable-preference document the state plugin serves. */
+  statePreferences: {},
 };
 
 const AVATAR_PNG_BASE64 =
@@ -300,6 +308,74 @@ export function createMockDashboard(options = {}) {
       const limit = Number(params('limit', 50));
       const offset = Number(params('offset', 0));
 
+      // ── 0.9.0 Phase A: the state plugin's routes ─────────────────────────────
+      // The plugin's archive/delete call the dashboard's OWN endpoint functions server-side; here
+      // they mutate the same `sessions` fixtures the PATCH/DELETE routes above do, so a test can
+      // prove the state door and the core door reach the same state.
+      const STATE = '/api/plugins/personae-mobile-state';
+      if (path.startsWith(`${STATE}/`)) {
+        if (!config.statePlugin) return json(404, { detail: 'Not Found' });
+        if (path === `${STATE}/health` && req.method === 'GET') {
+          return json(200, { ok: true, plugin: 'personae-mobile-state', verbs: ['archive', 'delete'], preferences: true });
+        }
+        if (path === `${STATE}/preferences/keys` && req.method === 'GET') {
+          return json(200, {
+            portable: ['display-order', 'notifications', 'session-types'],
+            device_local: { 'api-key': 'a credential never leaves the device it was issued to' },
+          });
+        }
+        if (path === `${STATE}/preferences` && req.method === 'GET') {
+          return json(200, {
+            version: 1,
+            revision: config.stateRevision ?? 0,
+            preferences: config.statePreferences ?? {},
+            revs: config.stateRevs ?? {},
+            updated_at: null,
+          });
+        }
+        if (path === `${STATE}/preferences` && req.method === 'POST') {
+          const patchBody = body && typeof body === 'object' ? body : {};
+          const incoming = patchBody.preferences && typeof patchBody.preferences === 'object' ? patchBody.preferences : {};
+          const deviceLocal = ['api-key', 'base-url', 'routes', 'pairing', 'device-id', 'push-token'];
+          for (const key of Object.keys(incoming)) {
+            if (deviceLocal.includes(key)) {
+              const detail = `'${key}' is device-local and is never synced`;
+              return json(400, { error: { message: detail, type: 'preference_error', code: 'bad_request' }, detail });
+            }
+          }
+          config.statePreferences = { ...(config.statePreferences ?? {}), ...incoming };
+          config.stateRevision = Number(config.stateRevision ?? 0) + 1;
+          return json(200, {
+            version: 1,
+            revision: config.stateRevision,
+            preferences: config.statePreferences,
+            revs: {},
+            updated_at: null,
+          });
+        }
+        const archiveMatch = path.match(new RegExp(`^${STATE}/sessions/([^/]+)/archive$`));
+        if (archiveMatch && req.method === 'POST') {
+          const found = sessions.find((s) => s.id === archiveMatch[1]);
+          if (!found) return json(404, { detail: `Session not found: ${archiveMatch[1]}` });
+          if (found.pinned) {
+            return json(409, {
+              ok: false,
+              error: { message: 'A pinned session is not archivable. Unpin it first.', type: 'session_flag_error', code: 'pinned' },
+              detail: 'A pinned session is not archivable. Unpin it first.',
+            });
+          }
+          found.archived = true;
+          return json(200, { ok: true, action: 'archive', session_id: found.id, archived: true });
+        }
+        const deleteMatch = path.match(new RegExp(`^${STATE}/sessions/([^/]+)/delete$`));
+        if (deleteMatch && req.method === 'POST') {
+          const index = sessions.findIndex((s) => s.id === deleteMatch[1]);
+          if (index < 0) return json(200, { ok: true, action: 'delete', already_absent: true });
+          sessions.splice(index, 1);
+          return json(200, { ok: true, action: 'delete', session_id: deleteMatch[1] });
+        }
+      }
+
       if (path === '/api/profiles' && req.method === 'GET') {
         if (config.failProfiles) {
           // A surface that HAS profiles failing to answer — the case 0.4.0 swallowed and covered up
@@ -430,6 +506,16 @@ export function createMockDashboard(options = {}) {
           }
         }
         return json(200, result);
+      }
+
+      // DELETE /api/sessions/{id} — the core destructive verb (web_routers/sessions.py:792). Idempotent
+      // by the same rule: an already-absent session is `{ok:true, already_absent:true}`, not a 404.
+      if (detailMatch && req.method === 'DELETE') {
+        const id = decodeURIComponent(detailMatch[1]);
+        const index = sessions.findIndex((s) => s.id === id);
+        if (index < 0) return json(200, { ok: true, already_absent: true });
+        sessions.splice(index, 1);
+        return json(200, { ok: true });
       }
 
       const messagesMatch = path.match(/^\/api\/sessions\/([^/]+)\/messages$/);

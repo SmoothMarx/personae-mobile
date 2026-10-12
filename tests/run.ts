@@ -3751,6 +3751,142 @@ async function main(): Promise<void> {
     assert.equal(buildPut(meta)!.keys['sections-v1'].rev, 11);
   });
 
+  // ─────────────────────────────── 0.9.0 Phase A: the state surface ──
+  // The plugin's verbs call the DASHBOARD'S OWN endpoint functions server-side; the mock mutates the
+  // same `sessions` fixtures the PATCH/DELETE routes do, so "one behaviour, two doors" is provable
+  // here rather than asserted in a comment.
+  const stateMock = createMockDashboard({
+    port: 0,
+    bearer: DASH_BEARER,
+    profiles: [profileFixture('default')],
+    sessions: [
+      sessionFixture('sess-open', { title: 'Aberta', profile: 'default' }),
+      sessionFixture('sess-pin', { title: 'Fixada', profile: 'default', pinned: true }),
+    ],
+  });
+  await stateMock.listen();
+  const httpPaths = (mock: { calls: { kind?: string; method?: string; path?: string }[] }) =>
+    mock.calls.filter((call) => !call.kind || call.kind === 'http').map((call) => `${call.method} ${call.path}`);
+
+  test('0.9.0 A: archive and delete ride the state verbs when the host mounts the plugin', async () => {
+    const backend = createBackend(settingsFor(stateMock.url, { apiKey: DASH_BEARER }));
+    await backend.archiveSession('sess-open', 'default');
+    await backend.deleteSession('sess-open', 'default');
+    const seen = httpPaths(stateMock);
+    assert.ok(
+      seen.includes('POST /api/plugins/personae-mobile-state/sessions/sess-open/archive'),
+      `archive must reach the state verb, got ${seen.join(' | ')}`,
+    );
+    assert.ok(seen.includes('POST /api/plugins/personae-mobile-state/sessions/sess-open/delete'));
+    // …and it is the SAME state the core routes touch: one behaviour, two doors.
+    assert.equal(stateMock.sessions.find((row: { id: string }) => row.id === 'sess-open'), undefined);
+    backend.dispose();
+  });
+
+  test('0.9.0 A: a PINNED session is refused with a machine-readable code, never silently archived', async () => {
+    const backend = createBackend(settingsFor(stateMock.url, { apiKey: DASH_BEARER }));
+    await expectApiError(
+      () => backend.archiveSession('sess-pin', 'default'),
+      (error) => {
+        assert.equal(error.status, 409);
+        assert.equal(error.code, 'pinned', 'the reason must be a code, not a sentence to string-match');
+        assert.match(error.message, /pinned/i);
+      },
+    );
+    assert.equal(
+      stateMock.sessions.find((row: { id: string; archived?: boolean }) => row.id === 'sess-pin')?.archived,
+      false,
+      'it stays un-archived',
+    );
+    backend.dispose();
+  });
+
+  test('0.9.0 A: without the plugin the same verbs FALL BACK to the dashboard verbs', async () => {
+    const older = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      statePlugin: false,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-fb', { title: 'Sem plugin', profile: 'default' })],
+    });
+    await older.listen();
+    const backend = createBackend(settingsFor(older.url, { apiKey: DASH_BEARER }));
+    await backend.archiveSession('sess-fb', 'default');
+    await backend.deleteSession('sess-fb', 'default');
+    const seen = httpPaths(older);
+    assert.ok(seen.includes('PATCH /api/sessions/sess-fb'), `the dashboard verb must be used, got ${seen.join(' | ')}`);
+    assert.ok(seen.includes('DELETE /api/sessions/sess-fb'));
+    assert.equal(older.sessions.length, 0, 'the fallback really deleted it');
+    backend.dispose();
+    await older.close();
+  });
+
+  test('0.9.0 A: the legacy surface ATTEMPTS the verb and reports it; the 501 stub is gone', async () => {
+    const legacyCalls = gateway.calls.length;
+    const backend = createBackend(settingsFor(gateway.url, { surface: 'gateway' }));
+    await expectApiError(
+      () => backend.archiveSession('sess-x', ''),
+      (error) => {
+        assert.equal(error.status, 501);
+        assert.match(error.message, /arquivar não é suportado|archiving is not supported/);
+      },
+    );
+    const attempted = gateway.calls.slice(legacyCalls).map((call) => `${call.method} ${call.path}`);
+    assert.ok(
+      attempted.some((entry) => entry.startsWith('POST /api/plugins/personae-mobile-state/sessions/sess-x/archive')),
+      `the verb must be ATTEMPTED before it is refused, got ${attempted.join(' | ')}`,
+    );
+    assert.ok(!/503|501/.test(attempted.join(' ')), 'and no route answers 501 on the server side');
+    backend.dispose();
+  });
+
+  test('0.9.0 A: the portable-preference document round-trips; a device-local key is refused', async () => {
+    const backend = createBackend(settingsFor(stateMock.url, { apiKey: DASH_BEARER }));
+    const empty = await backend.preferences();
+    assert.ok(empty && empty.revision === 0 && Object.keys(empty.preferences).length === 0, 'missing plugin → null');
+    const first = await backend.putPreferences({ preferences: { notifications: { enabled: true } } });
+    assert.equal((first?.preferences as Record<string, { enabled: boolean }>).notifications.enabled, true);
+    const second = await backend.putPreferences({
+      revision: first?.revision,
+      preferences: { 'session-types': { sessions: true, automatic: false } },
+    });
+    const merged = second?.preferences as Record<string, unknown>;
+    assert.ok(merged.notifications && merged['session-types'], 'two devices editing different keys both survive');
+    await expectApiError(
+      () => backend.putPreferences({ preferences: { 'api-key': 'never' } }),
+      (error) => {
+        assert.equal(error.status, 400);
+        assert.equal(error.code, 'bad_request');
+        assert.match(error.message, /device-local/, 'the refusal\'s sentence must reach the user');
+      },
+    );
+    // …and an absent plugin is an answer, not a throw
+    const bare = createBackend(settingsFor(`http://127.0.0.1:1`, { apiKey: DASH_BEARER }));
+    assert.equal(await bare.preferences().catch(() => 'threw'), null);
+    bare.dispose();
+    backend.dispose();
+  });
+
+  test('0.9.0 A: the state surface has exactly ONE prefix, written in exactly one file', () => {
+    const walk = (dir: string): string[] => {
+      const out: string[] = [];
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) out.push(...walk(full));
+        else if (full.endsWith('.ts') || full.endsWith('.tsx')) out.push(full);
+      }
+      return out;
+    };
+    const hits = walk(join(process.cwd(), 'src')).filter((file) =>
+      readFileSync(file, 'utf8').includes("'/api/plugins/personae-mobile-state'"),
+    );
+    assert.deepEqual(
+      hits.map((file) => file.split('/src/')[1]),
+      ['api/client.ts'],
+      'the prefix is a constant, not a string copied into every call site',
+    );
+  });
+
   // ─────────────────────────────────────────────────────── report ──
   let index = 0;
   for (const item of tests) {

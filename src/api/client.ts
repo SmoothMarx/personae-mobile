@@ -151,6 +151,16 @@ export function buildUrl(settings: Settings, path: string, profile = '', query?:
   return params.length ? `${url}?${params.join('&')}` : url;
 }
 
+/**
+ * 0.9.0 Phase A — the one place the state plugin's prefix is written.
+ *
+ * It is a DASHBOARD plugin (`/api/plugins/<id>/…`), so it is mounted on a dashboard host and not on
+ * the legacy `:9222` api_server. Both surfaces still reach it through their own credential and their
+ * own error ladder (`createApi().stateCall` / `createDashboardClient().state*`), so "this surface does
+ * not have that verb" arrives as an ordinary `404` instead of a guess.
+ */
+export const STATE_PLUGIN_PREFIX = '/api/plugins/personae-mobile-state';
+
 export function requestHeaders(settings: Settings, profile = ''): Record<string, string> {
   const connection = resolveConnection(settings, profile);
   const headers: Record<string, string> = {
@@ -206,6 +216,14 @@ export function createApi(settings: Settings, options: ClientOptions) {
   }
 
   return {
+    /**
+     * 0.9.0 Phase A — reach the state plugin's routes through THIS surface's own credential,
+     * transport and error ladder. Nothing about them is re-implemented here.
+     */
+    stateCall<T = Record<string, unknown>>(path: string, init: RequestInit, profile = ''): Promise<T> {
+      return json<T>(`${STATE_PLUGIN_PREFIX}${path}`, init, profile);
+    },
+
     /** GET /v1/health — the only route without auth, so the status dot never needs the key. */
     async health(profile = ''): Promise<HealthResponse> {
       const url = buildUrl(settings, '/v1/health', profile);
