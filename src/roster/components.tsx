@@ -8,7 +8,7 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef } from 'react';
-import { ActivityIndicator, Animated, Image, Modal, PanResponder, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, Image, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { t } from '../i18n';
 import { AVATAR_SIZE } from '../logic/avatars';
@@ -17,7 +17,9 @@ import { dotColorKey, showBadge } from '../logic/lights';
 import type { RosterProfileRow, SessionRowModel } from '../logic/rosterFeed';
 import { SWIPE, actionAvailability, actionLabel, clampDrag, confirmLabel, restX, rowAccessibilityActions, settle, shouldClaim } from '../logic/swipe';
 import type { Surface } from '../settings';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { rosterRowGeometry, sessionRowGeometry } from './geometry';
+import { sheetPadding } from './sheet';
 import { SWATCHES } from '../rosterPrefs';
 import { colors, font, radius, space } from '../theme';
 
@@ -439,13 +441,20 @@ export function SwatchPicker(props: { value: string | null; onPick: (colour: str
 }
 
 
+// ─────────────────────────────────────────── the sheet's bottom inset (0.8.0 F) ──
+// The arithmetic lives in `./sheet.ts` (a pure module) so the suite can measure it at 0 / 24 / 48 dp
+// of inset without importing React Native. Both sheets below share it through `styles.sheet`.
+
 /**
  * Mobile's answer to the desktop's right-click menu (R8): a bottom sheet of icons + PT-PT labels.
  *
  * The entries come from `menus.ts`, so the verbs are data — an action that silently disappears is a
  * failing test rather than a surprise on a phone. `children` carries whatever the picked verb needs
  * next (the swatch palette, the group list) without inventing a second sheet.
-
+ *
+ * 0.8.0 F: the ENTRY LIST scrolls inside the same `maxHeight: '80%'`, and the sheet's bottom padding
+ * is `space.md + insets.bottom`, so a long list scrolls instead of clipping and the last entry is
+ * never under the navigation bar. Both sheets share the fix because both use `styles.sheet`.
  */
 export function ActionSheet(props: {
   visible: boolean;
@@ -460,45 +469,49 @@ export function ActionSheet(props: {
   onClose: () => void;
   children?: React.ReactNode;
 }) {
+  const insets = useSafeAreaInsets();
   return (
     <Modal visible={props.visible} transparent animationType="fade" onRequestClose={props.onClose}>
       <Pressable style={styles.sheetBackdrop} onPress={props.onClose} accessibilityRole="button" accessibilityLabel={t.common.close}>
-        <Pressable style={styles.sheet} onPress={() => undefined}>
+        <Pressable style={[styles.sheet, { paddingBottom: sheetPadding(insets) }]} onPress={() => undefined}>
           <Text style={styles.sheetTitle} numberOfLines={1}>
             {props.title}
           </Text>
-          {props.entries.map((entry) => (
-            <Pressable
-              key={entry.key}
-              onPress={() => props.onPick(entry.key)}
-              disabled={entry.disabled}
-              accessibilityRole="button"
-              accessibilityState={{ disabled: Boolean(entry.disabled) }}
-              accessibilityLabel={
-                entry.reason ? `${props.labelOf(entry.label)} — ${entry.reason}` : props.labelOf(entry.label)
-              }
-              style={({ pressed }) => [styles.sheetRow, pressed && styles.rowPressed, entry.disabled && styles.disabledRow]}
-            >
-              <Ionicons
-                name={entry.icon as never}
-                size={18}
-                color={entry.disabled ? colors.faint : entry.destructive ? colors.red : colors.text}
-              />
-              <View style={styles.sheetLabelWrap}>
-                <Text
-                  style={[styles.sheetLabel, entry.destructive && styles.sheetLabelDanger, entry.disabled && styles.sheetLabelOff]}
-                  numberOfLines={1}
-                >
-                  {props.labelOf(entry.label)}
-                </Text>
-                {entry.reason ? (
-                  <Text style={styles.sheetReason} numberOfLines={2}>
-                    {entry.reason}
+          {/* Only the entries scroll: the title stays put, and so do the prompt actions (below). */}
+          <ScrollView style={styles.sheetScroll} bounces={false}>
+            {props.entries.map((entry) => (
+              <Pressable
+                key={entry.key}
+                onPress={() => props.onPick(entry.key)}
+                disabled={entry.disabled}
+                accessibilityRole="button"
+                accessibilityState={{ disabled: Boolean(entry.disabled) }}
+                accessibilityLabel={
+                  entry.reason ? `${props.labelOf(entry.label)} — ${entry.reason}` : props.labelOf(entry.label)
+                }
+                style={({ pressed }) => [styles.sheetRow, pressed && styles.rowPressed, entry.disabled && styles.disabledRow]}
+              >
+                <Ionicons
+                  name={entry.icon as never}
+                  size={18}
+                  color={entry.disabled ? colors.faint : entry.destructive ? colors.red : colors.text}
+                />
+                <View style={styles.sheetLabelWrap}>
+                  <Text
+                    style={[styles.sheetLabel, entry.destructive && styles.sheetLabelDanger, entry.disabled && styles.sheetLabelOff]}
+                    numberOfLines={1}
+                  >
+                    {props.labelOf(entry.label)}
                   </Text>
-                ) : null}
-              </View>
-            </Pressable>
-          ))}
+                  {entry.reason ? (
+                    <Text style={styles.sheetReason} numberOfLines={2}>
+                      {entry.reason}
+                    </Text>
+                  ) : null}
+                </View>
+              </Pressable>
+            ))}
+          </ScrollView>
           {props.children}
         </Pressable>
       </Pressable>
@@ -509,7 +522,9 @@ export function ActionSheet(props: {
 /**
  * A text prompt. `Alert.prompt` is iOS-only, so the roster carries its own — rename, new group and
  * new session all need one, and a platform-conditional dialog would be two different apps.
-
+ *
+ * 0.8.0 F: same shared `styles.sheet` and the same `sheetPadding(insets)` as `ActionSheet`, so the
+ * prompt's buttons are not pushed under the navigation bar either.
  */
 export function PromptSheet(props: {
   visible: boolean;
@@ -521,10 +536,11 @@ export function PromptSheet(props: {
   submitLabel: string;
   onClose: () => void;
 }) {
+  const insets = useSafeAreaInsets();
   return (
     <Modal visible={props.visible} transparent animationType="fade" onRequestClose={props.onClose}>
       <Pressable style={styles.sheetBackdrop} onPress={props.onClose} accessibilityRole="button" accessibilityLabel={t.common.close}>
-        <Pressable style={styles.sheet} onPress={() => undefined}>
+        <Pressable style={[styles.sheet, { paddingBottom: sheetPadding(insets) }]} onPress={() => undefined}>
           <Text style={styles.sheetTitle}>{props.title}</Text>
           <TextInput
             value={props.value}
@@ -562,6 +578,9 @@ const styles = StyleSheet.create({
     gap: 2,
     maxHeight: '80%',
   },
+  /** 0.8.0 F: `flexGrow: 0` so a SHORT entry list does not stretch the sheet, and the maxHeight above
+   *  is what a LONG one scrolls inside. */
+  sheetScroll: { flexGrow: 0 },
   sheetTitle: { color: colors.text, fontSize: font.body, fontWeight: '700', paddingBottom: space.sm },
   sheetRow: { flexDirection: 'row', alignItems: 'center', gap: space.md, paddingVertical: space.md, borderRadius: radius.sm },
   sheetLabel: { color: colors.text, fontSize: font.body, flex: 1 },

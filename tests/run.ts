@@ -125,7 +125,8 @@ import {
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
 import { getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
-import { colors } from '../src/theme';
+import { colors, space } from '../src/theme';
+import { TYPICAL_BUTTON_INSET, TYPICAL_GESTURE_INSET, sheetPadding } from '../src/roster/sheet';
 import {
   CLOSED_SWIPE,
   SWIPE,
@@ -976,6 +977,46 @@ test('0.8.0 E: the row is a thin shell — PanResponder + Animated, and no new n
   // The long-press menu stays: the verbs are reachable without a gesture either way.
   assert.match(src, /onLongPress=\{props\.onMenu\}/);
   assert.match(src, /accessibilityActions=\{rowAccessibilityActions\(props\.surface\)\}/);
+});
+
+// ─────────────────── 0.8.0 F: the sheet is not clipped at the bottom ──
+
+test('0.8.0 F: sheetPadding() adds the device bottom inset to the padding it already had', () => {
+  assert.equal(space.md, 12);
+  assert.equal(sheetPadding({ bottom: 0 }), 12, 'a device with no reserved space: unchanged');
+  assert.equal(sheetPadding(null), 12, 'no insets at all is not a crash and not a zero');
+  assert.equal(sheetPadding(undefined), 12);
+  assert.equal(sheetPadding({}), 12);
+  assert.equal(sheetPadding({ bottom: 24 }), 36, 'a gesture-nav bar (24 dp): the last entry clears it');
+  assert.equal(sheetPadding({ bottom: 48 }), 60, 'a three-line nav bar (48 dp)');
+  assert.equal(sheetPadding({ bottom: TYPICAL_GESTURE_INSET }), 36);
+  assert.equal(sheetPadding({ bottom: TYPICAL_BUTTON_INSET }), 60);
+  assert.equal(sheetPadding({ bottom: -10 }), 12, 'junk in a negative inset cannot eat the padding');
+  assert.equal(sheetPadding({ bottom: Number.NaN }), 12, 'nor can a NaN');
+  // It is strictly additive and monotonically increasing — the property the fix rests on.
+  for (const inset of [0, 8, 24, 48, 96]) {
+    assert.ok(sheetPadding({ bottom: inset }) >= sheetPadding(null));
+    assert.equal(sheetPadding({ bottom: inset }), 12 + inset);
+  }
+});
+
+test('0.8.0 F: BOTH sheets share the fix, and only the entries scroll', () => {
+  const src = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+  // The shared style is what makes one fix cover ActionSheet AND PromptSheet.
+  assert.equal(src.split('style={[styles.sheet, { paddingBottom: sheetPadding(insets) }]}').length - 1, 2,
+    'ActionSheet and PromptSheet both pad by the inset');
+  assert.equal(src.split('const insets = useSafeAreaInsets();').length - 1, 2, 'each reads the real insets');
+  assert.match(src, /from '\.\/sheet'/, 'the arithmetic is the tested pure module');
+  // A long list SCROLLS instead of clipping, and only the entries do: the title and the prompt's
+  // actions stay where they are.
+  assert.match(src, /<ScrollView style=\{styles\.sheetScroll\} bounces=\{false\}>/, 'the entries scroll');
+  assert.match(src, /sheetScroll: \{ flexGrow: 0 \}/, 'a short list does not stretch the sheet');
+  assert.match(src, /maxHeight: '80%'/, 'inside the sheet height it already had');
+  const titleIdx = src.indexOf('<Text style={styles.sheetTitle} numberOfLines={1}>');
+  const scrollIdx = src.indexOf('<ScrollView style={styles.sheetScroll}');
+  assert.ok(titleIdx > 0 && scrollIdx > titleIdx, 'the title is NOT inside the ScrollView');
+  const promptActions = src.indexOf('styles.promptActions');
+  assert.ok(promptActions > src.indexOf('</ScrollView>'), "the prompt's buttons are NOT inside it either");
 });
 
 test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {
