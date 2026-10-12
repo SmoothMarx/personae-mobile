@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/icon.png" width="128" height="128" alt="Personae Mobile">
+</p>
+
 # Personae Mobile
 
 A native Android/iOS client (React Native + Expo, TypeScript, expo-router) for the Hermes Agent API

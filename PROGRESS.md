@@ -1651,3 +1651,284 @@ polls, `notifications.ts` presents), so the first step is the prerequisite only 
 Firebase project, register the Android app as **exactly** `com.personae.mobile`, download
 `google-services.json`, and wire it through `app.json` `android.googleServicesFile` — then the sender on
 the gateway, and `getDevicePushTokenAsync()` beside the local channel that already exists.
+
+## 0.9.0 — the operator's batch, plus the four platform items (2026-10-12)
+
+Phase 0 and phases A–I landed, one commit each: **RECON** `f6785ad`, **A** `1ad6b6d`, **B** `9fdf1be`,
+**C** `a89cffa`, **F** `952e3ff`, **D+E** `40b693d`, **G+H** `8e20c14`, **I** `3726afa`. Phase 12
+(push) is **parked** — see below.
+
+Sister documents, written to be read on their own: `RECON-0.9.0.md` (every Phase 0 question, with the
+command and the observed output), `SERVER-PATCH.md` (what 0.9.0 touches on the box and how to
+reapply it in one pass).
+
+## Floors, measured
+
+| suite | before any 0.9.0 change | now |
+|---|---|---|
+| app (`npm test`) | **196/196, 0 failed** | **241/241, 0 failed** |
+| typecheck (`tsc --noEmit`) | rc 0 | rc 0 |
+| server (`server/run-tests.sh tests`) | **60 passed** | **75 passed** |
+| server (bare `venv/bin/python -m pytest server/tests -q`) | fails on this host by design | unchanged; the verifier prints the literal outcome beside `run-tests.sh` |
+
+The §4 test-name contract is enforced by `logs/verify-0.9.0.sh`: **47 named tests**, each one an item
+of §4 or a phase whose absence would otherwise be invisible.
+
+## 0 — RECON
+
+`RECON-0.9.0.md`. Each of the six questions has the command that was run and the output that was
+observed. **The finding that decided the release:** a message already carries an attachment two ways
+(an inline `image_url` data part for images; an `@file:`/`@image:` text ref for anything else, which
+is the TUI's own `/image <path>` convention), and the dashboard's `/api/ws` already publishes the
+RPCs to produce them (`image.attach_bytes` at `methods_prompt.py:849`, whose docstring names the remote
+client; `file.attach` at `:938`, whose decoder takes any media type). **So items 4 and 5 needed no
+server addition and no second upload path** — Phase A(iii) was never taken.
+
+## A — the server surface
+
+A **new** plugin, `server/personae-mobile-state/`, deployed to `~/.hermes/plugins/` (user data).
+
+* `POST /sessions/{id}/archive` and `POST /sessions/{id}/delete` call **the dashboard's own endpoint
+  functions in-process** (`rename_session_endpoint` / `delete_session_endpoint`), so profile scoping,
+  the `409` active-write guard, the idempotent "already absent" delete and the corrupt-store `503` are
+  core's, never a second copy. A test counts the calls on a spy, so "one behaviour, two doors" is a
+  fact rather than a comment.
+* The added rule is the goal's own: **a pinned session is not archivable** — `409` with
+  `error.code === "pinned"`, machine-readable, and the verb is never reached. `hidden` is not
+  collapsed into `archived`.
+* `GET/POST /preferences` is the portable-preference document `{revision, preferences}` with **per-key**
+  last-write-wins, and `GET /preferences/keys` publishes the portable/device-local split so no client
+  guesses at it.
+* The app's `501 archiveUnsupported` / `deleteUnsupported` **stubs are gone**: both surfaces now
+  attempt the verb through their own credential and error ladder, and a `404` is reported as the
+  measured answer it is. Without the plugin, the dashboard path falls back to the verbs 0.8.0 used —
+  asserted, not assumed.
+
+`SERVER-PATCH.md` records the deployment. **Nothing under `~/.hermes/hermes-agent` is edited** — no
+core file, no existing plugin — which is why `hermes update` cannot undo it. The plugin is deployed but
+**dormant** until `hermes-serve` next starts; rule §3 forbids restarting it from inside this run, and
+the app is explicitly built to be unharmed while it is dormant.
+
+## B — Settings as a page of rows
+
+`src/settingsPages.ts` is the plan (rows, order, and the scope of each); `app/settings.tsx` derives its
+rendering from it. The index is **Agent Preferences → Notifications (a sibling row, indented) → Gateway
+Settings → Advanced**, and each row carries a scope chip: *Syncs*, *This phone only*, *Partly syncs*.
+Notifications is a sibling under Agent Preferences, not a sixth top-bar icon. 0.7.0's Advanced
+disclosure is untouched; promoting Settings to a page deleted nothing (a test walks 0.7.0's own field
+plan and asserts every field is classified).
+
+## C — session groups (the desktop's Groups)
+
+`src/logic/sessionGroups.ts` is the **desktop's document**, read out of `plugin.js` rather than its
+README: `{profile: {groups, members, order, collapsed}}`, with `apropos` and `color` carried
+**opaquely** so a phone write-back cannot delete another client's data. Create, file, unfile, collapse,
+rename, move, delete — and **deleting a group never deletes a session**: structural, because the module
+has no door to a session (`deleteGroup` is not passed one). `session-groups-v1` joined `SYNC_KEYS`, so
+the phone and the pane write the same document through the same merge. With no groups at all the list
+is ONE anonymous block in recency order — i.e. exactly the flat list every earlier release drew.
+
+## D — the per-object menu, at parity
+
+`src/roster/menus.ts` is now the desktop's SHAPE: **Select · Open ▸ · Session ▸ · Apropos ▸ · Group ▸ ·
+Appearance · Project**, one noun per submenu, pickers last. The sheet drills in and back in place.
+The profile menu gained *Open newest session* and *Sort sessions ▸*.
+
+**The diff closed:** the submenu structure; `Session ▸ Mark as unread / Rename… / Branch / Copy id /
+Hide / Archive / Delete`; `Group ▸ New session group / Move to group ▸ <group> | Ungrouped`;
+`Appearance`; `Profile ▸ Open newest session`; `Profile ▸ Sort sessions ▸`; the group heading's
+*Move up / Move down*.
+
+**The diff NOT closed, and why** — carried as DISABLED rows with the reason, never hidden: **Apropos
+(beta)** and **Project** (the dashboard's `/api/ws` publishes no `apropos.*` or `project.*` method at
+all — measured against `tui_gateway/`), **Open ▸ In new window / In new tab** (window-manager verbs),
+and **Export…** (the route exists; this release did not wire it).
+
+## E — multiselect, the WhatsApp model
+
+`src/logic/selection.ts`. The held row ticks **immediately** and the menu opens on top of a live
+selection; further taps grow the set. **Emptying the set leaves the mode** (`toggleKey` returns
+`active: false` on the last untick, so a bar reading "0 selected" cannot exist). The batch resolves
+**against what is on screen** — the desktop's real bug is re-created as a test and closed. **One delete
+path**: the batch calls the same `roster.deleteSession` the swipe and the menu call, and 0.8.0's
+two-step confirm survives — the bar's Delete arms first, then the confirm carries the **count**
+("Delete 7 sessions? This cannot be undone."). Batch verbs once more than one row is ticked,
+single-object when exactly one.
+
+## F — the chrome batch
+
+* **Search bar** 38 → `ceil(38 × 1.25)` = **48 dp**, radius = the palette's pill token. Both derived
+  from one constant; the test asserts the derivation, not the literal.
+* **The routine connection strip is gone**; the FAILURE disclosure stays (`src/roster/banner.ts`), so a
+  wrong port still cannot look like an empty list. `CONNECTION_STRIP_ALWAYS = true` is the one line
+  that restores 0.8.0 exactly.
+* **The "51 automatic…" line is removed**; 0.8.0 D's `hidden(n)` honesty line is kept — it is not the
+  line quoted, and removing it would make a filtered list read as a lying one. Both strings stay in the
+  table: removing a line is not deleting a translation.
+* **The Expand/collapse-all glyph is removed** from the top bar. The ability is untouched
+  (`roster.toggleProfile` on every row), and `openProfile` is still reached by the toggle and by a
+  search hit — a test asserts it did not become dead code.
+* **`+` and Settings are bigger and transparent**: `HEADER_ICON_SCALE` 1.1 → **1.25** (22/18/18 →
+  25/20/20, box 42 × 37 → 48 × 43) with 0.8.0's two tests superseded IN PLACE, old values kept in
+  comments, and `backgroundColor: colors.panelAlt` replaced by `transparent`. The touch-target floor is
+  still proved arithmetically (45 × 45).
+* **Landscape**: `orientation` → `default`; `src/insets.ts` gives every screen `max(left, right)` on
+  both sides (this screen read NO insets at all before); the sheets take **92 %** of a short viewport
+  instead of 80 % of a tall one; the composer gets Android `behavior: 'height'`; and the roster's
+  dp-based geometry is **proved** unchanged at 800 dp wide (same row height, same avatar, same text
+  column; only `titleMaxWidth` grows).
+
+## G — attachments, WhatsApp-shaped
+
+Paperclip at the composer's left → a picker (**Take a photo** via the already-installed `expo-camera`,
+**Paste an image** via the already-installed `expo-clipboard`; a document picker is named as not built,
+disabled with its reason) → a staging strip with per-item remove and per-item size → send → a bubble
+with a thumbnail per image and a file card per file, with the caption.
+
+**The attachment is REAL:** Send calls `image.attach_bytes` (images) or `file.attach` (anything else)
+FIRST, so the bytes land in the session's own images directory / workspace and **the agent on the box
+can read them**; only then does the turn go out. A mock asserts the bytes actually arrived. Inbound,
+the thread parses both wire shapes (parts list with an inline data URL, and the `@image:`/`@file:` refs)
+— so what the user sent does not vanish, and what the agent attaches is drawn. A too-large or empty
+item is refused **with its reason**, never staged as a broken bubble.
+
+## H — voice notes
+
+Hold the mic → the recording bar shows the elapsed time and a **release-to-cancel** affordance whose
+label flips once the thumb has slid past −80 dp → release → the recording is **staged**, not sent, so
+one Send gesture still covers everything. A hold under 1 s is refused with its own sentence.
+
+**The one new native dependency: `expo-audio`**, installed with `npx expo install` so the version came
+from the SDK (`~57.0.5`) and was never hand-pinned. `expo-av` was rejected: it is published for the
+pre-57 line. `android.permission.RECORD_AUDIO` and the `expo-audio` config plugin (with the microphone
+sentence the user is shown) are declared, and the verifier checks the permission is **in the APK**.
+
+*Send:* there is no `audio.attach` RPC, so a voice note rides `file.attach` — the decoder that takes
+any media type — which stages it into the session workspace and hands the agent an `@file:` ref.
+*Receive:* both meanings are covered — an inbound audio file is recognised by extension and drawn as a
+voice note bubble with playback (`expo-audio`'s player over the media route the desktop already uses as
+its player source), and the agent's own attachment of an audio file arrives the same way. A duration
+the wire does not carry is reported as ABSENT rather than invented.
+
+## I — sync
+
+`src/sync/preferences.ts` is an **allowlist**: `session-types`, `notifications`, `display-order` sync;
+`baseUrl`, `apiKey`, `surface`, `routes`, device identity, the OS notification permission, the push
+token, the language and every timeout are **named as device-local and cannot leak**, because there is no
+code path that would carry them. The gateway is the source of truth (the document Phase A built), a
+stale revision is merged rather than applied, and the hook remembers the snapshot it applied so an
+incoming value cannot echo straight back.
+
+`Gateway Settings` is deliberately absent from the payload: the desktop dials `localhost:9119` and the
+phone dials the tailnet address, and syncing that field is how you lose a working desktop.
+
+## 12 — push: PARKED
+
+**Deferred to the next update.** the user, 2026-10-12, verbatim: *"If push is an issue, you can park that
+for the next update."* Reason stated plainly: **the Firebase project is the user's to create** — a project
+named `personae`, an Android app whose package is exactly `com.personae.mobile`, an iOS app, and a
+service-account key for sending; none of it can be created by an agent, and the service-account JSON
+must never enter git.
+
+**What is therefore NOT in 0.9.0, said out loud:** there is no FCM sender on the gateway, no
+`google-services.json`, no `GoogleService-Info.plist`, no push-token registration, and no
+`getExpoPushTokenAsync` call. The verifier asserts the ABSENCE of those credential files, and asserts
+this deferral is recorded. **Nothing device-side is called "push"**: 0.8.0's checkpoint notifications
+remain what they are — local notifications from the app's own poll while it runs — and the code that
+presents them is untouched by this release.
+
+## Decisions taken, one line each, and how to reverse it (§5)
+
+1. **Connection text (item 2).** Removed the ROUTINE strip; kept the failure disclosure so a wrong port
+   cannot look like an empty list. Reverse: `CONNECTION_STRIP_ALWAYS = true` in `src/roster/banner.ts`.
+2. **The "51 automatic…" line vs the honesty line (item 3).** Removed exactly the line quoted; kept
+   `hidden(n)`, which is 0.8.0 D's disclosure. Reverse: re-render `t.roster.types.hidden`'s sibling —
+   both strings are still in the table, so it is one JSX line.
+3. **Sync scope (item 2's design).** Portable = session types, notifications, display order; everything
+   else is device-local BY OMISSION, published by the server at `GET /preferences/keys`, and shown on
+   the Settings rows as a scope chip. Reverse: add a key to `PORTABLE_KEYS` in BOTH
+   `src/sync/preferences.ts` and the plugin's `preferences.py` — the suite asserts they are equal, so a
+   half-reversal fails rather than half-syncs.
+4. **Attachments ride the existing routes.** No new endpoint, no second upload path. Reverse: nothing
+   to reverse; if a dedicated route is ever wanted, the RPCs stay valid.
+5. **One new dependency, for recording only (`expo-audio`).** The picker reuses `expo-camera` and
+   `expo-clipboard` to avoid a second one. Reverse: remove `expo-audio` from `package.json`, the plugin
+   list and `RECORD_AUDIO`, and delete `src/logic/voice.ts` + its tests.
+6. **`HEADER_ICON_SCALE` 1.1 → 1.25 (item 9).** 0.8.0's two tests superseded in place, old values kept.
+   Reverse: set the constant back to 1.1 and restore the two assertions — they are written beside the
+   new ones.
+7. **The Apropos/Project/window/export verbs are shown DISABLED with a reason (item 6).** The goal says
+   parity is "all the features"; four of them cannot be run from this surface, and a hidden verb is
+   indistinguishable from a forgotten one. Reverse: delete the entries from
+   `sessionMenuEntries`, at the cost of losing the visible diff.
+8. **The sync status word is not on screen.** The hook exposes it (`preferenceSyncStatus`), but the only
+   screen that could show it is the roster's footer, and item 2 asked for LESS text there. Reverse: one
+   `<Text>` in `app/index.tsx`'s footer reading `roster.preferenceSyncStatus`.
+9. **Landscape is a static claim, not a device claim.** See below. Reverse: not applicable.
+
+## What could not be verified, and why
+
+* **Nothing was verified on a phone.** There is still **no `adb` on either host** (`which adb` → empty)
+  and the Pixel 8 is offline. So: landscape (item 11) is a STATIC proof — the orientation is declared,
+  the insets arithmetic is asserted, the sheet's short-viewport rule is asserted, and the roster's
+  geometry is proved unchanged at 800 dp — and **the device claim is not made**. "The app looks right
+  rotated on a phone" is unproven.
+* **The recorder and the player have never run.** `expo-audio` compiles into the APK (asserted) and the
+  state machine behind the gesture is fully tested, but no microphone was opened and no note was
+  played. Whether the Android media pipeline accepts the authenticated media URL with the app's bearer
+  header is the specific open question.
+* **The camera path and the clipboard path have never run** — the permission request, `takePictureAsync`
+  and `Clipboard.getImageAsync` are written to the documented API and are compiled in, not exercised.
+* **Phase A's plugin is deployed but DORMANT.** `hermes-serve` has not restarted (rule §3), so
+  `/api/plugins/personae-mobile-state/health` answers 404 on the live box and the app's probe records
+  "unavailable". The plugin's own suite drives every route through a mounted router, and the app proves
+  the fallback path that makes dormancy harmless — but "the phone archived a session through the state
+  plugin on the live box" has not happened.
+* **Phase I's desktop half is NOT DONE.** The phone writes the document; the shared document is proved
+  round-trip against a mounted router and against the mock. The **second repo**
+  (`~/Projects/hermes-desktop-plugins/personae`) was not touched: its reader/writer for the portable
+  preferences is the remaining work, and the goal's own rule is that it must pass that repo's harness
+  before it is called done. Saying so is the honest option; shipping a half-wired desktop writer that
+  had never run would risk the pane's live behaviour.
+* **Which session a Branch produces** is asserted only against the mock: `session.branch_stored` exists
+  on the gateway (read) and the app calls it, but no real branch was created.
+
+## Next run's first step (exact)
+
+1. **The desktop half of Phase I**: in `~/Projects/hermes-desktop-plugins/personae`, read
+   `GET /api/plugins/personae-mobile-state/preferences` on open and write a per-key patch on change,
+   for `session-types` / `notifications` / `display-order` only — never `gateway settings`. Run that
+   repo's own `tests/` harness before calling it done.
+2. **Push**, once the user has the Firebase project: `google-services.json` wired through
+   `app.json` `android.googleServicesFile`, `getExpoPushTokenAsync({projectId})` beside the local
+   channel that already exists, and the sender on the gateway behind an off-by-default flag.
+3. **The two device questions** the moment an `adb` exists: rotate the phone, and record one voice
+   note.
+
+## The artifact, and the verifier that judged it
+
+| thing | value |
+|---|---|
+| apk | `dist/personae-0.9.0.apk` |
+| bytes | 117547098 |
+| sha256 | `047da9e25092510bebbc606330586de528190b8ca07ad0d2a18cd75a51f5a131` |
+| apk summary | `com.personae.mobile / 10 / 0.9.0` |
+| min-sdk / target-sdk | 24 / 36 |
+| permissions in the APK | CAMERA 1, POST_NOTIFICATIONS 1, **RECORD_AUDIO 1** |
+| deep-link scheme | `personae` ×12 in the manifest, `personae://connect` ×1 in the bundle |
+| signer | `CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT` |
+| signer SHA-256 | `bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26` — the 0.1.0-0.8.0 key, so it installs straight over 0.8.0 |
+| host/credential literals in the bundle | 0 (and 0 live-bearer occurrences) |
+| build | `BUILD SUCCESSFUL in 5m 4s` — `:app:assembleRelease`, `--max-workers=4`, `--no-daemon` |
+
+`logs/verify-0.9.0.sh` + `logs/verify-0.9.0.txt`: **69 PASS, 0 FAIL, `RESULT: PASS — 0.9.0 verified`.**
+The verifier is artifact-first and was re-run against the finished APK: the version comes from
+`app.json` and is compared to the APK's own summary, the release signer's SHA-256 is compared to the
+0.1.0-0.8.0 digest, `RECORD_AUDIO` is checked in the manifest rather than in `app.json` alone, and ten
+0.9.0 feature strings are required to be **inside the bundle** — with `personae://connect` as the
+positive control, because a grep that finds nothing proves nothing.
+
+Two things the verifier prints as notes rather than failures, because both are the honest state rather
+than a defect: Phase A's plugin is deployed but **dormant** (404) until `hermes-serve` restarts, which
+rule §3 forbids this run from forcing; and the literal `~/.hermes/hermes-agent/venv/bin/python -m
+pytest server/tests -q` command still fails on this host by design, beside the runner of record.
