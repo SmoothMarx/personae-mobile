@@ -24,12 +24,19 @@
       },
       "permissions": [
         "android.permission.INTERNET",
-        "android.permission.POST_NOTIFICATIONS"
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.RECORD_AUDIO"
       ]
     },
     "plugins": [
       "expo-router",
       "expo-secure-store",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Personae uses the microphone only to record a voice note you hold the mic button to send."
+        }
+      ],
       "expo-status-bar",
       "expo-notifications",
       [

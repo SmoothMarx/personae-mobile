@@ -205,6 +205,35 @@ const en = {
   },
 
   thread: {
+    // ── 0.9.0 G: attachments, WhatsApp's shape ──
+    attach: {
+      add: 'Add an attachment',
+      camera: 'Take a photo',
+      clipboard: 'Paste an image',
+      document: 'Send a file',
+      documentReason:
+        'Choosing a file from this phone needs a file picker that is not built yet. Pictures work today.',
+      capture: 'Take the photo',
+      captureFailed: 'The camera did not return a picture.',
+      cameraDenied: 'The camera permission was refused, so a photo cannot be taken.',
+      clipboardEmpty: 'There is no image on the clipboard.',
+      clipboardFailed: (detail: string) => `The clipboard could not be read: ${detail}`,
+      refused: (name: string, reason: string) => `${name} was not added. ${reason}`,
+      remove: 'Remove',
+      imageLabel: 'Attached picture',
+    },
+    // ── 0.9.0 H: voice notes ──
+    voice: {
+      hold: 'Hold to record a voice note',
+      slideToCancel: 'Slide left to cancel, release to keep',
+      releaseToCancel: 'Release to cancel',
+      cancelled: 'The voice note was cancelled.',
+      tooShort: 'Too short — hold a little longer to send a voice note.',
+      permissionDenied: 'The microphone permission was refused, so a voice note cannot be recorded.',
+      recordFailed: (detail: string) => `The recording failed: ${detail}`,
+      playback: (name: string) => `Voice note ${name}`,
+      sending: 'Voice note',
+    },
     you: 'You',
     agent: 'Agent',
     tools: (n: number) => `${n} tool call${n === 1 ? '' : 's'}`,
@@ -476,6 +505,7 @@ const en = {
     renameUnsupported: 'renaming is not supported on this connection',
     // 0.9.0 D — the two session verbs the legacy surface cannot reach.
     flagsUnsupported: 'hiding and unread marks are not supported on this connection',
+    attachUnsupported: 'sending pictures is not supported on this connection',
     branchUnsupported: 'branching a session is not supported on this connection',
     ticketMissing: 'ticket missing',
     resource: 'The item',
@@ -824,6 +854,35 @@ const pt: Strings = {
   },
 
   thread: {
+    // ── 0.9.0 G: anexos, a forma do WhatsApp ──
+    attach: {
+      add: 'Adicionar anexo',
+      camera: 'Tirar fotografia',
+      clipboard: 'Colar uma imagem',
+      document: 'Enviar ficheiro',
+      documentReason:
+        'Escolher um ficheiro deste telefone precisa de um seletor de ficheiros que ainda não existe. As imagens já funcionam.',
+      capture: 'Tirar a fotografia',
+      captureFailed: 'A câmara não devolveu nenhuma imagem.',
+      cameraDenied: 'A permissão da câmara foi recusada, por isso não é possível tirar fotografia.',
+      clipboardEmpty: 'Não há nenhuma imagem na área de transferência.',
+      clipboardFailed: (detail: string) => `Não foi possível ler a área de transferência: ${detail}`,
+      refused: (name: string, reason: string) => `${name} não foi adicionado. ${reason}`,
+      remove: 'Remover',
+      imageLabel: 'Imagem anexada',
+    },
+    // ── 0.9.0 H: mensagens de voz ──
+    voice: {
+      hold: 'Manter premido para gravar uma mensagem de voz',
+      slideToCancel: 'Desliza para a esquerda para cancelar, larga para guardar',
+      releaseToCancel: 'Larga para cancelar',
+      cancelled: 'A mensagem de voz foi cancelada.',
+      tooShort: 'Demasiado curta — mantém premido um pouco mais para enviar uma mensagem de voz.',
+      permissionDenied: 'A permissão do microfone foi recusada, por isso não é possível gravar.',
+      recordFailed: (detail: string) => `A gravação falhou: ${detail}`,
+      playback: (name: string) => `Mensagem de voz ${name}`,
+      sending: 'Mensagem de voz',
+    },
     you: 'Tu',
     agent: 'Agente',
     tools: (n: number) => `${n} chamada${n === 1 ? '' : 's'} a ferramentas`,
@@ -1095,6 +1154,7 @@ const pt: Strings = {
     renameUnsupported: 'renomear não é suportado nesta ligação',
     // 0.9.0 D — os dois verbos de sessão que a superfície antiga não alcança.
     flagsUnsupported: 'esconder e marcar como não lida não é suportado nesta ligação',
+    attachUnsupported: 'enviar imagens não é suportado nesta ligação',
     branchUnsupported: 'ramificar uma sessão não é suportado nesta ligação',
     ticketMissing: 'ticket ausente',
     resource: 'O recurso',

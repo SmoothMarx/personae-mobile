@@ -194,6 +194,35 @@ import {
   sortEntries,
 } from '../src/roster/menus';
 import {
+  CANCEL_DX,
+  IDLE_RECORDING,
+  MAX_DURATION_MS,
+  MIN_DURATION_MS,
+  VOICE_EXTENSION,
+  VOICE_MIME,
+  beginRecording,
+  elapsedMs,
+  formatDuration,
+  isVoiceNote,
+  releaseRecording,
+  slideLabel,
+  updateSlide,
+  voiceAttachment,
+  voiceNoteOf,
+} from '../src/logic/voice';
+import {
+  ATTACHMENT_MAX_BYTES,
+  attachmentKind,
+  base64Of,
+  bytesOfDataUrl,
+  fileCardLine,
+  humanSize,
+  mimeOf,
+  parseMessageContent,
+  stage,
+  unstage,
+} from '../src/logic/attachments';
+import {
   NO_SELECTION,
   barVerbs,
   beginSelection,
@@ -3832,6 +3861,218 @@ async function main(): Promise<void> {
     assert.equal(body.keys['sections-v1'].rev, 10);
     meta.dirty['sections-v1'] = SECTIONS;
     assert.equal(buildPut(meta)!.keys['sections-v1'].rev, 11);
+  });
+
+  // ─────────────────────────────── 0.9.0 Phase H: voice ──
+
+  test('0.9.0 H: hold to record, slide left to cancel, release to stage', () => {
+    const t0 = 1_700_000_000_000;
+    let state = beginRecording(IDLE_RECORDING, t0);
+    assert.equal(state.phase, 'recording');
+    assert.equal(state.slideDx, 0);
+    assert.equal(elapsedMs(state, t0), 0);
+    assert.equal(formatDuration(elapsedMs(state, t0 + 7_400)), '0:07', 'elapsed time the user reads');
+    assert.equal(formatDuration(elapsedMs(state, t0 + 102_000)), '1:42');
+    // a second hold while recording is ignored — one thumb, one note
+    assert.equal(beginRecording(state, t0 + 500), state);
+    // the slide flips the PHASE, which is what the bar's label reads
+    state = updateSlide(state, -20);
+    assert.equal(state.phase, 'recording');
+    assert.equal(slideLabel(state), 'recording');
+    state = updateSlide(state, CANCEL_DX - 1);
+    assert.equal(state.phase, 'cancelling');
+    assert.equal(slideLabel(state), 'cancelling');
+    // the slide threshold is a real, negative distance, and junk cannot arm a cancel
+    assert.equal(updateSlide(beginRecording(IDLE_RECORDING, t0), Number.NaN).phase, 'recording');
+    assert.equal(updateSlide(beginRecording(IDLE_RECORDING, t0), CANCEL_DX).phase, 'cancelling');
+    // release: the slide wins, and the outcome NAMES which way it went
+    assert.deepEqual(releaseRecording(state, t0 + 3_000), { kind: 'cancel', reason: 'slid' });
+    // …and the note is capped, so one held thumb cannot run forever
+    const long = beginRecording(IDLE_RECORDING, t0);
+    assert.equal(elapsedMs(long, t0 + MAX_DURATION_MS * 2), MAX_DURATION_MS);
+  });
+
+  test('0.9.0 H: a note too short to be a message is refused, WITH the reason', () => {
+    const t0 = 1_700_000_000_000;
+    const state = beginRecording(IDLE_RECORDING, t0);
+    assert.deepEqual(releaseRecording(state, t0 + MIN_DURATION_MS - 1), { kind: 'cancel', reason: 'too-short' });
+    const kept = releaseRecording(state, t0 + MIN_DURATION_MS + 1);
+    assert.equal(kept.kind, 'send');
+    assert.equal(kept.kind === 'send' && kept.durationMs, MIN_DURATION_MS + 1);
+    // releasing with no recording at all is a cancel, never a message
+    assert.deepEqual(releaseRecording(IDLE_RECORDING, t0), { kind: 'cancel', reason: 'too-short' });
+    // both refusals have their own words in both languages
+    assert.ok(t.thread.voice.cancelled.length > 10);
+    assert.ok(t.thread.voice.tooShort.length > 10);
+  });
+
+  test('0.9.0 H: a voice note LEAVES the phone as a file the agent on the box can read', () => {
+    // There is no `audio.attach` RPC on the dashboard's /api/ws — so the note rides `file.attach`,
+    // whose decoder is the "any media type" one, and comes back as an `@file:` ref.
+    const attachment = voiceAttachment(4_200, 'AAAA', 'voice-1.m4a');
+    assert.equal(attachment.mime, VOICE_MIME);
+    assert.equal(attachment.name, 'voice-1.m4a');
+    assert.equal(attachment.name.endsWith(VOICE_EXTENSION), true);
+    assert.equal(attachment.dataUrl, 'data:audio/mp4;base64,AAAA');
+    // …and the SCREEN sends it through the file path, not the image one
+    const src = readFileSync(join(process.cwd(), 'app', 'thread', '[id].tsx'), 'utf8');
+    assert.match(src, /await backend\.attachFile\(sessionId, item\.dataUrl, item\.name, profile\)/);
+    assert.match(src, /if \(item\.kind === 'image'\) await backend\.attachImage/);
+    // the RPC itself exists on the backend, and the legacy surface refuses it with a reason
+    const backendSrc = readFileSync(join(process.cwd(), 'src', 'api', 'backend.ts'), 'utf8');
+    assert.match(backendSrc, /'file\.attach'/);
+  });
+
+  test('0.9.0 H: "receive" covers BOTH meanings — the agent sending one, and the phone playing it', () => {
+    // (a) an inbound audio FILE is a voice note
+    assert.equal(isVoiceNote('voice-1.m4a'), true);
+    assert.equal(isVoiceNote('clip.OGG'), true, 'case-insensitively');
+    assert.equal(isVoiceNote('notes.pdf'), false);
+    const parsed = parseMessageContent('have a listen\n@file:/home/x/attachments/voice-3.m4a');
+    assert.equal(parsed.attachments.length, 1);
+    const view = voiceNoteOf(parsed.attachments);
+    assert.ok(view, 'the attachment is recognised as a voice note');
+    assert.equal(view!.source, '/home/x/attachments/voice-3.m4a');
+    assert.equal(view!.durationMs, null, 'an absent duration is ABSENT, never invented');
+    assert.deepEqual(voiceNoteOf(parsed.attachments.filter((a) => a.kind === 'file')), view);
+    // (b) a non-audio attachment is NOT a voice note, so it keeps its file card
+    assert.equal(voiceNoteOf([{ kind: 'file', source: '/x/report.pdf', name: 'report.pdf' }]), null);
+    assert.equal(voiceNoteOf([]), null);
+    // (c) the bubble PLAYS it: a real player, over the media route the desktop already uses
+    const src = readFileSync(join(process.cwd(), 'app', 'thread', '[id].tsx'), 'utf8');
+    assert.match(src, /useAudioPlayer\(\{ uri: props\.source \}\)/);
+    assert.match(src, /function VoiceBubble/);
+    assert.match(src, /if \(playing\) player\.pause\(\);/, 'a second tap stops it');
+  });
+
+  test('0.9.0 H: the ONE new dependency is expo-audio, from the SDK, and the mic is declared', () => {
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>;
+    };
+    assert.ok(pkg.dependencies['expo-audio'], 'the recorder/player is expo-audio');
+    assert.ok(!pkg.dependencies['expo-av'], 'NOT expo-av: it is published for the pre-57 line');
+    // the version came from `npx expo install` (a caret-free SDK range), never hand-pinned
+    assert.match(pkg.dependencies['expo-audio'], /^~57\./, 'resolved against this SDK');
+    // no second native dependency crept in for the picker: camera + clipboard were already here
+    assert.ok(pkg.dependencies['expo-camera'] && pkg.dependencies['expo-clipboard']);
+    // the permission the recorder needs is declared, with the sentence the user will be shown
+    const app = JSON.parse(readFileSync(join(process.cwd(), 'app.json'), 'utf8')) as {
+      expo: { android: { permissions: string[] }; plugins: unknown[] };
+    };
+    assert.ok(app.expo.android.permissions.includes('android.permission.RECORD_AUDIO'));
+    assert.ok(
+      app.expo.plugins.some((plugin) => Array.isArray(plugin) && plugin[0] === 'expo-audio'),
+      'the config plugin carries the microphone sentence',
+    );
+  });
+
+  // ─────────────────────────────── 0.9.0 Phase G: attachments ──
+
+  test('0.9.0 G: the staging strip stages, sizes, and removes ONE item at a time', () => {
+    const png = `data:image/png;base64,${Buffer.from('a'.repeat(1200)).toString('base64')}`;
+    const first = stage([], { name: 'photo.png', dataUrl: png }, 'id-1');
+    assert.equal(first.refused, null);
+    assert.equal(first.staged.length, 1);
+    assert.equal(first.staged[0].kind, 'image', 'an image is a thumbnail, not a file card');
+    assert.equal(first.staged[0].mime, 'image/png');
+    assert.equal(first.staged[0].sizeBytes, bytesOfDataUrl(png), 'the size is MEASURED from the bytes');
+    assert.equal(humanSize(first.staged[0].sizeBytes), '1 kB', '1200 bytes, rounded to whole kB');
+    const second = stage(first.staged, { name: 'notes.pdf', dataUrl: `data:application/pdf;base64,${Buffer.from('x').toString('base64')}` }, 'id-2');
+    assert.equal(second.staged.length, 2);
+    assert.equal(second.staged[1].kind, 'file', 'a PDF is a file card');
+    // removing by id removes exactly that one
+    const left = unstage(second.staged, 'id-1');
+    assert.deepEqual(left.map((item) => item.id), ['id-2']);
+    // …and an EMPTY payload is refused WITH a reason, never staged as a broken bubble
+    const empty = stage([], { name: 'nothing.png', dataUrl: 'data:image/png;base64,' }, 'id-4');
+    assert.equal(empty.staged.length, 0);
+    assert.ok(empty.refused && empty.refused.name === 'nothing.png' && empty.refused.reason.length > 10);
+    // …and so is one over the cap, naming the size
+    const huge = `data:image/png;base64,${Buffer.alloc(ATTACHMENT_MAX_BYTES + 1024).toString('base64')}`;
+    const over = stage([], { name: 'huge.png', dataUrl: huge }, 'id-5');
+    assert.equal(over.staged.length, 0);
+    assert.match(over.refused?.reason ?? '', /25 MB/);
+  });
+
+  test('0.9.0 G: what the RPC carries is the base64 PAYLOAD, never the whole data URL', () => {
+    const png = `data:image/png;base64,AAAA`;
+    assert.equal(base64Of(png), 'AAAA', 'the RPC field is `content_base64`');
+    assert.equal(mimeOf(png), 'image/png');
+    assert.equal(base64Of('AAAA'), '', 'a bare payload is not a data URL — and is not guessed at');
+    assert.equal(attachmentKind('image/webp'), 'image');
+    assert.equal(attachmentKind('', 'photo.JPG'), 'image', 'the name decides when the mime is absent');
+    assert.equal(attachmentKind('application/pdf', 'notes.pdf'), 'file');
+    assert.equal(fileCardLine({ name: 'notes.pdf', sizeBytes: 1_400_000, mime: 'application/pdf' }), 'notes.pdf · 1.3 MB · application/pdf');
+  });
+
+  test('0.9.0 G: a message that CARRIED something reads back as attachments plus a caption', () => {
+    // The shape the thread endpoint serves with `inline_images=True` (recon §2): a PARTS LIST whose
+    // image part keeps its data URL inline.
+    const parts = [
+      { type: 'text', text: 'what is this?' },
+      { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } },
+    ];
+    const parsed = parseMessageContent(parts);
+    assert.equal(parsed.text, 'what is this?');
+    assert.equal(parsed.attachments.length, 1);
+    assert.equal(parsed.attachments[0].kind, 'image');
+    assert.ok(parsed.attachments[0].source.startsWith('data:image/png;base64,'));
+    assert.equal(parsed.attachments[0].sizeBytes, 3, '3 bytes for `AAAA` — measured, not guessed');
+    // …and the TEXT shape, where the agent was handed a path: both refs the desktop's own extractor
+    // reads, plus the older hint form.
+    const text = parseMessageContent('look at this\n@image:/home/x/images/upload_1.png\n@file:\`/home/x/attachments/report.pdf\`');
+    assert.equal(text.attachments.length, 2);
+    assert.deepEqual(text.attachments.map((a) => a.kind), ['image', 'file']);
+    assert.equal(text.attachments[0].name, 'upload_1.png');
+    assert.equal(text.attachments[1].name, 'report.pdf', 'backticked refs are unwrapped');
+    assert.equal(text.text, 'look at this', 'the refs are NOT left in the caption');
+    const hinted = parseMessageContent('caption\n[Image attached at: /home/x/images/shot.png]');
+    assert.equal(hinted.attachments.length, 1);
+    assert.equal(hinted.text, 'caption');
+    // junk never crashes and never eats the message
+    assert.deepEqual(parseMessageContent(null), { text: '', attachments: [] });
+    assert.deepEqual(parseMessageContent(42), { text: '', attachments: [] });
+    assert.equal(parseMessageContent([{ type: 'mystery' }]).text, '[mystery]', 'an unknown part still shows');
+  });
+
+  test('0.9.0 G: the phone SENDS the bytes to the session before it submits the turn', async () => {
+    // The point of the item: the attachment must be reachable by the AGENT on the box, not merely
+    // drawn on the phone. That means the RPC lands first, and only then does the turn go out.
+    const mock = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-att', { title: 'Anexos', profile: 'default' })],
+    });
+    await mock.listen();
+    const backend = createBackend(settingsFor(mock.url, { apiKey: DASH_BEARER }));
+    const payload = Buffer.from('a'.repeat(64)).toString('base64');
+    const result = await backend.attachImage('sess-att', payload, 'photo.png', 'default');
+    assert.equal(result.count, 1);
+    assert.ok(result.path.includes('images/'), 'it lands in the session images directory');
+    const sent = mock.attachCalls.at(-1);
+    assert.equal(sent?.session_id, 'sess-att');
+    assert.equal(sent?.filename, 'photo.png');
+    assert.equal(sent?.bytes, 64, 'the BYTES arrived — the base64 was decoded by the caller');
+    // a refusal is a thrown ApiError, not a silent no-op
+    await expectApiError(
+      () => backend.attachImage('sess-att', '', 'photo.png', 'default'),
+      (error) => assert.notEqual(error.status, 200),
+    );
+    backend.dispose();
+    await mock.close();
+  });
+
+  test('0.9.0 G: the legacy surface refuses the attach verbs WITH a reason, as it does for the rest', async () => {
+    const backend = createBackend(settingsFor(gateway.url, { surface: 'gateway' }));
+    await expectApiError(
+      () => backend.attachImage('sess-x', 'AAAA', 'photo.png', ''),
+      (error) => {
+        assert.equal(error.status, 501);
+        assert.match(error.message, /imagens|pictures/);
+      },
+    );
+    backend.dispose();
   });
 
   // ─────────────────────────────── 0.9.0 Phase D: menu parity ──

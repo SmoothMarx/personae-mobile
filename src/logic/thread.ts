@@ -19,6 +19,7 @@
  */
 
 import type { HermesMessage } from '../api/client';
+import { parseMessageContent, type InboundAttachment } from './attachments';
 import { toMillis } from '../format';
 import { t } from '../i18n';
 
@@ -35,7 +36,19 @@ export type ToolCall = {
 };
 
 export type ThreadItem =
-  | { kind: 'message'; key: string; role: 'user' | 'assistant' | 'other'; text: string; at: number | null }
+  | {
+      kind: 'message';
+      key: string;
+      role: 'user' | 'assistant' | 'other';
+      text: string;
+      at: number | null;
+      /**
+       * 0.9.0 G — what the message CARRIED. Images arrive as inline data URLs (the thread endpoint
+       * inlines them) and files as `@file:` refs, both parsed by `parseMessageContent`. Empty for a
+       * plain text message, which is most of them.
+       */
+      attachments: InboundAttachment[];
+    }
   | { kind: 'tools'; key: string; count: number; names: string[]; calls: ToolCall[] }
   | { kind: 'reasoning'; key: string; text: string };
 
@@ -285,12 +298,14 @@ export function buildItems(messages: HermesMessage[]): ThreadItem[] {
         flushRun(run, items, runIndex);
         if (run.length) runIndex += 1;
         run = [];
+        const carried = parseMessageContent(message.content);
         items.push({
           kind: 'message',
           key: message.id || `msg-${messageIndex}`,
           role: roleOf(message),
-          text,
+          text: carried.attachments.length ? carried.text : text,
           at: toMillis(message.timestamp),
+          attachments: carried.attachments,
         });
         messageIndex += 1;
       }
@@ -302,12 +317,16 @@ export function buildItems(messages: HermesMessage[]): ThreadItem[] {
     run = [];
     const text = textOf(message);
     if (!text.trim() && message.display_kind === 'hidden') continue;
+    // 0.9.0 G: a message's attachment part is not prose — it is pulled out of the text and drawn as
+    // a thumbnail (images) or a file card, and only the caption is left in the bubble.
+    const carried = parseMessageContent(message.content);
     items.push({
       kind: 'message',
       key: message.id || `msg-${messageIndex}`,
       role: roleOf(message),
-      text,
+      text: carried.attachments.length ? carried.text : text,
       at: toMillis(message.timestamp),
+      attachments: carried.attachments,
     });
     messageIndex += 1;
   }

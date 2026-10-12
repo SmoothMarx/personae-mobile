@@ -63,6 +63,9 @@ const DEFAULTS = {
   statePreferences: {},
 };
 
+/** 0.9.0 G — every `image.attach_bytes` the app sent (bytes counted, never the payload). */
+const attachCalls = [];
+
 const AVATAR_PNG_BASE64 =
   'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==';
 
@@ -262,6 +265,42 @@ export function createMockDashboard(options = {}) {
       emit(socket, 'message.complete', { text: 'Pronto: feito.', status: 'ok' }, sessionId);
       return;
     }
+    /**
+     * 0.9.0 G — `image.attach_bytes` (`tui_gateway/methods_prompt.py:849`): a remote client sends
+     * base64, the gateway writes it into the session's own images dir and queues it for the next
+     * submit. The mock records every call so a test can prove the phone SENT the bytes.
+     */
+    if (method === 'image.attach_bytes') {
+      const sessionId = String(params.session_id || '');
+      const reply = (payload) => socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, ...payload })}\n`));
+      if (!sessionId) {
+        reply({ error: { code: 4001, message: 'session required' } });
+        return;
+      }
+      const raw = String(params.content_base64 || '');
+      if (!raw) {
+        reply({ error: { code: 4015, message: 'content_base64 required' } });
+        return;
+      }
+      const bytes = Buffer.from(raw, 'base64').length;
+      if (!bytes) {
+        reply({ error: { code: 4017, message: 'image is empty' } });
+        return;
+      }
+      attachCalls.push({ session_id: sessionId, filename: String(params.filename || ''), bytes });
+      const name = `upload_${attachCalls.length}.png`;
+      reply({
+        result: {
+          attached: true,
+          path: `/home/mock/.hermes/images/${name}`,
+          count: attachCalls.length,
+          bytes,
+          text: `[User attached image: ${name}]`,
+        },
+      });
+      return;
+    }
+
     if (method === 'session.interrupt') {
       socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { ok: true, interrupted: true } })}\n`));
       return;
@@ -597,6 +636,8 @@ export function createMockDashboard(options = {}) {
     config,
     calls,
     searchCalls,
+    /** 0.9.0 G — `{session_id, filename, bytes}` per attach the app made. */
+    attachCalls,
     profiles,
     sessions,
     createdProfiles,

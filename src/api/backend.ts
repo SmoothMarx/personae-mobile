@@ -80,6 +80,28 @@ export type Backend = {
   /** 0.9.0 D — `Session ▸ Branch`: a new session that continues this transcript. */
   branch(id: string, profile?: string): Promise<HermesSession | null>;
   /**
+   * 0.9.0 G — stage one image onto the session server-side (`image.attach_bytes`, which exists for a
+   * remote client). The next `chatStream` carries it to the agent: the image is written into the
+   * session's OWN images directory, so this is a real attachment and not a phone-local picture.
+   */
+  attachImage(
+    sessionId: string,
+    base64: string,
+    filename: string,
+    profile?: string,
+  ): Promise<{ path: string; count: number }>;
+  /**
+   * 0.9.0 H — stage ANY media type onto the session (`file.attach`, whose decoder is explicitly the
+   * "any media type" one). A voice note rides this: the gateway writes it into the session workspace
+   * and hands the agent an `@file:<ref>`, so the audio is a real file on the box.
+   */
+  attachFile(
+    sessionId: string,
+    dataUrl: string,
+    name: string,
+    profile?: string,
+  ): Promise<{ path: string; refText: string; uploaded: boolean }>;
+  /**
    * 0.9.0 Phase A/I — the portable-preference document. `null` means the state plugin is not mounted
    * on this host, which is an ordinary answer (older server), never an error.
    */
@@ -302,6 +324,41 @@ function createDashboardBackend(settings: Settings): Backend {
     /** 0.9.0 D — the read watermark: `unread: true` is what the desktop's verb does. */
     async markUnread(id, profile = '') {
       await client.patchFlags(id, { unread: true }, profile);
+    },
+
+    /**
+     * 0.9.0 G — `image.attach_bytes` over the WS channel the app already speaks. Reply is
+     * `{attached, path, count, bytes, …}` (`tui_gateway/methods_prompt.py:849-877`).
+     */
+    async attachImage(sessionId, base64, filename, profile = '') {
+      const live = await shared();
+      const result = await live.rpc<Record<string, unknown>>('image.attach_bytes', {
+        session_id: sessionId,
+        content_base64: base64,
+        filename,
+        ...(profile ? { profile } : {}),
+      });
+      return { path: String(result.path ?? ''), count: Number(result.count ?? 0) };
+    },
+
+    /**
+     * 0.9.0 H — `file.attach` (`tui_gateway/methods_prompt.py:938-959`): stages a non-image file into
+     * the session workspace and returns the `@file:` ref the agent reads. `data_url` carries the
+     * bytes because the phone has no gateway-visible path.
+     */
+    async attachFile(sessionId, dataUrl, name, profile = '') {
+      const live = await shared();
+      const result = await live.rpc<Record<string, unknown>>('file.attach', {
+        session_id: sessionId,
+        data_url: dataUrl,
+        name,
+        ...(profile ? { profile } : {}),
+      });
+      return {
+        path: String(result.path ?? ''),
+        refText: String(result.ref_text ?? ''),
+        uploaded: result.uploaded === true,
+      };
     },
 
     /** 0.9.0 D — `session.branch_stored`: a whole-session branch, server-side. */
@@ -572,6 +629,19 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
     markUnread() {
       return Promise.reject(
         new ApiError(t.errors.server(501, t.errors.flagsUnsupported), { kind: 'http', status: 501 }),
+      );
+    },
+
+    /** 0.9.0 G/H — the attach RPCs are WS methods; only the dashboard surface speaks that channel. */
+    attachImage() {
+      return Promise.reject(
+        new ApiError(t.errors.server(501, t.errors.attachUnsupported), { kind: 'http', status: 501 }),
+      );
+    },
+
+    attachFile() {
+      return Promise.reject(
+        new ApiError(t.errors.server(501, t.errors.attachUnsupported), { kind: 'http', status: 501 }),
       );
     },
 
