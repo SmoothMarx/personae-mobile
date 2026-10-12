@@ -1434,3 +1434,220 @@ working-looking D that can lose a group on the next sync is worse than not shipp
   marker, not by a live redemption from a phone.
 * **Item 5's profile creation** is proven authorised (422) and proven working against the mock; no real
   profile was created on this box, so "a new profile appears in the roster on a phone" is unproven.
+
+# 0.8.0 — the operator's eight refinements (2026-10-12)
+
+All eight items on the user's list landed, in order, one commit each: **A** row spacing, **B** avatars +15%,
+**C** session-list indent + the dot under the face, **D** conversations-only by default with the two
+Session-types checkboxes, **E** swipe to archive/delete, **F** the "+" sheet no longer clipped, **G** the
+top buttons +10%, and **H** checkpoint notifications — the passenger phase, which built green and shipped.
+
+## The artifact
+
+| | |
+|---|---|
+| Path / bytes | `dist/personae-0.8.0.apk` / **128 502 224** |
+| sha256 | `1022ad7f8d1144f8a63fc660ccb3f45cce618d0be7567e093f020f734c43edf1` |
+| versionName / versionCode | **0.8.0** / **9** |
+| applicationId | `com.personae.mobile` (unchanged → installs OVER 0.7.0) |
+| signer SHA-256 | `bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26` (the same key as 0.1.0-0.7.0) |
+| build | `npx expo prebuild -p android --no-install` → `scripts/patch-android-signing.sh` → `scripts/patch-android-branding.sh` → `./gradlew :app:assembleRelease` in `personae-android:1` |
+| build log | `logs/gradle-v080.log` — **BUILD SUCCESSFUL in 11m 42s**, 605 tasks, `GRADLE_EXIT=0` |
+
+`bash logs/verify-0.8.0.sh` → **41 PASS, 0 FAIL, `RESULT: PASS — 0.8.0 verified`**
+(`logs/verify-0.8.0.txt`, `VERIFY_EXIT=0`). It derives the expected version from `app.json`, names the
+test that proves each phase, re-measures the two dashboard fields phase H rests on, and proves the 0.8.0
+**features** are inside the shipped bundle rather than trusting that the version string moved.
+
+Floors, measured before anything changed this run: `npm test` **161/161** → now **196/196, 0 failed**;
+`server/run-tests.sh tests` **60 passed** → still **60** (no server change was needed, and none was made).
+
+## A — more air between profile rows
+
+The row is a two-line cell and the divider sits at the bottom of it, so "space between rows" *is* the
+cell's height: `paddingVertical` 8 → **11** per side, **76 dp** rendered (was 70, +8.6%). The 27 dp line
+pitch, the 16 dp horizontal inset and the diver inset are untouched. *Test:* `0.8.0 A: the profile cell
+is 76 dp`. The 0.7.0 assertion that expected 70 is **superseded in place** with the old value kept in a
+comment, as the brief asks.
+
+## B — avatars 15% bigger
+
+`AVATAR_SIZE` **54 → 62** (54 × 1.15 = 62.1, down to a whole number so no face has a half-pixel edge) —
+a deliberate departure from the Telegram reference of 0.7.0, recorded in `avatars.ts` so nobody "fixes"
+it back. Every knock-on stays **derived**: `textX` is still `inset + avatar + gap` = **94**, and the
+divider inset is now `max(78, inset + avatar)` with 0.7.0's 78 as the floor. `avatarKey()` carries the
+size, so the 54 px blobs a 0.7.0 install left in AsyncStorage can never be served — *asserted*, not
+assumed (*test:* `0.8.0 B: cached art cannot survive the resize`).
+
+**Consequence, measured and reported rather than smoothed over:** at 62 dp the title column on a 360 dp
+canvas is 188 dp, which holds 19 characters at the 19 dp title, down from 20. The longest profile label
+on this box is **15 characters** (`design-guardian`; re-measured against the live `/api/profiles` today —
+only `default` carries a `display_name`, so every other label IS the profile name), so **nothing
+truncates**. On a 320 dp phone the column is 148 dp = 15 characters: still enough. The 0.7.0 assertions
+that assumed 20 characters / ≥156 dp are superseded in place, and the face stays 62.
+
+## C — the session list is less indented, the dot under the face
+
+A session row was padded to the profile row's TEXT column (86 dp, 94 after B); it is now padded to the
+**dot column**: `dotX 30`, column 14 (so the dot spans [30, 44]), centre **37**, gap 8 → title text at
+**`textX 52`** — 34 dp less indented than 0.7.0 and 42 dp less than today's profile text column. Cron
+rows keep that same column and swap the dot for the clock glyph, so both row species stay aligned.
+
+**One correction to the brief, written into the test:** the phase says the 62 dp face spans [16, 78]
+"centre 43" and the dot is 6 dp left of it. 16 + 62 = 78, so the centre is **47** — 43 was the centre of
+0.7.0's 54 dp face. The offset is therefore **10 dp**. The binding numbers the brief names (dot x 30, dot
+centre 37, text x in [48, 56]) are exactly as specified and are what the tests assert.
+
+## D — conversations by default, with checkboxes in Settings
+
+**One classifier, in `src/logic/rosterFeed.ts`**: `sessionTypeOf()` reads `isAutomatic()`, the only reader
+of `NON_CONVERSATION_SOURCES`. A test walks every `.ts/.tsx` under `src/` and asserts exactly one module
+reads that Set *in code*, so the list and the notifier cannot disagree — §5's failure mode, closed by a
+test rather than by discipline.
+
+Settings gains a **Session types** section on the MAIN screen (not behind Advanced), right after the
+language: **"Sessions"** and **"Automatic runs (cron, webhooks)"**, each with a one-line explanation,
+saved on tap with no Save button. Checkboxes rather than switches, because that is the operator's word
+and it makes "both off" visibly different from "one on".
+
+Defaults: sessions ON, automatic OFF. A `personae.settings.v1` blob written by 0.7.0 has no
+`sessionTypes` key at all and loads with those defaults **per bucket** (*test:* `0.8.0 D: a 0.7.0 stored
+blob with no sessionTypes key loads with the defaults`). Both off is legal: the list is empty and says
+**"No session types are selected"** with a way into Settings — never a blank screen. Hidden runs are
+announced in the footer instead of silently disappearing.
+
+**Fail-open, and the live box proves it matters:** an unknown `source` is a conversation. The dashboard
+already serves one — `oneshot`, 7 rows, measured today — and it must not vanish from the list.
+
+**Search is deliberately NOT gated by the filter.** `buildRoster` keeps every conversation as the search
+corpus, so a conversation hidden by the filter is still reachable by search (tested). The honest other
+half is tested too: cron runs were never in the search corpus (`searchRoster` has always swept
+conversations only, pinned since 0.5.0), so turning a type off never *reduces* what search can find.
+
+## E — swipe a row left for archive (blue) and delete (red, two taps)
+
+Decisions live in a pure module (`src/logic/swipe.ts`); the component is a thin shell over it:
+`|dx| > 8 && |dx| > 1.2 × |dy|` to claim (a tap never opens a row, a vertical scroll is never eaten),
+`clampDrag` to the 152 dp reveal, `settle` by distance or flick, **exactly one row open** and closed on
+scroll, and **delete in two steps** — `armDelete` then `confirmDelete`, where arming does not dismiss the
+swipe and the armed state is escapable three ways.
+
+**No new native dependency**: React Native core `Animated` + `PanResponder` only, and a test asserts
+`react-native-gesture-handler` / `react-native-reanimated` are absent from `package.json`.
+
+**Surface honesty:** the `:9222` gateway answers `501 archiveUnsupported` / `deleteUnsupported`, so on
+that surface both buttons render **disabled carrying that same sentence**, and the accessibility action
+list is empty — never a tap that does nothing. Red is the existing `colors.red`; archive gets its own
+blue token (`#1f6feb`), both pinned in a test. One verb each: the swipe calls the same
+`roster.archiveSession` / `roster.deleteSession` the long-press menu calls (which stays), and a test pins
+that there is exactly one `backend.deleteSession` call site in the app.
+
+## F — the "+" sheet is no longer clipped
+
+Cause, from the code: `styles.sheet` padded with `space.md` and never accounted for the device's bottom
+inset. Fix in the shared style, so **both** `ActionSheet` and `PromptSheet` get it: `paddingBottom =
+space.md + insets.bottom` from `react-native-safe-area-context` (already a dependency), and the entries
+wrapped in a `ScrollView` inside the existing `maxHeight: '80%'` — the title and the prompt's buttons stay
+outside it. The arithmetic is `sheetPadding()` in `src/roster/sheet.ts`, a pure module, because
+`components.tsx` cannot be imported by the suite (it pulls React Native): measured at insets **0 / 24 /
+48**, plus negative and NaN junk.
+
+## G — the top buttons are 10% bigger
+
+`headerMetrics()` applies ONE constant (`HEADER_ICON_SCALE = 1.1`) to all three glyphs **and** to the box
+they sit in: `add 20 → 22`, `expand 16 → 18`, `settings → 18`, box `38 × 34 → 42 × 37`. The glyph and the
+touch target are separate numbers: the boxes are 42 × 37, so each pressable inflates `hitSlop` by
+`ceil((44 - 37) / 2) = 4` and the **effective target is 45 × 45** — asserted, not hoped for.
+
+## H — checkpoint notifications (device-side, and honest about what it cannot see)
+
+**Probed first.** One authorised request against the live dashboard over the 74 recents rows:
+
+```
+is_active   PRESENT on every row (2 true, 72 false)   → a finished turn is knowable EXACTLY
+waiting     ABSENT on every row                        → a "waiting" checkpoint CANNOT be seen here
+needs_input ABSENT on every row
+```
+
+So the app **measures the surface's capability from its own rows** (`surfaceCapability`) instead of
+assuming it. "Finished" is the exact `is_active` true → false transition **with `last_active` advanced**;
+when a surface serves no `is_active`, the watcher falls back to "new activity since the last poll" and
+every event carries `basis: 'activity'` so the copy can never claim "finished" blind. The Settings
+**"waiting" switch renders DISABLED with that reason** on today's dashboard.
+
+**These are device-side LOCAL notifications, not push**, and nothing in the app, this file or any commit
+message calls them push. They fire while the app is running, because the phone's own poll is the only
+thing that knows a checkpoint happened. Closed-app delivery needs an FCM project, credentials and a sender
+on the gateway — that is 0.9.0 (see `SCOPE-0.9.0.md` Item 1, whose Firebase prerequisite only the user can
+do).
+
+* `src/logic/checkpoints.ts` — pure: snapshot → events, one event per session per pass, the
+  `(sessionId, kind, last_active)` watermark (capped 200, pruned at 7 days), permission reduced to three
+  truthful states (`granted` / `denied` / `not-asked`), and the notification copy.
+* `src/logic/watcher.ts` — foreground-only ~30 s poll, **single-flight by construction**, dormant while
+  backgrounded, one **immediate** pass on resume.
+* `src/notifications.ts` — the ONLY module that imports `expo-notifications`: handler, the
+  `checkpoints` channel at `AndroidImportance.HIGH`, `trigger: null`, and the response listener. The
+  presentation keys were read off the **installed** SDK 57 types (`shouldShowBanner` / `shouldShowList`),
+  not from an API sketch.
+* `app/_layout.tsx` — handler + channel + tap-to-open (`router.push('/thread/<id>')`), mounted once.
+* `app/settings.tsx` — master switch + per-kind switches + the truthful permission state; the permission
+  is requested at exactly one moment (**the master switch going on**), never at cold start.
+
+No spam, one source of truth: a session type the user hid **never notifies** (phase D's filter is called,
+not re-implemented), the thread on screen is suppressed, the first poll only establishes a baseline, and a
+relaunch does not re-announce anything.
+
+## What could NOT be verified (0.8.0)
+
+* **Nothing was verified on the phone.** Still no `adb` on either host: the 76 dp cells, the 62 dp faces,
+  the less-indented list, the swipe, the sheet's bottom inset, the bigger header glyphs and a real
+  notification have never been rendered or delivered anywhere. What is proven is the geometry and the
+  logic as data, the wiring by source-inspection tests, the bundle's contents, and the signer.
+* **"Waiting on me" cannot fire on this dashboard**, because it serves no `waiting`/`needs_input` field
+  (measured again by the verifier on every run). The detection is implemented and tested with synthetic
+  rows; the switch ships disabled-with-reason. If the dashboard starts serving the field, the switch
+  enables itself and the verifier says so.
+* **`PanResponder` vs the FlatList's scroll is argued, not observed.** The claim predicate is tested, and
+  a claim requires `|dx| > 1.2 × |dy|`, which is what should keep a vertical scroll with the list — but
+  no finger has ever done it on a device. If it turns out to fight the scroll, Phase E's fallback (the
+  long-press menu, which still carries both verbs) is already in place.
+* **The notification itself is untested on hardware**: the permission prompt, the channel, the heads-up
+  behaviour and the tap-to-open path are all proven at the API-shape level only.
+* **The APK grew**, 114.3 MB → 128.5 MB, and the reason is named rather than hidden: `npx expo install
+  expo-notifications` re-resolved the tree, and npm then installed `expo-router`'s own transitive native
+  deps (`react-native-reanimated@4.7.1`, `react-native-gesture-handler@3.3.0`,
+  `react-native-worklets@0.13.0`). They are **not** in `package.json` `dependencies` (a test pins that),
+  nothing in the app imports them, and the swipe does **not** use them — it is `PanResponder` +
+  `Animated`, as §5 requires. They are autolinked into the APK all the same, which is where the ~14 MB
+  went (`npm ls` also warns that `worklets@0.13.0` is outside `expo-modules-core`'s peer range; the build
+  does not care, and neither does the app).
+* **Phase D of 0.7.0 (session groups, `session-groups-v1`) is untouched.** It stays deferred by name; its
+  note above is intact and this run did not start it.
+
+## Pitfalls worth keeping from this run
+
+* **`expo prebuild` cannot clear a root-owned `android/`** — Gradle in Docker writes `android/build`,
+  `.gradle` and `.kotlin` as root, and the next prebuild dies with `EACCES`. Remedy (no sudo):
+  `docker run --rm -v $PWD:/work alpine:latest sh -c "rm -rf /work/android"` before every prebuild.
+* **A 5-minute tool-call cap makes the Gradle build a background job you poll**, not a foreground wait:
+  `setsid nohup docker run … &`, then read `logs/gradle-v080.log` for `GRADLE_EXIT`. This build took
+  **11m42s** (vs 4m36s for 0.7.0) because of the three extra native libraries above.
+* **The test suite is the only place a UI decision can be pinned here.** Four times this run a "fix" had
+  to be superseded *in place* (the 70 dp cell, the 54 dp face, the 20-character title, the visible
+  settings fields) — each time with the old value kept in a comment, because a test that silently
+  changes shape is indistinguishable from a test that was deleted.
+* **§5's "one classifier" is best enforced by a filesystem walk, not by intent**: the test that reads
+  every `.ts`/`.tsx` under `src/` and asserts exactly one module touches `NON_CONVERSATION_SOURCES`
+  *in code* (comments excluded) is what makes "the list and the notifications agree" a fact.
+* **Do NOT restart `hermes-serve.service` from inside a tool call** (see the 0.7.0 note below, still
+  true). Nothing in this release needed a server change, so nothing was restarted.
+
+## Next run's first step (0.9.0)
+
+Unchanged from the parked scope, and now unblocked on the app side: **Item 1 of `SCOPE-0.9.0.md` — real
+push.** The app half that 0.8.0 could honestly build is in place (`checkpoints.ts` decides, `watcher.ts`
+polls, `notifications.ts` presents), so the first step is the prerequisite only the user can do: create the
+Firebase project, register the Android app as **exactly** `com.personae.mobile`, download
+`google-services.json`, and wire it through `app.json` `android.googleServicesFile` — then the sender on
+the gateway, and `getDevicePushTokenAsync()` beside the local channel that already exists.
