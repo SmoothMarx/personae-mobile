@@ -13,6 +13,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { createBackend } from '../src/api/backend';
 import { normalizeError } from '../src/api/errors';
@@ -32,6 +33,7 @@ import { buildLogDocument, log } from '../src/logging';
 import { parseErrorForDisplay } from '../src/api/display';
 import { xhrTransport } from '../src/api/transport';
 import { useConnectivity } from '../src/ConnectivityContext';
+import { screenInsets } from '../src/insets';
 import { formatTime } from '../src/format';
 import { t } from '../src/i18n';
 import { revokeSelf } from '../src/pairing';
@@ -105,6 +107,11 @@ export default function SettingsScreen() {
    * wizard's in-progress state is never thrown away by a navigation.
    */
   const [page, setPage] = useState<SettingsPageId>('index');
+  /**
+   * 0.9.0 F (landscape) — this screen read no insets at all. The horizontal half matters here more
+   * than on the roster (fields run the full width), so it is applied to the scroll content.
+   */
+  const insets = screenInsets(useSafeAreaInsets());
   const [newRoute, setNewRoute] = useState('');
   const [routeProblem, setRouteProblem] = useState<string | null>(null);
   const routeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -468,7 +475,11 @@ export default function SettingsScreen() {
 
   if (page === 'index') {
     return (
-      <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <ScrollView
+        style={styles.screen}
+        contentContainerStyle={[styles.content, { paddingLeft: space.md + insets.paddingLeft, paddingRight: space.md + insets.paddingRight }]}
+        keyboardShouldPersistTaps="handled"
+      >
         <Text style={styles.pageTitle}>{t.settings.pagesTitle}</Text>
         <Text style={styles.help}>{t.settings.pagesHelp}</Text>
         {settingsRows().map((row) => {
@@ -514,7 +525,11 @@ export default function SettingsScreen() {
   );
 
   return (
-    <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <ScrollView
+      style={styles.screen}
+      contentContainerStyle={[styles.content, { paddingLeft: space.md + insets.paddingLeft, paddingRight: space.md + insets.paddingRight }]}
+      keyboardShouldPersistTaps="handled"
+    >
       {backRow}
       <Text style={styles.pageTitle}>{t.settings.pages[SETTINGS_PAGE_TITLE_KEY[page]]}</Text>
       <Text style={styles.hint}>{t.settings.autoSave}</Text>

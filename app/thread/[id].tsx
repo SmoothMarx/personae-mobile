@@ -20,6 +20,7 @@
 import { Ionicons } from '@expo/vector-icons';
 import { Stack, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ActivityIndicator,
   FlatList,
@@ -40,6 +41,7 @@ import type { StreamHandle } from '../../src/api/transport';
 import { formatTime } from '../../src/format';
 import { t, useLanguage } from '../../src/i18n';
 import { buildItems, type ThreadItem } from '../../src/logic/thread';
+import { horizontalInset } from '../../src/insets';
 import { threadTitle } from '../../src/logic/roster';
 import { useBackend } from '../../src/useBackend';
 import { colors, font, radius, space } from '../../src/theme';
@@ -67,6 +69,14 @@ export default function ThreadScreen() {
   const [refreshing, setRefreshing] = useState(false);
   /** Per-run expansion: a Set of item keys, never one global boolean (F3, cause 2). */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
+  /**
+   * 0.9.0 F (landscape) — this screen read NO safe-area insets at all through 0.8.0. In landscape the
+   * cutout is on a SIDE, so the bubble list and the composer both need the horizontal inset, or the
+   * first characters of every message sit under it.
+   */
+  const insets = useSafeAreaInsets();
+  const sideInset = horizontalInset(insets);
+  const sidePad = { paddingLeft: space.md + sideInset, paddingRight: space.md + sideInset };
 
   const handleRef = useRef<StreamHandle | null>(null);
   const liveTextRef = useRef('');
@@ -338,7 +348,9 @@ export default function ThreadScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.screen}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      /* 0.9.0 F (landscape): Android needs `height`, not nothing — with no behaviour the raised
+         keyboard covers the composer in a short viewport, which is the "composer swallowed" case. */
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {/* F4: title -> id, never a raw id while a title exists. */}
@@ -364,7 +376,7 @@ export default function ThreadScreen() {
         keyExtractor={(item) => item.key}
         renderItem={renderItem}
         extraData={language}
-        contentContainerStyle={styles.listContent}
+        contentContainerStyle={[styles.listContent, sidePad]}
         ListFooterComponent={footer}
         refreshControl={
           <RefreshControl
@@ -391,7 +403,7 @@ export default function ThreadScreen() {
         }
       />
 
-      <View style={styles.composer}>
+      <View style={[styles.composer, sidePad]}>
         <TextInput
           value={draft}
           onChangeText={setDraft}

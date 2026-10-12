@@ -8,7 +8,7 @@
 
 import { Ionicons } from '@expo/vector-icons';
 import React, { useEffect, useRef } from 'react';
-import { ActivityIndicator, Animated, Image, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Animated, Image, Modal, PanResponder, Pressable, ScrollView, StyleSheet, Text, TextInput, useWindowDimensions, View } from 'react-native';
 
 import { t } from '../i18n';
 import { AVATAR_SIZE } from '../logic/avatars';
@@ -18,8 +18,8 @@ import type { RosterProfileRow, SessionRowModel } from '../logic/rosterFeed';
 import { SWIPE, actionAvailability, actionLabel, clampDrag, confirmLabel, restX, rowAccessibilityActions, settle, shouldClaim } from '../logic/swipe';
 import type { Surface } from '../settings';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { rosterRowGeometry, sessionRowGeometry } from './geometry';
-import { sheetPadding } from './sheet';
+import { rosterRowGeometry, searchBarMetrics, sessionRowGeometry } from './geometry';
+import { sheetMaxHeight, sheetPadding } from './sheet';
 import { SWATCHES } from '../rosterPrefs';
 import { colors, font, radius, space } from '../theme';
 
@@ -28,6 +28,9 @@ const G = rosterRowGeometry();
 
 /** 0.8.0 C: the session row's own column — the dot under the face, not the profile text column. */
 const S = sessionRowGeometry();
+
+/** 0.9.0 F: the search bar's height and radius, both DERIVED (see `searchBarMetrics`). */
+const SEARCH = searchBarMetrics();
 
 /** One profile row's shared metrics, used by the profile row AND the sessions under it. */
 export const ROW_METRICS = {
@@ -452,7 +455,7 @@ export function SwatchPicker(props: { value: string | null; onPick: (colour: str
  * failing test rather than a surprise on a phone. `children` carries whatever the picked verb needs
  * next (the swatch palette, the group list) without inventing a second sheet.
  *
- * 0.8.0 F: the ENTRY LIST scrolls inside the same `maxHeight: '80%'`, and the sheet's bottom padding
+ * 0.8.0 F: the ENTRY LIST scrolls inside the sheet's own cap (80% of a tall viewport; 0.9.0 F made\n * that cap a function of the viewport), and the sheet's bottom padding
  * is `space.md + insets.bottom`, so a long list scrolls instead of clipping and the last entry is
  * never under the navigation bar. Both sheets share the fix because both use `styles.sheet`.
  */
@@ -470,10 +473,18 @@ export function ActionSheet(props: {
   children?: React.ReactNode;
 }) {
   const insets = useSafeAreaInsets();
+  /**
+   * 0.9.0 F (landscape) — the cap is a function of the VIEWPORT, not a constant: '80%' of a short
+   * landscape height leaves almost nothing to scroll in, so a short viewport gets more of itself.
+   */
+  const { height: viewportHeight } = useWindowDimensions();
   return (
     <Modal visible={props.visible} transparent animationType="fade" onRequestClose={props.onClose}>
       <Pressable style={styles.sheetBackdrop} onPress={props.onClose} accessibilityRole="button" accessibilityLabel={t.common.close}>
-        <Pressable style={[styles.sheet, { paddingBottom: sheetPadding(insets) }]} onPress={() => undefined}>
+        <Pressable
+          style={[styles.sheet, { maxHeight: sheetMaxHeight(viewportHeight), paddingBottom: sheetPadding(insets) }]}
+          onPress={() => undefined}
+        >
           <Text style={styles.sheetTitle} numberOfLines={1}>
             {props.title}
           </Text>
@@ -537,10 +548,15 @@ export function PromptSheet(props: {
   onClose: () => void;
 }) {
   const insets = useSafeAreaInsets();
+  /** Same live cap as `ActionSheet` — both sheets share `styles.sheet`, so they share the rule. */
+  const { height: viewportHeight } = useWindowDimensions();
   return (
     <Modal visible={props.visible} transparent animationType="fade" onRequestClose={props.onClose}>
       <Pressable style={styles.sheetBackdrop} onPress={props.onClose} accessibilityRole="button" accessibilityLabel={t.common.close}>
-        <Pressable style={[styles.sheet, { paddingBottom: sheetPadding(insets) }]} onPress={() => undefined}>
+        <Pressable
+          style={[styles.sheet, { maxHeight: sheetMaxHeight(viewportHeight), paddingBottom: sheetPadding(insets) }]}
+          onPress={() => undefined}
+        >
           <Text style={styles.sheetTitle}>{props.title}</Text>
           <TextInput
             value={props.value}
@@ -576,9 +592,10 @@ const styles = StyleSheet.create({
     paddingVertical: space.md,
     paddingHorizontal: space.md,
     gap: 2,
-    maxHeight: '80%',
+    // 0.9.0 F: the cap is applied per-render from the viewport height (`sheetMaxHeight`), so a short
+    // landscape height gets 92% and a tall portrait one keeps 0.8.0's 80%.
   },
-  /** 0.8.0 F: `flexGrow: 0` so a SHORT entry list does not stretch the sheet, and the maxHeight above
+  /** 0.8.0 F: `flexGrow: 0` so a SHORT entry list does not stretch the sheet, and the live maxHeight
    *  is what a LONG one scrolls inside. */
   sheetScroll: { flexGrow: 0 },
   sheetTitle: { color: colors.text, fontSize: font.body, fontWeight: '700', paddingBottom: space.sm },
@@ -643,15 +660,20 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
   },
   monogram: { color: colors.muted, fontWeight: '700' },
+  /**
+   * 0.9.0 F — "rounded at the side" and "+25% taller". Both DERIVED from `SEARCH_BAR`, and the test
+   * asserts the derivation: 38 → ceil(38 × 1.25) = 48 dp, radius = the palette's pill token.
+   * (0.8.0's literal 38 dp height and `radius.sm` corner are the values being superseded.)
+   */
   searchRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: space.sm,
     marginHorizontal: space.md,
     marginBottom: space.sm,
-    paddingHorizontal: space.sm,
-    height: 38,
-    borderRadius: radius.sm,
+    paddingHorizontal: space.md,
+    height: SEARCH.height,
+    borderRadius: SEARCH.radius,
     borderWidth: 1,
     borderColor: colors.border,
     backgroundColor: colors.panel,

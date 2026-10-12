@@ -38,6 +38,7 @@
  */
 
 import { AVATAR_SIZE } from '../logic/avatars';
+import { radius as themeRadius } from '../theme';
 
 /** The reference canvas' width in dp; 1 px there is 1 dp here. */
 export const ROW_WIDTH = 360;
@@ -179,7 +180,8 @@ export function faceCentre(geometry: RosterRowGeometry = rosterRowGeometry()): n
 // ───────────────────────────────────────── the header's icons (0.8.0 G) ──
 
 /** The one constant the operator's "+10% on the top buttons" is applied from. */
-export const HEADER_ICON_SCALE = 1.1;
+/** Was 1.1 in 0.8.0 G; 1.25 for 0.9.0 F ("make the + and settings buttons bigger"). */
+export const HEADER_ICON_SCALE = 1.25;
 
 /** The floor every touch target on this screen has to meet, whatever the glyph's size. */
 export const MIN_TOUCH_TARGET = 44;
@@ -202,12 +204,20 @@ export type HeaderMetrics = {
 };
 
 /**
- * 0.8.0 G — "make the top buttons (+ | Expand | Settings) 10% bigger".
+ * 0.9.0 F — "make the + and settings buttons bigger, but with a transparent background".
  *
- * Three glyphs, ONE constant, and the *box* scales with them, because a bigger glyph in an unchanged
- * box reads as a cramped button rather than a bigger one. The GLYPH and the TOUCH TARGET are
- * deliberately separate numbers: the glyphs are small (18–22 dp), the hit area is not — the pressable
- * keeps its scaled box and inflates its `hitSlop` until the real target is at least 44 × 44 dp.
+ * SUPERSEDED IN PLACE, old value kept: 0.8.0 G shipped **1.1** ("make the top buttons 10% bigger")
+ * and its two tests asserted 22 / 18 / 42 × 37. The operator asked for BIGGER again in 0.9.0, so the
+ * constant moves to **1.25** and the knock-ons move with it — but the property 0.8.0 established is
+ * exactly the one being kept: THREE glyphs, ONE constant, and the box scales with the glyphs.
+ *
+ * At 1.25: add 20 → 25, expand 16 → 20, settings → 20, box 38 × 34 → 48 × 43. Three 48 dp boxes plus
+ * the 16 dp insets leave 200 dp of title on a 360 dp bar, which still fits the longest label on this
+ * box (15 characters ≈ 165 dp at 22 dp). The GLYPH and the TOUCH TARGET stay separate numbers: the
+ * boxes are 48 × 43, so `hitSlop` is `ceil((44 − 43) / 2)` = 1 and the effective target is 45 × 45.
+ *
+ * The *background* is a style change, not a number: `styles.headerIcon` loses
+ * `backgroundColor: colors.panelAlt`, so the glyphs sit on the screen with nothing behind them.
  */
 export function headerMetrics(): HeaderMetrics {
   const scale = HEADER_ICON_SCALE;
@@ -232,4 +242,36 @@ export function headerMetrics(): HeaderMetrics {
 /** Does this title fit the row's title column at the reference's title size? */
 export function titleFits(name: string, geometry: RosterRowGeometry = rosterRowGeometry()): boolean {
   return estimatedTextWidth(name, geometry.titleSize) <= geometry.titleMaxWidth;
+}
+
+// ─────────────────────────────────────────── the search bar (0.9.0 F) ──
+
+/**
+ * 0.9.0 F — "make the search bar rounded at the side, and increase it's height by 25%."
+ *
+ * Both numbers are DERIVED from the two constants below, and the height is asserted as the
+ * derivation rather than as a literal — the same rule 0.8.0 B applied to the avatar (``54 × 1.15 =
+ * 62.1, taken to a whole number``). `base` is 0.8.0's shipped 38 dp, kept here as the recorded
+ * starting point so the "+25%" is a visible multiplication rather than a magic 48.
+ *
+ * `Math.ceil` because 38 × 1.25 = 47.5 and a half-pixel box is a blurry box; 0.8.0's convention for a
+ * fractional scale (``geometry.ts:33``) is to round UP to a whole number of dp.
+ *
+ * `radius` is the palette's own pill token, not a new number, so "rounded at the side" means *fully*
+ * rounded (a stadium) rather than "a bit more rounded than the 6 dp it was".
+ */
+export const SEARCH_BAR = {
+  /** 0.8.0's shipped height (was a literal 38 in `components.tsx`). */
+  base: 38,
+  /** The operator's "+25%". */
+  scale: 1.25,
+} as const;
+
+export function searchBarMetrics(): { base: number; scale: number; height: number; radius: number } {
+  return {
+    base: SEARCH_BAR.base,
+    scale: SEARCH_BAR.scale,
+    height: Math.ceil(SEARCH_BAR.base * SEARCH_BAR.scale),
+    radius: themeRadius.pill,
+  };
 }

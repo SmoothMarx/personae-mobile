@@ -32,6 +32,8 @@ import { normalizeError } from '../src/api/errors';
 import { t, useLanguage } from '../src/i18n';
 import { monogramFor } from '../src/logic/avatars';
 import { headerMetrics } from '../src/roster/geometry';
+import { showsConnectionBanner } from '../src/roster/banner';
+import { screenInsets } from '../src/insets';
 import type { SortMode } from '../src/logic/sections';
 import { ActionSheet, ProfileRow, PromptSheet, SearchBar, SectionHeader, SessionRow, SwatchPicker } from '../src/roster/components';
 import {
@@ -245,7 +247,20 @@ export default function RosterScreen() {
     [openMenu, roster, settings.surface, swipe],
   );
 
-  const openSessions = roster.model.rows.filter((row) => row.expanded);
+  /**
+   * 0.9.0 F: `openSessions` is gone with the Expand/collapse-all glyph that consumed it. The ABILITY
+   * is untouched — `roster.toggleProfile` (the row tap) still expands one profile at a time.
+   */
+  /**
+   * 0.9.0 F (item 2) — what the banner decision reads. `rowCount` is what would paint right now, so
+   * "the list genuinely cannot load" is a fact about the screen rather than about the socket.
+   */
+  const bannerInput = {
+    stage: roster.diagnostic.stage,
+    contactError: Boolean(roster.contactError),
+    feedError: Boolean(roster.feedError),
+    rowCount: roster.listRows.length,
+  };
   /** 0.8.0 G: the three header glyphs and their boxes come from ONE constant. */
   const H = headerMetrics();
 
@@ -268,27 +283,11 @@ export default function RosterScreen() {
         >
           <Ionicons name="add" size={H.add} color={colors.text} />
         </Pressable>
-        {/* One control, two states: it opens everything when nothing is open, and closes the open
-            set otherwise. A separate pair would be two buttons for one idea. */}
-        <Pressable
-          onPress={() => {
-            if (openSessions.length) {
-              for (const row of openSessions) roster.toggleProfile(row.name);
-            } else {
-              for (const row of roster.model.rows) roster.openProfile(row.name);
-            }
-          }}
-          accessibilityRole="button"
-          accessibilityLabel={openSessions.length ? t.roster.collapseAll : t.roster.expandAll}
-          hitSlop={H.hitSlop}
-          style={({ pressed }) => [
-            styles.headerIcon,
-            { width: H.boxWidth, height: H.boxHeight },
-            pressed && styles.pressed,
-          ]}
-        >
-          <Ionicons name={openSessions.length ? 'contract-outline' : 'expand-outline'} size={H.expand} color={colors.text} />
-        </Pressable>
+        {/* 0.9.0 F (item 8) — "Remove the Expand/collapse all button from the top bar."
+            REMOVED: the middle of the three glyphs, the only control with two states. The ABILITY is
+            untouched — per-profile expand/collapse stays on every row (`roster.toggleProfile`, and the
+            row's own affordance in `components.tsx`), and `roster.openProfile` is still reached by
+            `toggleProfile` and by a search hit's auto-expand, so nothing here became dead code. */}
         <Pressable
           onPress={() => router.push('/settings')}
           accessibilityRole="button"
@@ -311,7 +310,11 @@ export default function RosterScreen() {
         busy={roster.searching}
       />
 
-      {contactDiagnostic ? (
+      {/* 0.9.0 F (item 2) — "Remove the text regarding the connection."
+          The ROUTINE strip goes; the FAILURE disclosure stays, because the banner exists so a wrong
+          port does not look like an empty list. The decision is `showsConnectionBanner` (a module, so
+          it is testable), and `CONNECTION_STRIP_ALWAYS` in that module restores 0.8.0 in one line. */}
+      {contactDiagnostic && showsConnectionBanner(bannerInput) ? (
         <View style={styles.bannerWrap}>
           <ConnectivityBanner
             diagnostic={contactDiagnostic}
@@ -321,14 +324,14 @@ export default function RosterScreen() {
           />
           <Text style={styles.bannerBody}>{t.roster.profileErrorBody}</Text>
         </View>
-      ) : (
+      ) : !contactDiagnostic && showsConnectionBanner(bannerInput) ? (
         <ConnectivityBanner
           diagnostic={roster.diagnostic}
           busy={roster.connectivityBusy}
           onRecheck={roster.recheck}
           onOpenSettings={() => router.push('/settings')}
         />
-      )}
+      ) : null}
 
       {/* The :9222 surface has no /api/profiles at all — say so, because that is exactly the state a
           0.4.0 upgrade lands in when its stored credential is the old key. */}
@@ -356,7 +359,7 @@ export default function RosterScreen() {
 
   if (!roster.configured) {
     return (
-      <View style={[styles.screen, { paddingTop: insets.top }]}>
+      <View style={[styles.screen, screenInsets(insets)]}>
         {header}
         <View style={styles.centered}>
           <Text style={styles.emptyTitle}>{t.roster.notConfiguredTitle}</Text>
@@ -374,7 +377,7 @@ export default function RosterScreen() {
   const sectionMenu = menu.kind === 'section' ? menu : null;
 
   return (
-    <View style={[styles.screen, { paddingTop: insets.top }]}>
+    <View style={[styles.screen, screenInsets(insets)]}>
       <FlatList
         data={roster.listRows}
         keyExtractor={(item) => item.key}
@@ -430,12 +433,13 @@ export default function RosterScreen() {
           <View style={styles.footer}>
             {/* 0.8.0 D: the runs are still there, they are just not drawn — say so, with the way to
                 turn them on. Silence here would read as "this box has no scheduled work". */}
+            {/* 0.9.0 F (item 3) — "Remove the text at the end '51 automatic...'".
+                REMOVED: `automaticCount(n) · automaticHelp`. KEPT: the `hidden(n)` line below, which is
+                0.8.0 D's honesty disclosure and is NOT the line quoted — it is the difference between a
+                filtered list and a lying one (goal §5). `t.roster.automaticCount`/`automaticHelp` stay in
+                the string table, unused, because deleting a string is not the same as removing a line. */}
             {roster.model.automaticHidden ? (
               <Text style={styles.help}>{t.roster.types.hidden(roster.model.automaticHidden)}</Text>
-            ) : roster.model.automaticSeen ? (
-              <Text style={styles.help}>
-                {t.roster.automaticCount(roster.model.automaticSeen)} · {t.roster.automaticHelp}
-              </Text>
             ) : null}
             {roster.notice ? <Text style={styles.notice}>{roster.notice}</Text> : null}
           </View>
@@ -743,11 +747,18 @@ const styles = StyleSheet.create({
   centered: { alignItems: 'center', gap: space.sm, padding: space.xl },
   headerRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingHorizontal: space.md, paddingVertical: space.sm },
   headerTitle: { flex: 1, color: colors.text, fontSize: font.large, fontWeight: '700' },
+  /**
+   * 0.9.0 F (item 9) — "Make the + and settings buttons bigger, but with a transparent background."
+   * The size comes from `headerMetrics()` (ONE constant, superseded 1.1 → 1.25); the background is
+   * GONE — 0.8.0's `backgroundColor: colors.panelAlt` was the thing to remove, so the glyphs now sit
+   * on the screen. `backgroundColor: 'transparent'` is explicit rather than an omitted key, so the
+   * pressable's own press state cannot fall back to a default fill.
+   */
   headerIcon: {
     width: 38,
     height: 34,
     borderRadius: radius.sm,
-    backgroundColor: colors.panelAlt,
+    backgroundColor: 'transparent',
     alignItems: 'center',
     justifyContent: 'center',
   },

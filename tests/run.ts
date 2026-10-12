@@ -144,7 +144,7 @@ import {
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
 import { getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
-import { colors, space } from '../src/theme';
+import { colors, radius, space } from '../src/theme';
 import { TYPICAL_BUTTON_INSET, TYPICAL_GESTURE_INSET, sheetPadding } from '../src/roster/sheet';
 import {
   CLOSED_SWIPE,
@@ -166,6 +166,10 @@ import {
   shouldClaim,
 } from '../src/logic/swipe';
 import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
+import { showsConnectionBanner, CONNECTION_STRIP_ALWAYS } from '../src/roster/banner';
+import { horizontalInset, isShortViewport, screenInsets } from '../src/insets';
+import { sheetHeightFraction, sheetMaxHeight } from '../src/roster/sheet';
+import { SEARCH_BAR, searchBarMetrics } from '../src/roster/geometry';
 import {
   DEVICE_LOCAL_SETTING_IDS,
   PORTABLE_PREFERENCE_KEY,
@@ -1033,15 +1037,23 @@ test('0.8.0 F: sheetPadding() adds the device bottom inset to the padding it alr
 test('0.8.0 F: BOTH sheets share the fix, and only the entries scroll', () => {
   const src = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
   // The shared style is what makes one fix cover ActionSheet AND PromptSheet.
-  assert.equal(src.split('style={[styles.sheet, { paddingBottom: sheetPadding(insets) }]}').length - 1, 2,
-    'ActionSheet and PromptSheet both pad by the inset');
+  // SUPERSEDED IN PLACE (0.9.0 F): the style used to be exactly
+  //   `style={[styles.sheet, { paddingBottom: sheetPadding(insets) }]}`
+  // and now carries the live viewport cap as well. The property under test — one shared style, both
+  // sheets — is unchanged; only the shape of the object moved.
+  assert.equal(src.split('style={[styles.sheet, { maxHeight: sheetMaxHeight(viewportHeight), paddingBottom: sheetPadding(insets) }]}').length - 1, 2,
+    'ActionSheet and PromptSheet both take the shared style (inset + live cap)');
   assert.equal(src.split('const insets = useSafeAreaInsets();').length - 1, 2, 'each reads the real insets');
   assert.match(src, /from '\.\/sheet'/, 'the arithmetic is the tested pure module');
   // A long list SCROLLS instead of clipping, and only the entries do: the title and the prompt's
   // actions stay where they are.
   assert.match(src, /<ScrollView style=\{styles\.sheetScroll\} bounces=\{false\}>/, 'the entries scroll');
   assert.match(src, /sheetScroll: \{ flexGrow: 0 \}/, 'a short list does not stretch the sheet');
-  assert.match(src, /maxHeight: '80%'/, 'inside the sheet height it already had');
+  // SUPERSEDED IN PLACE (0.9.0 F): the style block used to hold a literal `maxHeight: '80%'`; the cap
+  // is now applied per-render from the viewport (`sheetMaxHeight`), so the assertion moves to the
+  // RULE (0.8.0's 80% is `SHEET_FRACTION.tall`) rather than to a literal that no longer exists.
+  assert.equal(sheetMaxHeight(800), '80%', 'a tall viewport keeps the height it already had');
+  assert.ok(!/maxHeight: '80%'/.test(src), 'and the literal is gone from the style block');
   const titleIdx = src.indexOf('<Text style={styles.sheetTitle} numberOfLines={1}>');
   const scrollIdx = src.indexOf('<ScrollView style={styles.sheetScroll}');
   assert.ok(titleIdx > 0 && scrollIdx > titleIdx, 'the title is NOT inside the ScrollView');
@@ -1051,15 +1063,20 @@ test('0.8.0 F: BOTH sheets share the fix, and only the entries scroll', () => {
 
 // ─────────────────── 0.8.0 G: the top buttons are 10% bigger ──
 
-test('0.8.0 G: the three header glyphs scale by 1.1 from ONE constant', () => {
+// SUPERSEDED IN PLACE (0.9.0 F) — the same test, re-pinned at the new value of the one constant.
+// 0.8.0 G asserted HEADER_ICON_SCALE === 1.1 and glyphs 22 / 18 / 18 / box 42 × 37. The operator
+// asked for BIGGER again in 0.9.0 ("make the + and settings buttons bigger"), so the constant is
+// now 1.25 and every knock-on moved with it. The property this test exists to protect — THREE
+// glyphs, ONE constant, and a box that scales with them — is exactly what is asserted here.
+test('0.8.0 G: the three header glyphs scale from ONE constant (1.25 since 0.9.0 F; was 1.1)', () => {
   const h = headerMetrics();
-  assert.equal(HEADER_ICON_SCALE, 1.1);
+  assert.equal(HEADER_ICON_SCALE, 1.25);
   assert.equal(h.scale, HEADER_ICON_SCALE, 'the box and the glyphs read the same constant');
-  assert.equal(h.add, 22, 'the "+" glyph: 20 → 22');
-  assert.equal(h.expand, 18, 'expand: 16 → 18 (17.6, rounded to a legible whole number)');
-  assert.equal(h.settings, 18, 'settings: 16 → 18');
-  assert.equal(h.add, Math.round(20 * 1.1));
-  assert.equal(h.expand, Math.round(16 * 1.1));
+  assert.equal(h.add, 25, 'the "+" glyph: 20 → 25');
+  assert.equal(h.expand, 20, 'expand: 16 → 20 (20 exactly, a legible whole number)');
+  assert.equal(h.settings, 20, 'settings: 16 → 20');
+  assert.equal(h.add, Math.round(20 * HEADER_ICON_SCALE));
+  assert.equal(h.expand, Math.round(16 * HEADER_ICON_SCALE));
   assert.equal(h.expand, h.settings, 'the two 16 dp glyphs get one size, not two');
   // Bigger than they were, by design — and not by double.
   assert.ok(h.add > 20 && h.expand > 16);
@@ -1068,8 +1085,9 @@ test('0.8.0 G: the three header glyphs scale by 1.1 from ONE constant', () => {
 
 test('0.8.0 G: the pressable box scales too, and the REAL touch target stays >= 44 x 44', () => {
   const h = headerMetrics();
-  assert.equal(h.boxWidth, 42, '38 → 42, the same +10%');
-  assert.equal(h.boxHeight, 37, '34 → 37');
+  // SUPERSEDED IN PLACE (0.9.0 F): was 42 × 37 at scale 1.1.
+  assert.equal(h.boxWidth, 48, '38 → 48, the same 1.25');
+  assert.equal(h.boxHeight, 43, '34 → 43');
   assert.ok(h.boxWidth > 38 && h.boxHeight > 34, 'the box grew with the glyph');
   // The glyphs are small; the touch area is not. `hitSlop` is what earns the floor, and `target` is
   // the arithmetic proof rather than a hope.
@@ -1079,11 +1097,15 @@ test('0.8.0 G: the pressable box scales too, and the REAL touch target stays >= 
   assert.equal(h.boxHeight + h.hitSlop * 2, h.target);
   const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
   assert.match(src, /const H = headerMetrics\(\)/, 'the screen takes its numbers from the module');
-  assert.equal(src.split('hitSlop={H.hitSlop}').length - 1, 3, 'all three buttons inflate their target');
-  assert.equal(src.split('{ width: H.boxWidth, height: H.boxHeight }').length - 1, 3, 'and all three scale');
+  // SUPERSEDED IN PLACE (0.9.0 F, item 8): there were THREE glyphs; the middle one — Expand/collapse
+  // all — was removed at the operator's request, so TWO pressables remain and BOTH still scale and
+  // still inflate their hit area. `H.expand` is no longer consumed by the screen; it stays in the
+  // metrics because one constant still describes the icon family.
+  assert.equal(src.split('hitSlop={H.hitSlop}').length - 1, 2, 'both remaining buttons inflate their target');
+  assert.equal(src.split('{ width: H.boxWidth, height: H.boxHeight }').length - 1, 2, 'and both scale');
   assert.match(src, /<Ionicons name="add" size=\{H\.add\}/);
-  assert.match(src, /name=\{openSessions\.length \? 'contract-outline' : 'expand-outline'\} size=\{H\.expand\}/);
   assert.match(src, /<Ionicons name="settings-outline" size=\{H\.settings\}/);
+  assert.ok(!/contract-outline|expand-outline/.test(src), 'the removed glyph is gone from the screen');
   // No glyph is left on a literal: 20/16 would silently un-scale one of the three.
   assert.ok(!/size=\{20\}|size=\{16\}/.test(src), 'no header glyph keeps its old literal size');
 });
@@ -3760,6 +3782,158 @@ async function main(): Promise<void> {
     assert.equal(body.keys['sections-v1'].rev, 10);
     meta.dirty['sections-v1'] = SECTIONS;
     assert.equal(buildPut(meta)!.keys['sections-v1'].rev, 11);
+  });
+
+  // ─────────────────────────────── 0.9.0 Phase F: the chrome batch ──
+
+  test('0.9.0 F: the search bar is 25% taller and rounded at the side, both DERIVED', () => {
+    const search = searchBarMetrics();
+    // The two constants are the record; the numbers are the multiplication.
+    assert.equal(SEARCH_BAR.base, 38, "0.8.0's shipped height, kept as the starting point");
+    assert.equal(SEARCH_BAR.scale, 1.25, 'the operator\'s "+25%"');
+    assert.equal(search.height, Math.ceil(SEARCH_BAR.base * SEARCH_BAR.scale));
+    assert.equal(search.height, 48, '38 × 1.25 = 47.5 → 48 dp, rounded UP to a whole number');
+    assert.ok(search.height > 38 && search.height >= 38 * 1.25, 'taller by at least the ask');
+    assert.ok(search.height < 38 * 1.3, 'and not by double');
+    // "rounded at the side" = the palette's pill token, not a slightly bigger corner
+    assert.equal(search.radius, radius.pill, 'a stadium, from the existing token');
+    assert.ok(search.radius > radius.sm, 'strictly rounder than 0.8.0');
+    // …and the component reads the module rather than repeating the literals
+    const src = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+    assert.match(src, /const SEARCH = searchBarMetrics\(\)/, 'the screen takes its numbers from the module');
+    assert.match(src, /height: SEARCH\.height/);
+    assert.match(src, /borderRadius: SEARCH\.radius/);
+    assert.ok(!/height: 38,/.test(src), 'the 0.8.0 literal is gone, not shadowed');
+  });
+
+  test('0.9.0 F: the routine connection strip is gone; the FAILURE disclosure stays', () => {
+    assert.equal(CONNECTION_STRIP_ALWAYS, false, 'the routine strip is off by default');
+    // a routine, healthy connection says nothing on the main screen
+    assert.equal(showsConnectionBanner({ stage: 'ready', contactError: false, feedError: false, rowCount: 12 }), false);
+    assert.equal(showsConnectionBanner({ stage: 'idle', contactError: false, feedError: false, rowCount: 0 }), false);
+    // …but the three states the banner was BUILT for still speak
+    assert.equal(
+      showsConnectionBanner({ stage: 'failed', contactError: false, feedError: false, rowCount: 0 }),
+      true,
+      'the connection failed AND the list is empty: this is the empty-list lie the banner kills',
+    );
+    assert.equal(showsConnectionBanner({ stage: 'ready', contactError: true, feedError: false, rowCount: 0 }), true);
+    assert.equal(showsConnectionBanner({ stage: 'ready', contactError: false, feedError: true, rowCount: 3 }), true);
+    // a failed connection WITH rows on screen is not an empty list — the rows speak for themselves
+    assert.equal(showsConnectionBanner({ stage: 'failed', contactError: false, feedError: false, rowCount: 7 }), false);
+    // the flag §5 promises: one line restores 0.8.0, and the screen is wired to the module
+    const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+    assert.match(src, /showsConnectionBanner\(bannerInput\)/);
+    assert.match(src, /rowCount: roster\.listRows\.length/, 'the decision reads what would PAINT');
+  });
+
+  test('0.9.0 F: the trailing "51 automatic…" line is gone and the honesty line is not', () => {
+    const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+    assert.ok(
+      !/automaticCount\(roster\.model\.automaticSeen\)/.test(src),
+      "the quoted line must be REMOVED, not merely unreachable",
+    );
+    assert.ok(!/\{t\.roster\.automaticHelp\}/.test(src), 'and its help text with it');
+    assert.match(src, /types\.hidden\(roster\.model\.automaticHidden\)/, '0.8.0 D\'s honesty line STAYS');
+    // both strings survive in the table: removing a line is not deleting a translation
+    assert.ok(t.roster.automaticCount(51).includes('51'));
+    assert.ok(t.roster.automaticHelp.length > 20);
+    assert.ok(t.roster.types.hidden(51).includes('51'));
+  });
+
+  test('0.9.0 F: the Expand/collapse-all button is gone from the top bar, the ability is not', () => {
+    const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+    assert.ok(!/expand-outline/.test(src), 'the two-state glyph is removed');
+    assert.ok(!/contract-outline/.test(src));
+    assert.ok(!/t\.roster\.expandAll/.test(src) && !/t\.roster\.collapseAll/.test(src));
+    // the ability: per-profile expand/collapse stays, and its entry point is still a real call path
+    assert.match(src, /roster\.toggleProfile\(row\.name\)/, 'the row tap still toggles one profile');
+    const hook = readFileSync(join(process.cwd(), 'src', 'roster', 'useRoster.ts'), 'utf8');
+    assert.match(hook, /const openProfile = useCallback/, 'openProfile still exists…');
+    assert.match(hook, /openProfile,/, '…and is still exported for the toggle path (not dead code)');
+    const rosterItem = hook.slice(hook.indexOf('const toggleProfile'));
+    assert.match(rosterItem.slice(0, 400), /openProfile\(name\)/, 'toggleProfile still reaches it');
+  });
+
+  test('0.9.0 F: the "+" and Settings are bigger and their background is transparent', () => {
+    const h = headerMetrics();
+    // ONE constant still drives all three glyphs and the box — 0.8.0's property, kept.
+    assert.equal(HEADER_ICON_SCALE, 1.25, 'superseded in place: 0.8.0 G shipped 1.1');
+    assert.equal(h.scale, HEADER_ICON_SCALE);
+    assert.equal(h.add, Math.round(20 * 1.25), '25 dp (was 22 at 1.1)');
+    assert.equal(h.expand, Math.round(16 * 1.25), '20 dp (was 18)');
+    assert.equal(h.settings, h.expand, 'one size for the two equal glyphs');
+    assert.equal(h.boxWidth, Math.round(38 * 1.25));
+    assert.equal(h.boxHeight, Math.round(34 * 1.25));
+    assert.ok(h.add > 22 && h.expand > 18, 'bigger than 0.8.0 by the operator\'s ask');
+    // the touch target floor is not traded away for a bigger glyph
+    assert.ok(h.target >= MIN_TOUCH_TARGET, `effective target ${h.target} must clear ${MIN_TOUCH_TARGET}`);
+    // the background is the thing that was removed
+    const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+    const icon = src.slice(src.indexOf('headerIcon: {'), src.indexOf('headerIcon: {') + 400);
+    assert.match(icon, /backgroundColor: 'transparent'/);
+    assert.ok(!/backgroundColor: colors\.panelAlt/.test(icon), 'no panel fill behind the glyphs');
+  });
+
+  test('0.9.0 F (landscape): the app rotates, and every screen honours the SIDE insets', () => {
+    const app = JSON.parse(readFileSync(join(process.cwd(), 'app.json'), 'utf8')) as { expo: { orientation: string } };
+    assert.equal(app.expo.orientation, 'default', 'portrait-only was the thing that broke landscape');
+    // the horizontal inset is max(left, right) — the cutout side, applied to BOTH, so rows stay aligned
+    assert.deepEqual(screenInsets({ top: 24, left: 0, right: 44 }), { paddingTop: 24, paddingLeft: 44, paddingRight: 44 });
+    assert.equal(horizontalInset({ left: 44, right: 0 }), 44);
+    assert.equal(horizontalInset(null), 0);
+    assert.equal(horizontalInset({ left: Number.NaN, right: -3 }), 0, 'junk never becomes padding');
+    assert.equal(screenInsets({ top: 0, left: 12, right: 20 }).paddingLeft, 20);
+    // …and every screen reads it, rather than each screen inventing its own number
+    for (const file of [join('app', 'index.tsx'), join('app', 'thread', '[id].tsx'), join('app', 'settings.tsx')]) {
+      const src = readFileSync(join(process.cwd(), file), 'utf8');
+      assert.match(src, /insets/, `${file} must read the safe-area insets`);
+    }
+    assert.match(readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8'), /screenInsets\(insets\)/);
+    assert.match(readFileSync(join(process.cwd(), 'app', 'settings.tsx'), 'utf8'), /screenInsets\(useSafeAreaInsets\(\)\)/);
+    assert.match(readFileSync(join(process.cwd(), 'app', 'thread', '[id].tsx'), 'utf8'), /horizontalInset\(insets\)/);
+    // the composer cannot be swallowed by the keyboard on Android
+    const thread = readFileSync(join(process.cwd(), 'app', 'thread', '[id].tsx'), 'utf8');
+    assert.match(thread, /behavior=\{Platform\.OS === 'ios' \? 'padding' : 'height'\}/);
+  });
+
+  test('0.9.0 F (landscape): the sheets use MORE of a short viewport, not less', () => {
+    // tall: 0.8.0's own fraction, unchanged
+    assert.equal(sheetHeightFraction(800), 0.8);
+    assert.equal(sheetMaxHeight(800), '80%');
+    // short (landscape on a phone, or portrait with the keyboard up): the sheet must use more of it
+    assert.equal(sheetHeightFraction(360), 0.92);
+    assert.equal(sheetMaxHeight(360), '92%');
+    assert.ok(sheetHeightFraction(360) > sheetHeightFraction(800), 'the short case gets the larger share');
+    // junk is the tall default, never a crash and never a zero-height sheet
+    for (const junk of [undefined, null, Number.NaN, -10, 0, 'tall']) {
+      assert.equal(sheetMaxHeight(junk as unknown), '80%');
+    }
+    assert.equal(isShortViewport(479) && !isShortViewport(480), true, 'the boundary is one-sided');
+    // both sheets share ONE rule: the style has no maxHeight left in it
+    const src = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+    assert.ok(!/maxHeight: '80%'/.test(src), 'the hard-coded cap is gone from the style block');
+    assert.equal((src.match(/sheetMaxHeight\(viewportHeight\)/g) ?? []).length, 2, 'BOTH sheets use it');
+  });
+
+  test('0.9.0 F (landscape): the roster geometry is dp-based, so a wide short canvas does not break it', () => {
+    // The claim is that nothing in the roster is a fraction of the SCREEN's height. Prove it by
+    // building the geometry at a landscape and a portrait width and checking what actually moves.
+    const portrait = rosterRowGeometry(360);
+    const landscape = rosterRowGeometry(800);
+    assert.equal(landscape.height, portrait.height, 'the row height is the SAME — dp, not a viewport fraction');
+    assert.equal(landscape.avatar, portrait.avatar);
+    assert.equal(landscape.textX, portrait.textX);
+    assert.equal(landscape.paddingVertical, portrait.paddingVertical);
+    assert.equal(landscape.dividerInset, portrait.dividerInset);
+    // the ONE thing that changes is the title column, and it changes for the better
+    assert.ok(landscape.titleMaxWidth > portrait.titleMaxWidth, 'a wider canvas gives the title MORE room');
+    assert.ok(titleFits('design-guardian', landscape), 'the longest real label on this box still fits');
+    // and the session row is height-free by construction: two paddings and a divider, no vh anywhere
+    const session = sessionRowGeometry();
+    assert.equal(typeof session.textX, 'number');
+    const src = readFileSync(join(process.cwd(), 'src', 'roster', 'geometry.ts'), 'utf8');
+    assert.ok(!/%/.test(src.replace(/\/\*[\s\S]*?\*\//g, '')), 'no percentage of the viewport in the geometry');
   });
 
   // ─────────────────────────────── 0.9.0 Phase B: Settings as a page of rows ──

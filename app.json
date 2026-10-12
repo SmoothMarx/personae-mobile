@@ -3,7 +3,7 @@
     "name": "Personae",
     "slug": "personae-mobile",
     "version": "0.8.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "scheme": "personae",
     "icon": "./assets/icon.png",
     "ios": {
