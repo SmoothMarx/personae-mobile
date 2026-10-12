@@ -32,15 +32,17 @@ import { normalizeError } from '../src/api/errors';
 import { t, useLanguage } from '../src/i18n';
 import { monogramFor } from '../src/logic/avatars';
 import type { SortMode } from '../src/logic/sections';
+import { ActionSheet, ProfileRow, PromptSheet, SearchBar, SectionHeader, SessionRow, SwatchPicker } from '../src/roster/components';
 import {
-  ActionSheet,
-  ProfileRow,
-  PromptSheet,
-  SearchBar,
-  SectionHeader,
-  SessionRow,
-  SwatchPicker,
-} from '../src/roster/components';
+  CLOSED_SWIPE,
+  armDelete,
+  closeIfOpen,
+  confirmDelete,
+  isArmed,
+  isOpen,
+  openRow,
+  type SwipeState,
+} from '../src/logic/swipe';
 import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
 import { plusMenuEntries, profileFromPickerKey, profilePickerEntries } from '../src/roster/plusMenu';
 import { useSettings } from '../src/SettingsContext';
@@ -71,6 +73,12 @@ export default function RosterScreen() {
   const [filing, setFiling] = useState<{ profile: string; label: string } | null>(null);
   const [sortSheetOpen, setSortSheetOpen] = useState(false);
   const [prompt, setPrompt] = useState<PromptMode>('none');
+  /**
+   * 0.8.0 E: the swipe's own state lives ONE level up from the rows, which is what makes "exactly
+   * one row open at a time" structural rather than a convention. The decisions come from
+   * `src/logic/swipe.ts`; this is only where the answer is remembered.
+   */
+  const [swipe, setSwipe] = useState<SwipeState>(CLOSED_SWIPE);
   const [promptValue, setPromptValue] = useState('');
   const pendingProfile = useRef<string | null>(null);
   const pendingSession = useRef<{ profile: string; id: string } | null>(null);
@@ -201,18 +209,39 @@ export default function RosterScreen() {
           />
         );
       }
+      const rowKey = item.key;
       return (
         <SessionRow
           model={item.model}
           automatic={item.automatic}
-          onOpen={() => roster.openSession(item.model.profile, item.model.id, item.model.title)}
+          surface={settings.surface}
+          open={isOpen(swipe, rowKey)}
+          armed={isArmed(swipe, rowKey)}
+          onOpenRow={() => setSwipe((current) => openRow(current, rowKey))}
+          onCloseRow={() => setSwipe((current) => closeIfOpen(current, rowKey))}
+          onArchive={() => {
+            // One tap, through the existing archive verb — there is no second path.
+            setSwipe(CLOSED_SWIPE);
+            void roster.archiveSession(item.model.profile, item.model.id);
+          }}
+          onArmDelete={() => setSwipe((current) => armDelete(current, rowKey))}
+          onConfirmDelete={() => {
+            // The second tap. `confirmDelete` is the gate, so an un-armed state can never delete.
+            if (!confirmDelete(swipe, rowKey)) return;
+            setSwipe(CLOSED_SWIPE);
+            void roster.deleteSession(item.model.profile, item.model.id);
+          }}
+          onOpen={() => {
+            setSwipe(CLOSED_SWIPE);
+            roster.openSession(item.model.profile, item.model.id, item.model.title);
+          }}
           onMenu={() =>
             openMenu({ kind: 'session', profile: item.model.profile, id: item.model.id, title: item.model.title })
           }
         />
       );
     },
-    [openMenu, roster],
+    [openMenu, roster, settings.surface, swipe],
   );
 
   const openSessions = roster.model.rows.filter((row) => row.expanded);
@@ -337,6 +366,9 @@ export default function RosterScreen() {
         removeClippedSubviews
         initialNumToRender={14}
         windowSize={9}
+        // Scrolling the list closes the open row (0.8.0 E), so a half-open row can never be scrolled
+        // past while its buttons stay live.
+        onScrollBeginDrag={() => setSwipe(CLOSED_SWIPE)}
         refreshControl={
           <RefreshControl refreshing={roster.refreshing} onRefresh={() => void roster.refresh()} tintColor={colors.muted} />
         }

@@ -125,6 +125,26 @@ import {
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
 import { getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
+import { colors } from '../src/theme';
+import {
+  CLOSED_SWIPE,
+  SWIPE,
+  actionAvailability,
+  actionColour,
+  armDelete,
+  clampDrag,
+  closeIfOpen,
+  closeRow,
+  confirmDelete,
+  disarm,
+  isArmed,
+  isOpen,
+  openRow,
+  restX,
+  rowAccessibilityActions,
+  settle,
+  shouldClaim,
+} from '../src/logic/swipe';
 import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
 import { PLUS_KEYS, profileFromPickerKey, profilePickerEntries, profileSlug, plusMenuEntries } from '../src/roster/plusMenu';
 
@@ -812,6 +832,150 @@ test('0.8.0 D: search still reaches a session the type filter hides', () => {
   // search corpus, because `searchRoster` has only ever swept conversations (0.5.0 behaviour, pinned
   // by the `feed:` tests). Turning a type off therefore never REDUCES what search can find.
   assert.ok(!hits.includes('cron-1'), 'the cron run was never searchable, filter or no filter');
+});
+
+// ─────────────────── 0.8.0 E: slide a row left for archive and delete ──
+
+test('0.8.0 E: the claim predicate — a tap never opens a row, a scroll is never eaten', () => {
+  // The predicate the whole feature hangs on: horizontal AND clearly more horizontal than vertical.
+  assert.equal(shouldClaim(0, 0), false, 'a tap');
+  assert.equal(shouldClaim(3, 0), false, 'a twitch');
+  assert.equal(shouldClaim(7, 0), false, 'just under the 8 dp floor');
+  assert.equal(shouldClaim(9, 0), true, 'past the floor, with no vertical component');
+  assert.equal(shouldClaim(-9, 0), true, 'either direction is claimed; only left opens');
+  assert.equal(shouldClaim(6, 40), false, 'a vertical scroll steals nothing');
+  assert.equal(shouldClaim(20, 20), false, '45° is a scroll, not a slide (20 < 1.2 × 20)');
+  assert.equal(shouldClaim(25, 20), true, '25 > 24 and > 8 — claimed');
+  assert.equal(SWIPE.claimDx, 8);
+  assert.equal(SWIPE.claimRatio, 1.2);
+  assert.equal(shouldClaim(SWIPE.claimRatio * 10, 10), false, 'the ratio is exclusive at the boundary');
+  assert.equal(shouldClaim(SWIPE.claimRatio * 10 + 0.1, 10), true);
+});
+
+test('0.8.0 E: the drag is clamped to the reveal, and the release settles by distance or flick', () => {
+  assert.equal(SWIPE.revealWidth, 152, 'two 76 dp buttons');
+  assert.equal(SWIPE.revealWidth / 2, 76);
+  assert.equal(clampDrag(0), 0);
+  assert.equal(clampDrag(-50), -50);
+  assert.equal(clampDrag(-300), -152, 'never past the buttons');
+  assert.equal(clampDrag(40), 0, 'a right-drag cannot pull the row off its own left edge');
+  assert.equal(restX(true), -152);
+  assert.equal(restX(false), 0);
+
+  assert.equal(settle(0, 0), 'closed', 'a tap settles closed');
+  assert.equal(settle(-20, 0), 'closed', 'not far enough');
+  assert.equal(settle(-60, 0), 'open', 'past 35% of the reveal');
+  assert.equal(settle(-152, 0), 'open');
+  assert.equal(settle(-10, -0.5), 'open', 'a left flick opens however short it was');
+  assert.equal(settle(-140, 0.5), 'closed', 'a right flick closes however far it had gone');
+  assert.equal(SWIPE.openThreshold, 0.35);
+  // Released from an OPEN row: the base position is what counts, not the raw drag.
+  assert.equal(settle(restX(true) + 140, 0), 'closed', 'dragged most of the way back');
+  assert.equal(settle(restX(true) + 40, 0), 'open', 'dragged back a little');
+});
+
+test('0.8.0 E: exactly one row is open, and a fresh one is never armed', () => {
+  let state = CLOSED_SWIPE;
+  assert.equal(isOpen(state, 'a'), false);
+  state = openRow(state, 'a');
+  assert.equal(isOpen(state, 'a'), true);
+  assert.equal(isOpen(state, 'b'), false);
+  state = openRow(state, 'b');
+  assert.equal(state.openId, 'b', 'opening another closes the first — one at a time');
+  assert.equal(isOpen(state, 'a'), false);
+  assert.equal(state.armedId, null, 'and a newly opened row starts un-armed');
+  // Closing is scoped: a stale row cannot close a fresh one.
+  assert.deepEqual(closeIfOpen(state, 'a'), state, 'a row that is not open closes nothing');
+  assert.deepEqual(closeIfOpen(state, 'b'), CLOSED_SWIPE);
+  assert.deepEqual(closeRow(), CLOSED_SWIPE, 'and a scroll closes everything');
+});
+
+test('0.8.0 E: delete is TWO steps — arm, then confirm — and arming keeps the row open', () => {
+  let state = openRow(CLOSED_SWIPE, 'row-1');
+  assert.equal(confirmDelete(state, 'row-1'), false, 'an un-armed tap can never delete');
+  state = armDelete(state, 'row-1');
+  assert.equal(isArmed(state, 'row-1'), true);
+  assert.equal(state.openId, 'row-1', 'arming must NOT dismiss the swipe — the confirm stays visible');
+  assert.equal(confirmDelete(state, 'row-1'), true, 'the second tap is the one that runs');
+  // The armed state is escapable, three ways, and every one leaves the row shut or un-armed.
+  assert.deepEqual(disarm(state), { openId: 'row-1', armedId: null }, 'back out, keep looking');
+  assert.equal(isArmed(disarm(state), 'row-1'), false);
+  assert.deepEqual(closeRow(), CLOSED_SWIPE, 'scroll away');
+  assert.deepEqual(openRow(CLOSED_SWIPE, 'row-2').armedId, null, 'open another');
+  // A confirm aimed at a row that is not armed, or not open, is refused.
+  assert.equal(confirmDelete(armDelete(CLOSED_SWIPE, 'row-1'), 'row-2'), false, 'never the wrong row');
+  assert.equal(confirmDelete({ openId: 'row-2', armedId: 'row-1' }, 'row-2'), false, 'open is not enough');
+});
+
+test('0.8.0 E: the gateway surface renders BOTH verbs disabled, with the real reason', () => {
+  const archiveDash = actionAvailability('dashboard', 'archive');
+  const deleteDash = actionAvailability('dashboard', 'delete');
+  assert.deepEqual(archiveDash, { enabled: true, reason: '' }, 'the dashboard runs both');
+  assert.deepEqual(deleteDash, { enabled: true, reason: '' });
+  // The :9222 surface answers 501 for these two verbs (src/api/backend.ts), so the button says the
+  // same sentence the call would have returned.
+  const archiveGw = actionAvailability('gateway', 'archive');
+  const deleteGw = actionAvailability('gateway', 'delete');
+  assert.equal(archiveGw.enabled, false);
+  assert.equal(deleteGw.enabled, false);
+  assert.equal(archiveGw.reason, t.errors.archiveUnsupported);
+  assert.equal(deleteGw.reason, t.errors.deleteUnsupported);
+  // The suite runs in PT, so the reason is the PT sentence — and the EN table says the same thing.
+  assert.equal(archiveGw.reason, stringsFor('pt').errors.archiveUnsupported, 'in the interface language');
+  assert.match(stringsFor('en').errors.archiveUnsupported, /not supported/);
+  assert.ok(archiveGw.reason.trim().length > 0, 'a disabled button always carries a reason');
+  // And the accessibility list offers nothing it cannot do: an action that silently fails is the
+  // one outcome this repo forbids.
+  assert.deepEqual(rowAccessibilityActions('gateway'), []);
+  const dash = rowAccessibilityActions('dashboard');
+  assert.deepEqual(dash.map((action) => action.name), ['archive', 'delete']);
+  assert.equal(dash[0].label, t.roster.swipe.archive);
+  assert.equal(dash[1].label, t.roster.swipe.delete);
+});
+
+test('0.8.0 E: the buttons are red and blue from the palette, not from literals', () => {
+  assert.equal(actionColour('archive', colors), colors.archive);
+  assert.equal(actionColour('delete', colors), colors.red);
+  // Pinned so a palette edit is visible: the archive blue is its own token, and distinct from the
+  // accent, the red and the amber.
+  assert.equal(colors.archive, '#1f6feb');
+  assert.equal(colors.red, '#f85149');
+  assert.notEqual(colors.archive, colors.accent, 'the archive blue is not the accent blue');
+  assert.notEqual(colors.archive, colors.red);
+  const src = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+  assert.match(src, /backgroundColor: colors\.archive/, "archive's own blue token");
+  assert.match(src, /colors\.red/, 'the delete button reuses the destructive verb colour');
+  assert.ok(!/backgroundColor: '#/.test(src), 'no colour literal in the row');
+});
+
+test('0.8.0 E: the row is a thin shell — PanResponder + Animated, and no new native dependency', () => {
+  const src = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+  assert.match(src, /PanResponder\.create/, 'core React Native, not a gesture library');
+  assert.match(src, /new Animated\.Value/, 'core Animated');
+  assert.match(src, /onMoveShouldSetPanResponder: \(_event, gesture\) => shouldClaim\(gesture\.dx, gesture\.dy\)/,
+    'the claim predicate comes from the pure module');
+  assert.match(src, /onPanResponderTerminationRequest: \(\) => false/, 'a claimed gesture is not stolen back');
+  assert.match(src, /swipe\.ts|shouldClaim|clampDrag|settle/, 'every decision is delegated');
+  const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+    dependencies: Record<string, string>;
+  };
+  for (const banned of ['react-native-gesture-handler', 'react-native-reanimated']) {
+    assert.ok(!(banned in pkg.dependencies), `${banned} must NOT be added for one horizontal reveal`);
+  }
+  // The screen owns the one-open-at-a-time state, and the list closes it on scroll.
+  const screen = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+  assert.match(screen, /useState<SwipeState>\(CLOSED_SWIPE\)/);
+  assert.match(screen, /onScrollBeginDrag=\{\(\) => setSwipe\(CLOSED_SWIPE\)\}/, 'scrolling closes the open row');
+  assert.match(screen, /confirmDelete\(swipe, rowKey\)/, "the confirm is the pure module gate");
+  // ONE delete path and ONE archive path: the swipe calls the verbs the menu already calls.
+  assert.match(screen, /roster\.deleteSession\(item\.model\.profile, item\.model\.id\)/);
+  assert.match(screen, /roster\.archiveSession\(item\.model\.profile, item\.model\.id\)/);
+  const hook = readFileSync(join(process.cwd(), 'src', 'roster', 'useRoster.ts'), 'utf8');
+  assert.equal(hook.split('backend.deleteSession(').length - 1, 1, 'exactly one delete call site in the app');
+  assert.equal(hook.split('backend.archiveSession(').length - 1, 2, 'archive-all loops, nothing else re-implements it');
+  // The long-press menu stays: the verbs are reachable without a gesture either way.
+  assert.match(src, /onLongPress=\{props\.onMenu\}/);
+  assert.match(src, /accessibilityActions=\{rowAccessibilityActions\(props\.surface\)\}/);
 });
 
 test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {

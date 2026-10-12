@@ -7,14 +7,16 @@
  */
 
 import { Ionicons } from '@expo/vector-icons';
-import React from 'react';
-import { ActivityIndicator, Image, Modal, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useRef } from 'react';
+import { ActivityIndicator, Animated, Image, Modal, PanResponder, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { t } from '../i18n';
 import { AVATAR_SIZE } from '../logic/avatars';
 import type { DotState, Rollup } from '../logic/lights';
 import { dotColorKey, showBadge } from '../logic/lights';
 import type { RosterProfileRow, SessionRowModel } from '../logic/rosterFeed';
+import { SWIPE, actionAvailability, actionLabel, clampDrag, confirmLabel, restX, rowAccessibilityActions, settle, shouldClaim } from '../logic/swipe';
+import type { Surface } from '../settings';
 import { rosterRowGeometry, sessionRowGeometry } from './geometry';
 import { SWATCHES } from '../rosterPrefs';
 import { colors, font, radius, space } from '../theme';
@@ -234,46 +236,180 @@ export function ProfileRow(props: {
 
 /**
  * One session under its profile: light, title, preview, age — padded to the DOT column since 0.8.0
- * C, so the list reads less indented and the dot lands under the face. Automatic runs are marked,
- * and they swap the dot for a clock glyph in that same column.
+ * C, so the list reads less indented and the dot lands under the face.
+ *
+ * 0.8.0 E: sliding the row left reveals **archive** (blue) and **delete** (red trash, two-step
+ * confirm). The pixels live here (`Animated.Value` + `PanResponder`); every DECISION — the claim
+ * predicate, the settle rule, which row is open, the arming — lives in `src/logic/swipe.ts`, which
+ * is what makes the feature testable without a phone. The list owns "which row is open" so exactly
+ * one can be revealed at a time.
+ *
+ * No new native dependency: `PanResponder` is core React Native, and the claim predicate requires a
+ * clearly horizontal slide, so the `FlatList` keeps its vertical scroll.
  */
 export function SessionRow(props: {
   model: SessionRowModel;
   automatic: boolean;
+  /** Which surface — the gateway says `501` for both verbs, so the buttons render disabled. */
+  surface: Surface;
+  /** This row is the ONE revealed row. */
+  open: boolean;
+  /** This row's delete is armed for the confirm. */
+  armed: boolean;
+  onOpenRow: () => void;
+  onCloseRow: () => void;
+  onArchive: () => void;
+  onArmDelete: () => void;
+  onConfirmDelete: () => void;
   onOpen: () => void;
   onMenu: () => void;
 }) {
   const { model } = props;
+  /** The latest props, so the gesture handlers created once are never stale. */
+  const latest = useRef(props);
+  latest.current = props;
+  const translateX = useRef(new Animated.Value(restX(props.open))).current;
+
+  // The reveal is animated, not sprung by the gesture: opening a row from another row's gesture
+  // still slides this one shut.
+  useEffect(() => {
+    Animated.spring(translateX, { toValue: restX(props.open), useNativeDriver: true, bounciness: 0, speed: 18 }).start();
+  }, [props.open, translateX]);
+
+  const pan = useRef(
+    PanResponder.create({
+      // A tap never opens a row and a vertical scroll is never eaten: both rules are in `shouldClaim`.
+      onMoveShouldSetPanResponder: (_event, gesture) => shouldClaim(gesture.dx, gesture.dy),
+      // Once claimed, keep it — the list must not steal a slide halfway through.
+      onPanResponderTerminationRequest: () => false,
+      onPanResponderMove: (_event, gesture) => {
+        const base = restX(latest.current.open);
+        translateX.setValue(clampDrag(base + gesture.dx));
+      },
+      onPanResponderRelease: (_event, gesture) => {
+        const base = restX(latest.current.open);
+        const landed = settle(base + gesture.dx, gesture.vx);
+        if (landed === 'open') latest.current.onOpenRow();
+        else latest.current.onCloseRow();
+      },
+      onPanResponderTerminate: () => {
+        if (!latest.current.open) latest.current.onCloseRow();
+      },
+    }),
+  ).current;
+
   const rollup: Rollup = { state: model.state, count: 0, counts: { 'needs-input': 0, unread: 0, idle: 0 }, fresh: 0 };
+  const archive = actionAvailability(props.surface, 'archive');
+  const remove = actionAvailability(props.surface, 'delete');
+  const buttonWidth = SWIPE.revealWidth / 2;
+
   return (
-    <Pressable
-      onPress={props.onOpen}
-      onLongPress={props.onMenu}
-      delayLongPress={350}
-      accessibilityRole="button"
-      accessibilityLabel={model.title}
-      style={({ pressed }) => [
-        styles.sessionRow,
-        model.color ? { borderLeftColor: model.color, borderLeftWidth: 2 } : null,
-        pressed && styles.rowPressed,
-      ]}
-    >
-      <View style={styles.sessionDot}>
-        {props.automatic ? <Ionicons name="time-outline" size={12} color={colors.faint} /> : <Dot rollup={rollup} size={7} />}
+    <View style={styles.swipeWrap}>
+      {/* The revealed verbs sit UNDER the row and are inert until the row is actually open — a
+          button you cannot see must not be tappable. */}
+      <View
+        style={[styles.swipeActions, { width: SWIPE.revealWidth }]}
+        pointerEvents={props.open ? 'auto' : 'none'}
+      >
+        <Pressable
+          onPress={props.onArchive}
+          disabled={!archive.enabled}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !archive.enabled }}
+          accessibilityLabel={archive.enabled ? actionLabel('archive') : `${actionLabel('archive')} — ${archive.reason}`}
+          style={({ pressed }) => [
+            styles.swipeButton,
+            { width: buttonWidth, backgroundColor: colors.archive },
+            !archive.enabled && styles.swipeOff,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Ionicons name="archive-outline" size={18} color={colors.accentText} />
+          <Text style={styles.swipeButtonText}>{actionLabel('archive')}</Text>
+          {archive.enabled ? null : (
+            <Text style={styles.swipeReason} numberOfLines={3}>
+              {archive.reason}
+            </Text>
+          )}
+        </Pressable>
+
+        <Pressable
+          onPress={props.armed ? props.onConfirmDelete : props.onArmDelete}
+          disabled={!remove.enabled}
+          accessibilityRole="button"
+          accessibilityState={{ disabled: !remove.enabled }}
+          accessibilityLabel={
+            remove.enabled
+              ? props.armed
+                ? `${confirmLabel()} — ${t.roster.swipe.confirmDelete}`
+                : actionLabel('delete')
+              : `${actionLabel('delete')} — ${remove.reason}`
+          }
+          style={({ pressed }) => [
+            styles.swipeButton,
+            { width: buttonWidth, backgroundColor: props.armed ? colors.amber : colors.red },
+            !remove.enabled && styles.swipeOff,
+            pressed && styles.pressed,
+          ]}
+        >
+          <Ionicons name={props.armed ? 'alert-circle-outline' : 'trash-outline'} size={18} color={colors.accentText} />
+          <Text style={styles.swipeButtonText}>{props.armed ? confirmLabel() : actionLabel('delete')}</Text>
+          {props.armed ? (
+            <Text style={styles.swipeReason} numberOfLines={3}>
+              {t.roster.swipe.confirmDelete}
+            </Text>
+          ) : null}
+          {remove.enabled ? null : (
+            <Text style={styles.swipeReason} numberOfLines={3}>
+              {remove.reason}
+            </Text>
+          )}
+        </Pressable>
       </View>
-      <View style={styles.sessionText}>
-        <Text style={styles.sessionTitle} numberOfLines={1}>
-          {model.title}
-        </Text>
-        {model.preview ? (
-          <Text style={styles.sessionPreview} numberOfLines={1}>
-            {model.preview}
-          </Text>
-        ) : null}
-      </View>
-      {props.automatic ? <Text style={styles.autoChip}>{t.roster.automatic}</Text> : null}
-      <Text style={styles.age}>{model.age || model.date}</Text>
-    </Pressable>
+
+      <Animated.View style={[styles.swipeSurface, { transform: [{ translateX }] }]} {...pan.panHandlers}>
+        <Pressable
+          onPress={props.open ? props.onCloseRow : props.onOpen}
+          onLongPress={props.onMenu}
+          delayLongPress={350}
+          accessibilityRole="button"
+          accessibilityLabel={model.title}
+          accessibilityHint={props.open ? undefined : t.roster.swipe.a11yHint}
+          // Both verbs stay reachable WITHOUT a gesture (this, and the long-press menu above).
+          accessibilityActions={rowAccessibilityActions(props.surface)}
+          onAccessibilityAction={(event) => {
+            const name = event.nativeEvent.actionName;
+            if (name === 'archive') props.onArchive();
+            else if (name === 'delete') {
+              // The same two-step rule: the first activation arms and says what it does.
+              if (props.armed) props.onConfirmDelete();
+              else props.onArmDelete();
+            }
+          }}
+          style={({ pressed }) => [
+            styles.sessionRow,
+            model.color ? { borderLeftColor: model.color, borderLeftWidth: 2 } : null,
+            pressed && styles.rowPressed,
+          ]}
+        >
+          <View style={styles.sessionDot}>
+            {props.automatic ? <Ionicons name="time-outline" size={12} color={colors.faint} /> : <Dot rollup={rollup} size={7} />}
+          </View>
+          <View style={styles.sessionText}>
+            <Text style={styles.sessionTitle} numberOfLines={1}>
+              {model.title}
+            </Text>
+            {model.preview ? (
+              <Text style={styles.sessionPreview} numberOfLines={1}>
+                {model.preview}
+              </Text>
+            ) : null}
+          </View>
+          {props.automatic ? <Text style={styles.autoChip}>{t.roster.automatic}</Text> : null}
+          <Text style={styles.age}>{model.age || model.date}</Text>
+        </Pressable>
+      </Animated.View>
+    </View>
   );
 }
 
@@ -309,6 +445,7 @@ export function SwatchPicker(props: { value: string | null; onPick: (colour: str
  * The entries come from `menus.ts`, so the verbs are data — an action that silently disappears is a
  * failing test rather than a surprise on a phone. `children` carries whatever the picked verb needs
  * next (the swatch palette, the group list) without inventing a second sheet.
+
  */
 export function ActionSheet(props: {
   visible: boolean;
@@ -372,6 +509,7 @@ export function ActionSheet(props: {
 /**
  * A text prompt. `Alert.prompt` is iOS-only, so the roster carries its own — rename, new group and
  * new session all need one, and a platform-conditional dialog would be two different apps.
+
  */
 export function PromptSheet(props: {
   visible: boolean;
@@ -570,6 +708,17 @@ const styles = StyleSheet.create({
     borderBottomColor: colors.border,
   },
   sessionDot: { width: SESSION_METRICS.dotColumn, alignItems: 'center' },
+  // ── 0.8.0 E: the swipe reveal ───────────────────────────────────────────────
+  /** Holds the row and, behind it, the two revealed verbs. Clipped so nothing bleeds sideways. */
+  swipeWrap: { overflow: 'hidden' },
+  swipeActions: { position: 'absolute', right: 0, top: 0, bottom: 0, flexDirection: 'row' },
+  swipeButton: { alignItems: 'center', justifyContent: 'center', gap: 2, paddingHorizontal: 4 },
+  swipeButtonText: { color: colors.accentText, fontSize: 11, fontWeight: '700' },
+  swipeReason: { color: colors.accentText, fontSize: 9, textAlign: 'center', opacity: 0.9 },
+  /** A verb this surface cannot run: still visible, clearly off, carrying the reason. */
+  swipeOff: { opacity: 0.5 },
+  /** The row itself rides on this, so the actions stay hidden until it slides. */
+  swipeSurface: { backgroundColor: colors.bg },
   sessionText: { flex: 1, gap: 1 },
   sessionTitle: { color: colors.text, fontSize: 14, fontWeight: '600' },
   sessionPreview: { color: colors.muted, fontSize: font.small },

@@ -10,6 +10,8 @@ export const colors = {
   faint: '#5c6b7a',
   accent: '#4c8dff',
   accentText: '#ffffff',
+  /** 0.8.0 E: the archive verb's own blue, distinct from the accent so the two buttons read apart. */
+  archive: '#1f6feb',
   green: '#3fb950',
   amber: '#d29922',
   red: '#f85149',

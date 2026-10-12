@@ -75,6 +75,15 @@ const en = {
           ? '1 automatic run is hidden — turn automatic runs on in Settings.'
           : `${n} automatic runs are hidden — turn automatic runs on in Settings.`,
     },
+    // ── the swipe on a session row (0.8.0 E): short labels — they live in 76 dp buttons ──
+    swipe: {
+      archive: 'Archive',
+      delete: 'Delete',
+      confirm: 'Confirm',
+      confirmDelete: 'Tap again to delete for good',
+      confirmCancel: 'Cancel',
+      a11yHint: 'Slide left for archive and delete.',
+    },
     noSessions: 'No conversations in this profile.',
     profileErrorTitle: 'Could not read the list of profiles',
     profileErrorBody:
@@ -574,6 +583,15 @@ const pt: Strings = {
         n === 1
           ? '1 execução automática está escondida — liga as execuções automáticas nas Definições.'
           : `${n} execuções automáticas estão escondidas — liga as execuções automáticas nas Definições.`,
+    },
+    // ── o deslizar numa linha de sessão (0.8.0 E): rótulos curtos, cabem em 76 dp ──
+    swipe: {
+      archive: 'Arquivar',
+      delete: 'Apagar',
+      confirm: 'Confirmar',
+      confirmDelete: 'Toca outra vez para apagar de vez',
+      confirmCancel: 'Cancelar',
+      a11yHint: 'Desliza para a esquerda para arquivar e apagar.',
     },
     noSessions: 'Sem conversas neste perfil.',
     profileErrorTitle: 'Não foi possível ler a lista de perfis',
