@@ -79,7 +79,7 @@ import {
   visibleFieldIds,
   type SettingsFieldId,
 } from '../src/settingsLayout';
-import { DIVIDER_REFERENCE_INSET, ROW_CHROME, ROW_WIDTH, SESSION_DOT_COLUMN, estimatedTextWidth, faceCentre, rosterRowGeometry, sessionRowGeometry, titleFits } from '../src/roster/geometry';
+import { DIVIDER_REFERENCE_INSET, HEADER_ICON_SCALE, MIN_TOUCH_TARGET, ROW_CHROME, ROW_WIDTH, SESSION_DOT_COLUMN, estimatedTextWidth, faceCentre, headerMetrics, rosterRowGeometry, sessionRowGeometry, titleFits } from '../src/roster/geometry';
 import {
   UNASSIGNED,
   addSection,
@@ -1017,6 +1017,45 @@ test('0.8.0 F: BOTH sheets share the fix, and only the entries scroll', () => {
   assert.ok(titleIdx > 0 && scrollIdx > titleIdx, 'the title is NOT inside the ScrollView');
   const promptActions = src.indexOf('styles.promptActions');
   assert.ok(promptActions > src.indexOf('</ScrollView>'), "the prompt's buttons are NOT inside it either");
+});
+
+// ─────────────────── 0.8.0 G: the top buttons are 10% bigger ──
+
+test('0.8.0 G: the three header glyphs scale by 1.1 from ONE constant', () => {
+  const h = headerMetrics();
+  assert.equal(HEADER_ICON_SCALE, 1.1);
+  assert.equal(h.scale, HEADER_ICON_SCALE, 'the box and the glyphs read the same constant');
+  assert.equal(h.add, 22, 'the "+" glyph: 20 → 22');
+  assert.equal(h.expand, 18, 'expand: 16 → 18 (17.6, rounded to a legible whole number)');
+  assert.equal(h.settings, 18, 'settings: 16 → 18');
+  assert.equal(h.add, Math.round(20 * 1.1));
+  assert.equal(h.expand, Math.round(16 * 1.1));
+  assert.equal(h.expand, h.settings, 'the two 16 dp glyphs get one size, not two');
+  // Bigger than they were, by design — and not by double.
+  assert.ok(h.add > 20 && h.expand > 16);
+  assert.ok(h.add < 30 && h.expand < 24);
+});
+
+test('0.8.0 G: the pressable box scales too, and the REAL touch target stays >= 44 x 44', () => {
+  const h = headerMetrics();
+  assert.equal(h.boxWidth, 42, '38 → 42, the same +10%');
+  assert.equal(h.boxHeight, 37, '34 → 37');
+  assert.ok(h.boxWidth > 38 && h.boxHeight > 34, 'the box grew with the glyph');
+  // The glyphs are small; the touch area is not. `hitSlop` is what earns the floor, and `target` is
+  // the arithmetic proof rather than a hope.
+  assert.equal(MIN_TOUCH_TARGET, 44);
+  assert.ok(h.target >= MIN_TOUCH_TARGET, `effective target ${h.target} must clear ${MIN_TOUCH_TARGET}`);
+  assert.equal(h.hitSlop, Math.max(0, Math.ceil((MIN_TOUCH_TARGET - Math.min(h.boxWidth, h.boxHeight)) / 2)));
+  assert.equal(h.boxHeight + h.hitSlop * 2, h.target);
+  const src = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+  assert.match(src, /const H = headerMetrics\(\)/, 'the screen takes its numbers from the module');
+  assert.equal(src.split('hitSlop={H.hitSlop}').length - 1, 3, 'all three buttons inflate their target');
+  assert.equal(src.split('{ width: H.boxWidth, height: H.boxHeight }').length - 1, 3, 'and all three scale');
+  assert.match(src, /<Ionicons name="add" size=\{H\.add\}/);
+  assert.match(src, /name=\{openSessions\.length \? 'contract-outline' : 'expand-outline'\} size=\{H\.expand\}/);
+  assert.match(src, /<Ionicons name="settings-outline" size=\{H\.settings\}/);
+  // No glyph is left on a literal: 20/16 would silently un-scale one of the three.
+  assert.ok(!/size=\{20\}|size=\{16\}/.test(src), 'no header glyph keeps its old literal size');
 });
 
 test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {

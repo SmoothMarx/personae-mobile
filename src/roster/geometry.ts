@@ -176,6 +176,59 @@ export function faceCentre(geometry: RosterRowGeometry = rosterRowGeometry()): n
   return geometry.inset + geometry.avatar / 2;
 }
 
+// ───────────────────────────────────────── the header's icons (0.8.0 G) ──
+
+/** The one constant the operator's "+10% on the top buttons" is applied from. */
+export const HEADER_ICON_SCALE = 1.1;
+
+/** The floor every touch target on this screen has to meet, whatever the glyph's size. */
+export const MIN_TOUCH_TARGET = 44;
+
+export type HeaderMetrics = {
+  scale: number;
+  /** The "+" glyph: 20 → 22. */
+  add: number;
+  /** Expand/collapse: 16 → 18 (17.6, rounded up to a legible whole number). */
+  expand: number;
+  /** Settings: the same 18 — one size for the two 16 dp glyphs. */
+  settings: number;
+  /** The pressable's own box, scaled by the same factor as the glyphs (was 38 × 34). */
+  boxWidth: number;
+  boxHeight: number;
+  /** How far the touch area is inflated so the real target meets MIN_TOUCH_TARGET. */
+  hitSlop: number;
+  /** The effective target once hitSlop is applied — what a thumb actually gets. */
+  target: number;
+};
+
+/**
+ * 0.8.0 G — "make the top buttons (+ | Expand | Settings) 10% bigger".
+ *
+ * Three glyphs, ONE constant, and the *box* scales with them, because a bigger glyph in an unchanged
+ * box reads as a cramped button rather than a bigger one. The GLYPH and the TOUCH TARGET are
+ * deliberately separate numbers: the glyphs are small (18–22 dp), the hit area is not — the pressable
+ * keeps its scaled box and inflates its `hitSlop` until the real target is at least 44 × 44 dp.
+ */
+export function headerMetrics(): HeaderMetrics {
+  const scale = HEADER_ICON_SCALE;
+  const add = Math.round(20 * scale);
+  const expand = Math.round(16 * scale);
+  const boxWidth = Math.round(38 * scale);
+  const boxHeight = Math.round(34 * scale);
+  const shortest = Math.min(boxWidth, boxHeight);
+  const hitSlop = Math.max(0, Math.ceil((MIN_TOUCH_TARGET - shortest) / 2));
+  return {
+    scale,
+    add,
+    expand,
+    settings: expand,
+    boxWidth,
+    boxHeight,
+    hitSlop,
+    target: shortest + hitSlop * 2,
+  };
+}
+
 /** Does this title fit the row's title column at the reference's title size? */
 export function titleFits(name: string, geometry: RosterRowGeometry = rosterRowGeometry()): boolean {
   return estimatedTextWidth(name, geometry.titleSize) <= geometry.titleMaxWidth;

@@ -31,6 +31,7 @@ import type { Diagnostic } from '../src/ConnectivityContext';
 import { normalizeError } from '../src/api/errors';
 import { t, useLanguage } from '../src/i18n';
 import { monogramFor } from '../src/logic/avatars';
+import { headerMetrics } from '../src/roster/geometry';
 import type { SortMode } from '../src/logic/sections';
 import { ActionSheet, ProfileRow, PromptSheet, SearchBar, SectionHeader, SessionRow, SwatchPicker } from '../src/roster/components';
 import {
@@ -245,6 +246,8 @@ export default function RosterScreen() {
   );
 
   const openSessions = roster.model.rows.filter((row) => row.expanded);
+  /** 0.8.0 G: the three header glyphs and their boxes come from ONE constant. */
+  const H = headerMetrics();
 
   const header = (
     <View>
@@ -256,9 +259,14 @@ export default function RosterScreen() {
           onPress={() => setPlusOpen(true)}
           accessibilityRole="button"
           accessibilityLabel={t.plus.title}
-          style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}
+          hitSlop={H.hitSlop}
+          style={({ pressed }) => [
+            styles.headerIcon,
+            { width: H.boxWidth, height: H.boxHeight },
+            pressed && styles.pressed,
+          ]}
         >
-          <Ionicons name="add" size={20} color={colors.text} />
+          <Ionicons name="add" size={H.add} color={colors.text} />
         </Pressable>
         {/* One control, two states: it opens everything when nothing is open, and closes the open
             set otherwise. A separate pair would be two buttons for one idea. */}
@@ -272,17 +280,27 @@ export default function RosterScreen() {
           }}
           accessibilityRole="button"
           accessibilityLabel={openSessions.length ? t.roster.collapseAll : t.roster.expandAll}
-          style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}
+          hitSlop={H.hitSlop}
+          style={({ pressed }) => [
+            styles.headerIcon,
+            { width: H.boxWidth, height: H.boxHeight },
+            pressed && styles.pressed,
+          ]}
         >
-          <Ionicons name={openSessions.length ? 'contract-outline' : 'expand-outline'} size={16} color={colors.text} />
+          <Ionicons name={openSessions.length ? 'contract-outline' : 'expand-outline'} size={H.expand} color={colors.text} />
         </Pressable>
         <Pressable
           onPress={() => router.push('/settings')}
           accessibilityRole="button"
           accessibilityLabel={t.a11y.settings}
-          style={({ pressed }) => [styles.headerIcon, pressed && styles.pressed]}
+          hitSlop={H.hitSlop}
+          style={({ pressed }) => [
+            styles.headerIcon,
+            { width: H.boxWidth, height: H.boxHeight },
+            pressed && styles.pressed,
+          ]}
         >
-          <Ionicons name="settings-outline" size={16} color={colors.text} />
+          <Ionicons name="settings-outline" size={H.settings} color={colors.text} />
         </Pressable>
       </View>
 
