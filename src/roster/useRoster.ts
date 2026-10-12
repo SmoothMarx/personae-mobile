@@ -22,6 +22,7 @@ import { useConnectivity } from '../ConnectivityContext';
 import { log } from '../logging';
 import { t, useLanguage } from '../i18n';
 import { applyShared, sharedFromPrefs, useUiSync } from '../sync/useUiSync';
+import { usePreferencesSync } from '../sync/usePreferencesSync';
 import { SYNC_KEYS } from '../sync/uiSync';
 import { useAvatars } from '../Avatar';
 import {
@@ -101,7 +102,7 @@ const RUNS_LIMIT = 20;
 
 export function useRoster() {
   const router = useRouter();
-  const { settings, ready } = useSettings();
+  const { settings, ready, update } = useSettings();
   const { backend } = useBackend();
   const { diagnostic, busy, recheck } = useConnectivity();
 
@@ -160,6 +161,21 @@ export function useRoster() {
         void saveRosterPrefs(next);
         return next;
       }),
+  });
+
+  /**
+   * 0.9.0 I — the PORTABLE half of the settings, through the document Phase A built (goal §5's
+   * scope). `Gateway Settings` is deliberately absent from the payload: it is device-local, and
+   * syncing it would overwrite the desktop's localhost dial with this phone's tailnet address.
+   */
+  const preferenceSync = usePreferencesSync({
+    enabled: configured && settings.surface === 'dashboard',
+    backend,
+    settingsReady: ready && prefsReady,
+    settings,
+    sections: prefs.sections,
+    applySettings: (patch) => update(patch),
+    applySections: (next) => setPrefs((current) => ({ ...current, sections: next })),
   });
 
   /** Every preference write goes through here, so persistence can never be forgotten. */
@@ -734,5 +750,7 @@ export function useRoster() {
     connectivityBusy: busy,
     recheck,
     syncStatus,
+    /** 0.9.0 I — the portable-preference document's own status, shown on the Settings page. */
+    preferenceSyncStatus: preferenceSync,
   };
 }

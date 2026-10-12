@@ -17,7 +17,7 @@ import { connect as netConnect } from 'node:net';
 import { join } from 'node:path';
 import { createMockGateway } from '../mock/server.mjs';
 import { createMockDashboard, profileFixture, sessionFixture } from '../mock/dashboard.mjs';
-import { createDashboardClient, type GatewayEvent } from '../src/api/dashboard';
+import { createDashboardClient, type GatewayEvent, type PreferenceDocument } from '../src/api/dashboard';
 import { createBackend } from '../src/api/backend';
 import { SSEParser, parseFrame } from '../src/api/sse';
 import { createApi } from '../src/api/client';
@@ -159,6 +159,15 @@ import {
 } from '../src/rosterPrefs';
 import { EMPTY_PREFS as ROSTER_EMPTY_PREFS } from '../src/rosterPrefs';
 import { applyShared, sharedFromPrefs } from '../src/sync/useUiSync';
+import {
+  DEVICE_LOCAL_KEYS,
+  PORTABLE_KEYS,
+  applyPortable,
+  changedKeys,
+  isPortableSetting,
+  patchFor,
+  readPortable,
+} from '../src/sync/preferences';
 import { SYNC_KEYS as SYNC_KEY_LIST } from '../src/sync/uiSync';
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
@@ -3861,6 +3870,100 @@ async function main(): Promise<void> {
     assert.equal(body.keys['sections-v1'].rev, 10);
     meta.dirty['sections-v1'] = SECTIONS;
     assert.equal(buildPut(meta)!.keys['sections-v1'].rev, 11);
+  });
+
+  // ─────────────────────────────── 0.9.0 Phase I: sync ──
+
+  test('0.9.0 I: what syncs is an ALLOWLIST, and a gateway address can never be in it', () => {
+    assert.deepEqual([...PORTABLE_KEYS], ['session-types', 'notifications', 'display-order']);
+    // the device-local half is NAMED, so the Settings page can disclose it and a test can pin it
+    for (const field of ['baseUrl', 'apiKey', 'surface', 'routes', 'deviceId', 'language', 'model']) {
+      assert.ok((DEVICE_LOCAL_KEYS as readonly string[]).includes(field), `${field} must never sync`);
+    }
+    // …and the two sets cannot overlap
+    const overlap = (PORTABLE_KEYS as readonly string[]).filter((key) =>
+      (DEVICE_LOCAL_KEYS as readonly string[]).includes(key),
+    );
+    assert.deepEqual(overlap, []);
+    // the question form agrees with the list
+    assert.equal(isPortableSetting('sessionTypes'), true);
+    assert.equal(isPortableSetting('notifications'), true);
+    for (const field of ['baseUrl', 'apiKey', 'surface', 'routes', 'language']) {
+      assert.equal(isPortableSetting(field), false, `${field} is device-local`);
+    }
+    // and the payload the phone PUTs carries nothing else: `readPortable` names its keys literally
+    const payload = readPortable(
+      { sessionTypes: { sessions: true, automatic: false }, notifications: { enabled: false, waiting: true, finished: true } },
+      { sections: [], members: {}, collapsed: [], sort: { all: 'activity' } } as never,
+    );
+    assert.deepEqual(Object.keys(payload).sort(), ['display-order', 'notifications', 'session-types']);
+    assert.equal('apiKey' in payload, false);
+    assert.equal('baseUrl' in payload, false);
+    // the SCREEN's promise matches the server's accepted list (Phase A publishes it)
+    const plugin = readFileSync(join(process.cwd(), 'server/personae-mobile-state/dashboard/preferences.py'), 'utf8');
+    const block = plugin.slice(plugin.indexOf('PORTABLE_KEYS'), plugin.indexOf('DEVICE_LOCAL_KEYS'));
+    const serverKeys = [...block.matchAll(/"([a-z-]+)"/g)].map((match) => match[1]).sort();
+    assert.deepEqual([...PORTABLE_KEYS].slice().sort(), serverKeys);
+  });
+
+  test('0.9.0 I: the server is the source of truth, and a stale revision is never a clobber', () => {
+    const server: PreferenceDocument = {
+      revision: 9,
+      preferences: { 'session-types': { sessions: false, automatic: true }, notifications: { enabled: true } },
+      revs: { 'session-types': 8, notifications: 4 },
+    };
+    const base = {
+      ...DEFAULT_SETTINGS,
+      sessionTypes: { sessions: true, automatic: false },
+      notifications: { enabled: false, waiting: true, finished: true },
+    };
+    const sections = { sections: [], members: {}, collapsed: [], sort: { all: 'activity' } } as never;
+    const applied = applyPortable(base, sections, server);
+    assert.deepEqual(applied.applied.sort(), ['notifications', 'session-types']);
+    assert.deepEqual(applied.settings.sessionTypes, { sessions: false, automatic: true }, 'the SERVER wins');
+    assert.equal(applied.settings.notifications.enabled, true);
+    // a half-written document falls back PER KEY to the local default, never to junk
+    const partial = applyPortable(base, sections, { revision: 3, preferences: { 'session-types': 'nonsense' } });
+    assert.deepEqual(partial.settings.sessionTypes, DEFAULT_SESSION_TYPES);
+    // …and an absent document (an older server) changes nothing at all
+    const none = applyPortable(base, sections, null);
+    assert.deepEqual(none.applied, []);
+    assert.equal(none.settings, base);
+    // the patch declares the revision it SAW — the only clock that can tell fresh from stale
+    assert.deepEqual(patchFor('notifications', { enabled: true }, 9), {
+      revision: 9,
+      preferences: { notifications: { enabled: true } },
+    });
+  });
+
+  test('0.9.0 I: only a GENUINE difference is pushed, so an applied value cannot echo back', () => {
+    const before = { 'session-types': { sessions: true, automatic: false }, notifications: { enabled: false }, 'display-order': { sort: { all: 'activity' } } };
+    assert.deepEqual(changedKeys(before, { ...before }), []);
+    assert.deepEqual(changedKeys(before, { ...before, notifications: { enabled: true } }), ['notifications']);
+    assert.deepEqual(
+      changedKeys(before, { ...before, 'session-types': { sessions: false, automatic: false } }).sort(),
+      ['session-types'],
+    );
+    // the hook remembers what it applied, so the value it just wrote down is not pushed again
+    const hook = readFileSync(join(process.cwd(), 'src', 'sync', 'usePreferencesSync.ts'), 'utf8');
+    assert.match(hook, /lastSeen\.current = readPortable\(result\.settings, result\.sections\)/);
+    assert.match(hook, /const changed = changedKeys\(before, snapshot\)/);
+    assert.match(hook, /if \(!changed\.length\) return;/, 'no difference, no write, no revision bump');
+    // a failed push rolls the guard back, so the edit is not lost
+    assert.match(hook, /lastSeen\.current = before;/);
+    // and the whole layer is inert on a surface that has no such route
+    assert.match(hook, /setStatus\('unsupported'\)/);
+  });
+
+  test('0.9.0 I: the phone writes through the document the desktop pane reads', () => {
+    // One contract, three readers (state plugin, phone, desktop plug-in) — the same PUT shape.
+    const src = readFileSync(join(process.cwd(), 'src', 'roster', 'useRoster.ts'), 'utf8');
+    assert.match(src, /usePreferencesSync\(\{/);
+    assert.match(src, /enabled: configured && settings\.surface === 'dashboard'/, 'the legacy surface does not call it');
+    assert.match(src, /backend\.preferences|usePreferencesSync/, 'the pull and the push ride the state surface');
+    const backend = readFileSync(join(process.cwd(), 'src', 'api', 'backend.ts'), 'utf8');
+    assert.match(backend, /statePutPreferences\(patch, ''\)/);
+    assert.match(backend, /api\.stateCall<PreferenceDocument>\('\/preferences'/);
   });
 
   // ─────────────────────────────── 0.9.0 Phase H: voice ──
