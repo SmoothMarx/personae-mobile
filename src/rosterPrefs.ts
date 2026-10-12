@@ -18,6 +18,11 @@
  */
 
 import { SECTIONS_STORE_KEY, normalizeSections, type SectionsModel } from './logic/sections';
+import {
+  SESSION_GROUPS_STORE_KEY,
+  normalizeSessionGroups,
+  type SessionGroupsModel,
+} from './logic/sessionGroups';
 import { storeGet, storeSet } from './storage';
 import type { ColourModel } from './logic/rosterFeed';
 
@@ -59,6 +64,12 @@ export type RosterPrefs = {
    * label here instead. Saying so is the honest option; the alternative was a silent directory move.
    */
   labels: Record<string, string>;
+  /**
+   * 0.9.0 C — session groups: which SESSIONS are filed under which user-authored heading. The same
+   * document the desktop pane keeps in `messenger-session-groups-v1`, so a slice written here is a
+   * slice the desktop reads (and vice versa). See `src/logic/sessionGroups.ts`.
+   */
+  sessionGroups: SessionGroupsModel;
 };
 
 export const EMPTY_PREFS: RosterPrefs = {
@@ -67,6 +78,7 @@ export const EMPTY_PREFS: RosterPrefs = {
   hidden: [],
   colours: { profiles: {}, sessions: {}, groups: {} },
   labels: {},
+  sessionGroups: {},
 };
 
 /**
@@ -147,12 +159,13 @@ export function normalizeLabels(value: unknown): Record<string, string> {
 
 /** One read of every key. A corrupt blob degrades to the default rather than crashing the roster. */
 export async function loadRosterPrefs(): Promise<RosterPrefs> {
-  const [sectionsRaw, expandedRaw, hiddenRaw, coloursRaw, labelsRaw] = await Promise.all([
+  const [sectionsRaw, expandedRaw, hiddenRaw, coloursRaw, labelsRaw, groupsRaw] = await Promise.all([
     storeGet(SECTIONS_STORE_KEY),
     storeGet(EXPANDED_STORE_KEY),
     storeGet(HIDDEN_STORE_KEY),
     storeGet(COLOURS_STORE_KEY),
     storeGet(LABELS_STORE_KEY),
+    storeGet(SESSION_GROUPS_STORE_KEY),
   ]);
   return {
     sections: parse(sectionsRaw, EMPTY_PREFS.sections, normalizeSections),
@@ -160,6 +173,8 @@ export async function loadRosterPrefs(): Promise<RosterPrefs> {
     hidden: parse(hiddenRaw, [], normalizeHidden),
     colours: parse(coloursRaw, EMPTY_PREFS.colours, normalizeColours),
     labels: parse(labelsRaw, {}, normalizeLabels),
+    // A 0.8.0 install has no such key at all and loads as "no groups", which renders the flat list.
+    sessionGroups: parse(groupsRaw, {}, normalizeSessionGroups),
   };
 }
 
@@ -171,6 +186,7 @@ export async function saveRosterPrefs(prefs: RosterPrefs): Promise<void> {
     storeSet(HIDDEN_STORE_KEY, JSON.stringify(prefs.hidden)),
     storeSet(COLOURS_STORE_KEY, JSON.stringify(prefs.colours)),
     storeSet(LABELS_STORE_KEY, JSON.stringify(prefs.labels)),
+    storeSet(SESSION_GROUPS_STORE_KEY, JSON.stringify(prefs.sessionGroups)),
   ]);
 }
 

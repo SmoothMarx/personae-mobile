@@ -6,6 +6,8 @@
  *   sections-v1        ⇄ prefs.sections          (same shape as the desktop pane: groups, members,
  *                                                  collapsed, manual order, sort — "sort + groups")
  *   session-colors-v1  ⇄ prefs.colours.sessions  (same shape: {profile: {sessionId: colour}})
+ *   session-groups-v1  ⇄ prefs.sessionGroups     (0.9.0 C: the desktop pane's Groups, same shape —
+ *                                                 {profile: {groups, members, order, collapsed}})
  * The other shared keys (session-sort/order/groups, hidden, apropos) describe desktop-pane features
  * the phone does not render; the phone never writes them, so it can never clobber them. Device-local
  * state (expanded rows, search, labels) never leaves the phone.
@@ -21,7 +23,7 @@
  * Pure + injected (remote, meta store, timers), so tests/run.ts drives it with fakes.
  */
 
-export const SYNC_KEYS = ['sections-v1', 'session-colors-v1'] as const;
+export const SYNC_KEYS = ['sections-v1', 'session-colors-v1', 'session-groups-v1'] as const;
 export type SyncKey = (typeof SYNC_KEYS)[number];
 export type Obj = Record<string, unknown>;
 

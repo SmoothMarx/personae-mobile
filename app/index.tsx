@@ -35,7 +35,16 @@ import { headerMetrics } from '../src/roster/geometry';
 import { showsConnectionBanner } from '../src/roster/banner';
 import { screenInsets } from '../src/insets';
 import type { SortMode } from '../src/logic/sections';
-import { ActionSheet, ProfileRow, PromptSheet, SearchBar, SectionHeader, SessionRow, SwatchPicker } from '../src/roster/components';
+import {
+  ActionSheet,
+  ProfileRow,
+  PromptSheet,
+  SearchBar,
+  SectionHeader,
+  SessionGroupHeader,
+  SessionRow,
+  SwatchPicker,
+} from '../src/roster/components';
 import {
   CLOSED_SWIPE,
   armDelete,
@@ -46,7 +55,13 @@ import {
   openRow,
   type SwipeState,
 } from '../src/logic/swipe';
-import { profileMenuEntries, sectionMenuEntries, sessionMenuEntries, sortEntries } from '../src/roster/menus';
+import {
+  profileMenuEntries,
+  sectionMenuEntries,
+  sessionGroupMenuEntries,
+  sessionMenuEntries,
+  sortEntries,
+} from '../src/roster/menus';
 import { plusMenuEntries, profileFromPickerKey, profilePickerEntries } from '../src/roster/plusMenu';
 import { useSettings } from '../src/SettingsContext';
 import { useRoster, type RosterListRow } from '../src/roster/useRoster';
@@ -56,9 +71,20 @@ type MenuState =
   | { kind: 'none' }
   | { kind: 'profile'; name: string; label: string }
   | { kind: 'session'; profile: string; id: string; title: string }
-  | { kind: 'section'; id: string; name: string };
+  | { kind: 'section'; id: string; name: string }
+  /** 0.9.0 C — a user-authored SESSION group heading (a different noun from `section`). */
+  | { kind: 'session-group'; profile: string; id: string; name: string };
 
-type PromptMode = 'none' | 'group' | 'group-rename' | 'profile-label' | 'session-title' | 'new-session' | 'new-profile';
+type PromptMode =
+  | 'none'
+  | 'group'
+  | 'group-rename'
+  | 'profile-label'
+  | 'session-title'
+  | 'new-session'
+  | 'new-profile'
+  /** 0.9.0 C */
+  | 'session-group-rename';
 
 export default function RosterScreen() {
   const router = useRouter();
@@ -74,6 +100,8 @@ export default function RosterScreen() {
   const [profilePickOpen, setProfilePickOpen] = useState(false);
   const [colourFor, setColourFor] = useState<{ kind: 'profile' | 'session'; profile: string; sessionId?: string } | null>(null);
   const [filing, setFiling] = useState<{ profile: string; label: string } | null>(null);
+  /** 0.9.0 C — the session being filed into a group (the picker is this sheet's own child). */
+  const [filingSession, setFilingSession] = useState<{ profile: string; id: string; title: string } | null>(null);
   const [sortSheetOpen, setSortSheetOpen] = useState(false);
   const [prompt, setPrompt] = useState<PromptMode>('none');
   /**
@@ -86,6 +114,8 @@ export default function RosterScreen() {
   const pendingProfile = useRef<string | null>(null);
   const pendingSession = useRef<{ profile: string; id: string } | null>(null);
   const pendingSection = useRef<string | null>(null);
+  /** 0.9.0 C — the session group being renamed. */
+  const pendingSessionGroup = useRef<{ profile: string; id: string } | null>(null);
 
   const { notice, clearNotice } = roster;
   useEffect(() => {
@@ -125,6 +155,17 @@ export default function RosterScreen() {
         return t.roster.menu.unhide;
       case 'archiveAll':
         return t.roster.menu.archiveAll;
+      // ── 0.9.0 C: the session-group verbs ──
+      case 'newSessionGroup':
+        return t.roster.sessionGroups.newTitle;
+      case 'fileIntoGroup':
+        return t.roster.sessionGroups.fileInto;
+      case 'removeFromGroup':
+        return t.roster.sessionGroups.removeFrom;
+      case 'deleteGroup':
+        return t.roster.sessionGroups.delete;
+      case 'rename-session-group':
+        return t.roster.sessionGroups.rename;
       case 'open':
         return t.roster.menu.open;
       case 'sessionColour':
@@ -146,11 +187,13 @@ export default function RosterScreen() {
     setMenu({ kind: 'none' });
     setColourFor(null);
     setFiling(null);
+    setFilingSession(null);
   }, []);
 
   const openMenu = useCallback((state: MenuState) => {
     setColourFor(null);
     setFiling(null);
+    setFilingSession(null);
     setMenu(state);
   }, []);
 
@@ -185,6 +228,19 @@ export default function RosterScreen() {
             canManage={!item.implicit}
             onToggle={() => roster.sectionActions.toggle(item.id)}
             onMenu={() => openMenu({ kind: 'section', id: item.id, name: item.name })}
+          />
+        );
+      }
+      if (item.kind === 'session-group') {
+        return (
+          <SessionGroupHeader
+            name={item.name}
+            count={item.count}
+            collapsed={item.collapsed}
+            onToggle={() => roster.sessionGroupActions.toggle(item.profile, item.id)}
+            onMenu={() =>
+              openMenu({ kind: 'session-group', profile: item.profile, id: item.id, name: item.name })
+            }
           />
         );
       }
@@ -375,6 +431,8 @@ export default function RosterScreen() {
   const profileMenu = menu.kind === 'profile' ? menu : null;
   const sessionMenu = menu.kind === 'session' ? menu : null;
   const sectionMenu = menu.kind === 'section' ? menu : null;
+  /** 0.9.0 C — the heading's own menu, and the groups of the session the menu is about. */
+  const sessionGroupMenu = menu.kind === 'session-group' ? menu : null;
 
   return (
     <View style={[styles.screen, screenInsets(insets)]}>
@@ -596,7 +654,17 @@ export default function RosterScreen() {
       <ActionSheet
         visible={Boolean(sessionMenu)}
         title={sessionMenu?.title ?? ''}
-        entries={sessionMenu ? sessionMenuEntries({ title: sessionMenu.title, colour: null }) : []}
+        entries={
+          sessionMenu
+            ? sessionMenuEntries({
+                title: sessionMenu.title,
+                colour: null,
+                inGroup: Boolean(
+                  roster.sessionGroups[sessionMenu.profile]?.members?.[sessionMenu.id] ?? null,
+                ),
+              })
+            : []
+        }
         labelOf={menuLabel}
         onClose={closeMenu}
         onPick={(key: string) => {
@@ -614,6 +682,19 @@ export default function RosterScreen() {
               break;
             case 'colour':
               setColourFor({ kind: 'session', profile: target.profile, sessionId: target.id });
+              break;
+            // ── 0.9.0 C: filing, and only filing. Every verb is one write through
+            //    `sessionGroupActions`, which pushes the shared document like any other pref. ──
+            case 'new-session-group':
+              roster.sessionGroupActions.create(target.profile);
+              closeMenu();
+              break;
+            case 'file-into-group':
+              setFilingSession({ profile: target.profile, id: target.id, title: target.title });
+              break;
+            case 'remove-from-group':
+              roster.sessionGroupActions.file(target.profile, [target.id], null);
+              closeMenu();
               break;
             case 'archive':
               void roster.archiveSession(target.profile, target.id);
@@ -639,6 +720,37 @@ export default function RosterScreen() {
           }
         }}
       >
+        {/* The group picker: the same sheet's own child, exactly like the swatch palette beside it. */}
+        {filingSession ? (
+          <View>
+            <Text style={styles.sheetSection}>{t.roster.sessionGroups.fileInto}</Text>
+            <Pressable
+              onPress={() => {
+                roster.sessionGroupActions.file(filingSession.profile, [filingSession.id], null);
+                roster.say(t.roster.sessionGroups.ungrouped);
+                closeMenu();
+              }}
+              style={({ pressed }) => [styles.sheetRow, pressed && styles.rowPressed]}
+            >
+              <Ionicons name="ban-outline" size={18} color={colors.text} />
+              <Text style={styles.sheetLabel}>{t.roster.sessionGroups.none}</Text>
+            </Pressable>
+            {(roster.sessionGroups[filingSession.profile]?.groups ?? []).map((entry) => (
+              <Pressable
+                key={entry.id}
+                onPress={() => {
+                  roster.sessionGroupActions.file(filingSession.profile, [filingSession.id], entry.id);
+                  roster.say(t.roster.sessionGroups.filed(entry.name));
+                  closeMenu();
+                }}
+                style={({ pressed }) => [styles.sheetRow, pressed && styles.rowPressed]}
+              >
+                <Ionicons name="folder-outline" size={18} color={colors.text} />
+                <Text style={styles.sheetLabel}>{entry.name}</Text>
+              </Pressable>
+            ))}
+          </View>
+        ) : null}
         {colourFor && colourFor.kind === 'session' ? (
           <SwatchPicker
             value={roster.prefs.colours.sessions[colourFor.profile]?.[colourFor.sessionId ?? ''] ?? null}
@@ -693,19 +805,59 @@ export default function RosterScreen() {
         }}
       />
 
+      {/* ── 0.9.0 C: the SESSION group heading's menu — deleting it never deletes a session ───── */}
+      <ActionSheet
+        visible={Boolean(sessionGroupMenu)}
+        title={sessionGroupMenu?.name ?? ''}
+        entries={sessionGroupMenu ? sessionGroupMenuEntries() : []}
+        labelOf={menuLabel}
+        onClose={closeMenu}
+        onPick={(key: string) => {
+          const target = sessionGroupMenu;
+          if (!target) return;
+          if (key === 'rename-session-group') {
+            closeMenu();
+            pendingSessionGroup.current = { profile: target.profile, id: target.id };
+            askFor('session-group-rename', target.name);
+            return;
+          }
+          if (key === 'delete-session-group') {
+            Alert.alert(t.roster.sessionGroups.delete, t.roster.sessionGroups.deleteConfirm(target.name), [
+              { text: t.roster.menu.cancel, style: 'cancel' },
+              {
+                text: t.roster.sessionGroups.delete,
+                style: 'destructive',
+                onPress: () => roster.sessionGroupActions.remove(target.profile, target.id),
+              },
+            ]);
+            closeMenu();
+            return;
+          }
+          closeMenu();
+        }}
+      />
+
       <PromptSheet
         visible={prompt !== 'none'}
         title={promptTitle(prompt)}
         placeholder={
-          prompt === 'group' || prompt === 'group-rename'
-            ? t.roster.groups.namePlaceholder
+          prompt === 'session-group-rename'
+            ? t.roster.sessionGroups.namePlaceholder
+            : prompt === 'group' || prompt === 'group-rename'
+              ? t.roster.groups.namePlaceholder
             : prompt === 'new-profile'
               ? t.plus.profileNamePlaceholder
               : t.roster.newSessionPlaceholder
         }
         value={promptValue}
         onChangeText={setPromptValue}
-        submitLabel={prompt === 'group' ? t.roster.groups.create : prompt === 'new-profile' ? t.plus.create : t.roster.menu.rename}
+        submitLabel={
+          prompt === 'group'
+            ? t.roster.groups.create
+            : prompt === 'new-profile'
+              ? t.plus.create
+              : t.roster.menu.rename
+        }
         onClose={() => {
           setPrompt('none');
           pendingSection.current = null;
@@ -724,9 +876,14 @@ export default function RosterScreen() {
             void roster.createSession(pendingProfile.current, value);
           } else if (prompt === 'new-profile') {
             void roster.createProfile(value);
+          } else if (prompt === 'session-group-rename' && pendingSessionGroup.current) {
+            if (value) {
+              roster.sessionGroupActions.rename(pendingSessionGroup.current.profile, pendingSessionGroup.current.id, value);
+            }
           }
           setPrompt('none');
           pendingSection.current = null;
+          pendingSessionGroup.current = null;
         }}
       />
     </View>
@@ -734,6 +891,7 @@ export default function RosterScreen() {
 }
 
 function promptTitle(mode: PromptMode): string {
+  if (mode === 'session-group-rename') return t.roster.sessionGroups.rename;
   if (mode === 'group') return t.roster.groups.new;
   if (mode === 'new-profile') return t.plus.newProfile;
   if (mode === 'group-rename') return t.roster.groups.rename;

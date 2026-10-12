@@ -52,6 +52,16 @@ import {
   type SectionsModel,
   type SortMode,
 } from '../logic/sections';
+import {
+  addGroup,
+  deleteGroup,
+  fileSessions,
+  isGroupCollapsed,
+  moveGroup,
+  renameGroup,
+  sessionGroupBlocks,
+  toggleGroupCollapsed,
+} from '../logic/sessionGroups';
 import { profileSlug } from './plusMenu';
 import { loadLastSeen, saveLastSeen } from '../settingsStore';
 import {
@@ -77,6 +87,11 @@ export type RosterListRow =
   | { kind: 'section'; key: string; id: string; name: string; count: number; collapsed: boolean; implicit: boolean }
   | { kind: 'profile'; key: string; row: RosterProfileRow }
   | { kind: 'session'; key: string; model: SessionRowModel; automatic: boolean }
+  /**
+   * 0.9.0 C — a user-authored SESSION group heading inside an expanded profile. A different noun
+   * from `section` (which holds profiles), and the two are never collapsed into one.
+   */
+  | { kind: 'session-group'; key: string; profile: string; id: string; name: string; count: number; collapsed: boolean }
   | { kind: 'empty'; key: string; id: string; name: string };
 
 const SEARCH_DEBOUNCE_MS = 320;
@@ -355,8 +370,31 @@ export function useRoster() {
         out.push({ kind: 'profile', key: `profile:${row.name}`, row });
         if (!row.expanded) continue;
         const sessions = sessionRowModels(row.sessions, allSessions, prefs.colours);
-        for (const session of sessions) {
-          out.push({ kind: 'session', key: `session:${session.profile}:${session.id}`, model: session, automatic: false });
+        /**
+         * 0.9.0 C — the expanded list, GROUPED. With no groups this is ONE anonymous block whose ids
+         * are the recency order, i.e. exactly the flat list every earlier release drew, so a profile
+         * nobody has filed anything into renders identically.
+         */
+        const byId = new Map(sessions.map((session) => [session.id, session]));
+        const blocks = sessionGroupBlocks(sessions.map((session) => session.id), prefs.sessionGroups, row.name);
+        for (const block of blocks) {
+          if (block.group) {
+            out.push({
+              kind: 'session-group',
+              key: `sg:${row.name}:${block.id}`,
+              profile: row.name,
+              id: block.id,
+              name: block.name,
+              count: block.sessionIds.length,
+              collapsed: block.collapsed,
+            });
+            if (block.collapsed) continue;
+          }
+          for (const sessionId of block.sessionIds) {
+            const session = byId.get(sessionId);
+            if (!session) continue;
+            out.push({ kind: 'session', key: `session:${session.profile}:${session.id}`, model: session, automatic: false });
+          }
         }
         if (!searching && row.automatic.length) {
           for (const run of sessionRowModels(row.automatic, allSessions, prefs.colours)) {
@@ -366,7 +404,7 @@ export function useRoster() {
       }
     }
     return out;
-  }, [allSessions, groups, prefs.colours, prefs.sections, query, typesAllOff]);
+  }, [allSessions, groups, prefs.colours, prefs.sections, prefs.sessionGroups, query, typesAllOff]);
 
   // ── actions ─────────────────────────────────────────────────────────────────
   const openSession = useCallback(
@@ -555,6 +593,33 @@ export function useRoster() {
 
   const sectionModel: SectionsModel = prefs.sections;
 
+  /**
+   * 0.9.0 C — the session-group verbs, all through `mutate` so every one of them is persisted AND
+   * pushed to the shared document (see `mutate`'s diff against `sharedFromPrefs`).
+   */
+  const sessionGroupActions = useMemo(
+    () => ({
+      create: (profile: string) =>
+        mutate((current) => ({ ...current, sessionGroups: addGroup(current.sessionGroups, profile).state })),
+      rename: (profile: string, id: string, name: string) =>
+        mutate((current) => ({ ...current, sessionGroups: renameGroup(current.sessionGroups, profile, id, name) })),
+      remove: (profile: string, id: string) =>
+        mutate((current) => ({ ...current, sessionGroups: deleteGroup(current.sessionGroups, profile, id) })),
+      toggle: (profile: string, id: string) =>
+        mutate((current) => ({ ...current, sessionGroups: toggleGroupCollapsed(current.sessionGroups, profile, id) })),
+      move: (profile: string, id: string, delta: number) =>
+        mutate((current) => ({ ...current, sessionGroups: moveGroup(current.sessionGroups, profile, id, delta) })),
+      /** File one session, or many (a multiselect batch is ONE write, so it cannot half-apply). */
+      file: (profile: string, sessionIds: readonly string[], groupId: string | null) =>
+        mutate((current) => ({
+          ...current,
+          sessionGroups: fileSessions(current.sessionGroups, profile, sessionIds, groupId),
+        })),
+      collapsed: (profile: string, id: string) => isGroupCollapsed(prefs.sessionGroups, profile, id),
+    }),
+    [mutate, prefs.sessionGroups],
+  );
+
   return {
     ready: ready && prefsReady,
     configured,
@@ -575,6 +640,9 @@ export function useRoster() {
     setQuery,
     sections: sectionModel,
     sectionActions: sections,
+    /** 0.9.0 C — the session groups themselves, and the verbs that write them. */
+    sessionGroups: prefs.sessionGroups,
+    sessionGroupActions,
     prefs,
     /** Every profile from the server, in roster order — the "New session" picker's content. */
     contacts,

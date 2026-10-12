@@ -100,6 +100,22 @@ import {
 } from '../src/logic/checkpoints';
 import { DEFAULT_POLL_MS, createCheckpointWatcher } from '../src/logic/watcher';
 import {
+  SESSION_GROUPS_SYNC_KEY,
+  addGroup,
+  deleteGroup,
+  fileSession,
+  fileSessions,
+  groupOf,
+  isGroupCollapsed,
+  moveGroup,
+  normalizeSessionGroups,
+  numberedGroupName,
+  renameGroup,
+  sessionGroupBlocks,
+  sliceFor,
+  toggleGroupCollapsed,
+} from '../src/logic/sessionGroups';
+import {
   UNASSIGNED,
   addSection,
   deleteSection,
@@ -141,6 +157,9 @@ import {
   toggleExpanded,
   toggleHidden,
 } from '../src/rosterPrefs';
+import { EMPTY_PREFS as ROSTER_EMPTY_PREFS } from '../src/rosterPrefs';
+import { applyShared, sharedFromPrefs } from '../src/sync/useUiSync';
+import { SYNC_KEYS as SYNC_KEY_LIST } from '../src/sync/uiSync';
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
 import { getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
@@ -3782,6 +3801,170 @@ async function main(): Promise<void> {
     assert.equal(body.keys['sections-v1'].rev, 10);
     meta.dirty['sections-v1'] = SECTIONS;
     assert.equal(buildPut(meta)!.keys['sections-v1'].rev, 11);
+  });
+
+  // ─────────────────────────────── 0.9.0 Phase C: session groups ──
+
+  test('0.9.0 C: the model is the desktop document, shape for shape', () => {
+    // The exact document the plug-in keeps under `messenger-session-groups-v1`, read out of
+    // `plugin.js` rather than out of its README.
+    const desktop = {
+      cody: {
+        groups: [
+          { apropos: true, id: 'g1', name: 'Apropos #1', color: '#4c8dff' },
+          { apropos: false, id: 'g2', name: 'Work', color: null },
+        ],
+        members: { 'sess-a': 'g1', 'sess-b': 'g2', 'sess-dead': 'nope' },
+        order: ['g2'],
+        collapsed: ['g1', 'nope'],
+      },
+      'not-a-profile': 'junk',
+    };
+    const model = normalizeSessionGroups(desktop);
+    const slice = sliceFor(model, 'cody');
+    assert.deepEqual(slice.groups.map((group) => group.id), ['g1', 'g2']);
+    // `order` is COMPLETED, so a heading another client added cannot become invisible
+    assert.deepEqual(slice.order, ['g2', 'g1']);
+    // an orphan membership reads as ungrouped — never a resurrected dead heading
+    assert.equal(slice.members['sess-dead'], undefined);
+    assert.equal(slice.members['sess-a'], 'g1');
+    // collapsed drops unknown ids
+    assert.deepEqual(slice.collapsed, ['g1']);
+    // a junk profile is dropped rather than crashing the normaliser
+    assert.deepEqual(Object.keys(model), ['cody']);
+    // `apropos` and `color` are CARRIED, not rendered: a phone that dropped them would delete
+    // another client's data on its next write
+    assert.equal(slice.groups[0].apropos, true);
+    assert.equal(slice.groups[0].color, '#4c8dff');
+    assert.equal(slice.groups[1].color, null);
+    assert.deepEqual(normalizeSessionGroups({}), {}, 'an empty document is an empty document');
+    assert.deepEqual(normalizeSessionGroups(null), {}, 'and so is nothing at all');
+  });
+
+  test('0.9.0 C: create, rename, file, unfile, collapse, move — and delete NEVER deletes a session', () => {
+    let state = normalizeSessionGroups({});
+    const created = addGroup(state, 'cody');
+    state = created.state;
+    assert.equal(created.name, 'Group #1', 'created immediately, numbered, no dialog first');
+    assert.equal(sliceFor(state, 'cody').groups.length, 1);
+    const second = addGroup(state, 'cody');
+    state = second.state;
+    assert.equal(second.name, 'Group #2', 'numbered past the highest, not by count');
+    state = moveGroup(state, 'cody', second.id, -1);
+    assert.deepEqual(sliceFor(state, 'cody').order, [second.id, created.id], 'Move up reorders the user\'s own order');
+    assert.equal(moveGroup(state, 'cody', created.id, 1), state, 'a no-op move is a no-op, not a scramble');
+
+    state = renameGroup(state, 'cody', created.id, 'Trabalho');
+    assert.equal(sliceFor(state, 'cody').groups.find((g) => g.id === created.id)?.name, 'Trabalho');
+    assert.equal(renameGroup(state, 'cody', created.id, '   '), state, 'a blank name never wipes a heading');
+
+    state = fileSession(state, 'cody', 'sess-1', created.id);
+    state = fileSession(state, 'cody', 'sess-2', created.id);
+    assert.equal(groupOf(state, 'cody', 'sess-1'), created.id);
+    // Three blocks, because the empty Group #2 still draws (an empty group explains how to fill it).
+    // Group #2 was moved UP, so it draws first; it is empty and still draws (an empty group
+    // explains how to fill itself); the anonymous block is always LAST.
+    assert.deepEqual(sessionGroupBlocks(['sess-1', 'sess-2', 'sess-3'], state, 'cody').map((b) => b.sessionIds), [
+      [],
+      ['sess-1', 'sess-2'],
+      ['sess-3'],
+    ]);
+    assert.deepEqual(
+      sessionGroupBlocks(['sess-1', 'sess-2', 'sess-3'], state, 'cody').map((b) => b.name),
+      ['Group #2', 'Trabalho', ''],
+      'the anonymous block has no name, and it is LAST',
+    );
+    // filing into a group that does not exist is refused, not created
+    const beforeBad = state;
+    state = fileSession(state, 'cody', 'sess-4', 'ghost');
+    assert.equal(state, beforeBad);
+    // unfiling is the ABSENCE of a membership
+    state = fileSession(state, 'cody', 'sess-1', null);
+    assert.equal(groupOf(state, 'cody', 'sess-1'), null);
+    // a batch is ONE write
+    state = fileSessions(state, 'cody', ['sess-3', 'sess-4'], created.id);
+    assert.deepEqual(
+      sessionGroupBlocks(['sess-1', 'sess-2', 'sess-3', 'sess-4'], state, 'cody').map((b) => b.sessionIds),
+      [[], ['sess-2', 'sess-3', 'sess-4'], ['sess-1']],
+    );
+
+    // collapse is per heading, and it is the MODEL that says so
+    state = toggleGroupCollapsed(state, 'cody', created.id);
+    assert.equal(isGroupCollapsed(state, 'cody', created.id), true);
+    state = toggleGroupCollapsed(state, 'cody', created.id);
+    assert.equal(isGroupCollapsed(state, 'cody', created.id), false);
+
+    // ── THE RULE ──────────────────────────────────────────────────────────────────────────────
+    const sessionsBefore = ['sess-1', 'sess-2', 'sess-3', 'sess-4'];
+    state = deleteGroup(state, 'cody', created.id);
+    assert.equal(sliceFor(state, 'cody').groups.length, 1, 'the heading is gone');
+    const blocks = sessionGroupBlocks(sessionsBefore, state, 'cody');
+    assert.deepEqual(
+      blocks.flatMap((block) => block.sessionIds).slice().sort(),
+      sessionsBefore.slice().sort(),
+      'deleting a group NEVER deletes a session — they fall back into the flat list',
+    );
+    // …and it is structural: the module cannot reach a session at all
+    const source = readFileSync(join(process.cwd(), 'src', 'logic', 'sessionGroups.ts'), 'utf8');
+    assert.ok(!/backend|deleteSession|roster\./i.test(source), 'the model has no door to a session');
+  });
+
+  test('0.9.0 C: no groups at all renders exactly the flat list it always was', () => {
+    const ids = ['s1', 's2', 's3'];
+    const blocks = sessionGroupBlocks(ids, {}, 'cody');
+    assert.equal(blocks.length, 1, 'ONE anonymous block');
+    assert.equal(blocks[0].group, null);
+    assert.deepEqual(blocks[0].sessionIds, ids, 'the recency order, untouched');
+    // …and the same is true for a slice that exists but is empty
+    assert.deepEqual(sessionGroupBlocks(ids, normalizeSessionGroups({ cody: {} }), 'cody')[0].sessionIds, ids);
+    // an EMPTY group still draws (it explains how to fill itself); the loose block may then be absent
+    const withEmpty = normalizeSessionGroups({ cody: { groups: [{ id: 'g', name: 'Empty' }] } });
+    const blocks2 = sessionGroupBlocks(ids, withEmpty, 'cody');
+    assert.equal(blocks2[0].name, 'Empty');
+    assert.deepEqual(blocks2[0].sessionIds, []);
+    // a profile's groups never leak into another profile's list
+    assert.equal(sliceFor(normalizeSessionGroups({ cody: { groups: [{ id: 'g', name: 'X' }] } }), 'beta').groups.length, 0);
+  });
+
+  test('0.9.0 C: the phone syncs the same key the desktop writes, through the same merge', () => {
+    assert.ok((SYNC_KEY_LIST as readonly string[]).includes(SESSION_GROUPS_SYNC_KEY));
+    assert.equal(SESSION_GROUPS_SYNC_KEY, 'session-groups-v1', "the desktop's key is `messenger-` + this");
+    const state = normalizeSessionGroups({ cody: { groups: [{ id: 'g', name: 'X' }], members: { s1: 'g' } } });
+    const prefs = { ...ROSTER_EMPTY_PREFS, sessionGroups: state };
+    const shared = sharedFromPrefs(prefs);
+    assert.deepEqual(shared['session-groups-v1'], state, 'the document travels as it is stored');
+    // …and a desktop value lands through the SAME normaliser a local load uses
+    const applied = applyShared(ROSTER_EMPTY_PREFS, 'session-groups-v1', { beta: { groups: [{ id: 'z', name: 'Z' }] } });
+    assert.equal(sliceFor(applied.sessionGroups, 'beta').groups[0].name, 'Z');
+  });
+
+  test('0.9.0 C: a 0.8.0 install has no groups key and loads as "no groups"', async () => {
+    __resetStoreProbe();
+    const loaded = await loadRosterPrefs();
+    assert.deepEqual(loaded.sessionGroups, {}, 'absent, not malformed, and not a crash');
+
+    await saveRosterPrefs({ ...loaded, sessionGroups: normalizeSessionGroups({ cody: { groups: [{ id: 'g', name: 'G' }] } }) });
+    const again = await loadRosterPrefs();
+    assert.equal(sliceFor(again.sessionGroups, 'cody').groups[0].name, 'G', 'and it round-trips');
+  });
+
+  test('0.9.0 C: the heading is its own row kind, and GROUP is not SECTION', () => {
+    const roster = readFileSync(join(process.cwd(), 'src', 'roster', 'useRoster.ts'), 'utf8');
+    assert.match(roster, /kind: 'session-group'/, 'the list has a heading row');
+    assert.match(roster, /sessionGroupBlocks\(/, 'and it is built by the pure resolver');
+    const header = readFileSync(join(process.cwd(), 'src', 'roster', 'components.tsx'), 'utf8');
+    assert.match(header, /export function SessionGroupHeader/, 'a separate component from SectionHeader');
+    // two nouns, two menu functions: a change to one cannot silently move to the other
+    const menus = readFileSync(join(process.cwd(), 'src', 'roster', 'menus.ts'), 'utf8');
+    assert.match(menus, /export function sessionGroupMenuEntries/);
+    assert.match(menus, /export function sectionMenuEntries/);
+    assert.ok(
+      !menus.slice(menus.indexOf('export function sessionGroupMenuEntries')).includes('sectionMenuEntries()'),
+      'the session-group menu does not delegate to the profile-section one',
+    );
+    // numbering rule, shared with the desktop
+    assert.equal(numberedGroupName([], 'Group #'), 'Group #1');
+    assert.equal(numberedGroupName(['Group #2', 'Group #5', 'Other'], 'Group #'), 'Group #6');
   });
 
   // ─────────────────────────────── 0.9.0 Phase F: the chrome batch ──

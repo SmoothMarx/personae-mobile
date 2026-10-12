@@ -6,6 +6,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RosterPrefs } from '../rosterPrefs';
 import { normalizeSections } from '../logic/sections';
+import { SESSION_GROUPS_SYNC_KEY, normalizeSessionGroups } from '../logic/sessionGroups';
 import { normalizeColours } from '../rosterPrefs';
 import { storeGet, storeSet } from '../storage';
 import { createUiSync, httpRemote, type Obj, type SyncKey, type SyncMeta, type SyncStatus, type UiSync } from './uiSync';
@@ -14,12 +15,20 @@ export const SYNC_META_STORE_KEY = 'personae.sync.meta.v1';
 
 /** The two shared keys the phone renders, read out of the roster prefs. */
 export function sharedFromPrefs(prefs: RosterPrefs): Record<SyncKey, Obj> {
-  return { 'sections-v1': prefs.sections as unknown as Obj, 'session-colors-v1': prefs.colours.sessions as Obj };
+  return {
+    'sections-v1': prefs.sections as unknown as Obj,
+    'session-colors-v1': prefs.colours.sessions as Obj,
+    // 0.9.0 C: the same document the desktop pane writes, so filing a session here files it there.
+    'session-groups-v1': prefs.sessionGroups as unknown as Obj,
+  };
 }
 
 /** Apply a server value to the prefs, through the same normalisers a local load uses. */
 export function applyShared(prefs: RosterPrefs, key: SyncKey, value: Obj): RosterPrefs {
   if (key === 'sections-v1') return { ...prefs, sections: normalizeSections(value) };
+  // 0.9.0 C — the desktop's slice lands through the same normaliser a local load uses, so a malformed
+  // heading from another client degrades to the flat list rather than to a crash.
+  if (key === SESSION_GROUPS_SYNC_KEY) return { ...prefs, sessionGroups: normalizeSessionGroups(value) };
   const colours = normalizeColours({ ...prefs.colours, sessions: value });
   return { ...prefs, colours: { ...prefs.colours, sessions: colours.sessions } };
 }

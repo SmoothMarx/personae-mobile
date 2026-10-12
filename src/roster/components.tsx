@@ -170,6 +170,50 @@ export function SectionHeader(props: {
 }
 
 /**
+ * 0.9.0 C — a user-authored SESSION group heading, inside an expanded profile.
+ *
+ * Deliberately its OWN component rather than a reuse of `SectionHeader`: a section holds PROFILES and
+ * a session group holds SESSIONS, and 0.9.0's brief is explicit that the two nouns must not be
+ * collapsed. It is also indented one step further, so the column tells the user where the group's
+ * rows stop and the flat list resumes — the desktop's own rule ("make the group sessions slightly
+ * offset to the right, so it's easier to discern where the group ends").
+ */
+export function SessionGroupHeader(props: {
+  name: string;
+  count: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  onMenu: () => void;
+}) {
+  return (
+    <View style={[styles.sectionHeader, styles.sessionGroupHeader]}>
+      <Pressable
+        onPress={props.onToggle}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: !props.collapsed }}
+        accessibilityLabel={t.roster.sessionGroups.toggle(props.name, props.count)}
+        style={({ pressed }) => [styles.sectionToggle, pressed && styles.pressed]}
+      >
+        <Ionicons name={props.collapsed ? 'chevron-forward' : 'chevron-down'} size={14} color={colors.muted} />
+        <Text style={styles.sessionGroupName} numberOfLines={1}>
+          {props.name}
+        </Text>
+        <Text style={styles.sectionCount}>{props.count}</Text>
+      </Pressable>
+      <Pressable
+        onPress={props.onMenu}
+        accessibilityRole="button"
+        accessibilityLabel={`${props.name} — ${t.roster.menu.title}`}
+        hitSlop={8}
+        style={({ pressed }) => [styles.iconButton, pressed && styles.pressed]}
+      >
+        <Ionicons name="ellipsis-horizontal" size={14} color={colors.faint} />
+      </Pressable>
+    </View>
+  );
+}
+
+/**
  * One profile: face, name, preview of its LATEST CONVERSATION, age, light, unread count, and a
  * caret that says whether its sessions are open underneath. Tapping the body expands in place
  * (R2); the long press is mobile's right-click (R8).
@@ -696,6 +740,9 @@ const styles = StyleSheet.create({
   },
   sectionCount: { color: colors.faint, fontSize: 11, fontVariant: ['tabular-nums'] },
   iconButton: { padding: 4, borderRadius: radius.sm },
+  /** 0.9.0 C: the session group heading is indented ONE step further than a section heading. */
+  sessionGroupHeader: { paddingLeft: space.md + SESSION_METRICS.dotX },
+  sessionGroupName: { color: colors.muted, fontSize: 12, fontWeight: '700' },
   /** A row's divider: full width, inset past the avatar (the reference's x = 78). */
   divider: { height: 1, backgroundColor: colors.border, marginLeft: ROW_METRICS.dividerInset },
   profileBody: {

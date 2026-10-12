@@ -75,6 +75,26 @@ const en = {
           ? '1 automatic run is hidden — turn automatic runs on in Settings.'
           : `${n} automatic runs are hidden — turn automatic runs on in Settings.`,
     },
+    // ── 0.9.0 C: user-authored SESSION groups (the desktop pane's Groups) ──
+    sessionGroups: {
+      toggle: (name: string, count: number) => `${name}, ${count} ${count === 1 ? 'session' : 'sessions'}`,
+      newTitle: 'New group',
+      namePlaceholder: 'Group name',
+      create: 'Create',
+      rename: 'Rename group',
+      delete: 'Delete group',
+      deleteConfirm: (name: string) =>
+        `Delete the group "${name}"? The sessions inside it are NOT deleted — they go back to the list.`,
+      moveUp: 'Move up',
+      moveDown: 'Move down',
+      fileInto: 'File into a group',
+      removeFrom: 'Remove from the group',
+      none: 'No group',
+      filed: (name: string) => `Filed under "${name}".`,
+      ungrouped: 'Ungrouped',
+      empty: 'Empty group — long-press a session to file it here.',
+    },
+
     // ── the swipe on a session row (0.8.0 E): short labels — they live in 76 dp buttons ──
     swipe: {
       archive: 'Archive',
@@ -633,7 +653,27 @@ const pt: Strings = {
           ? '1 execução automática está escondida — liga as execuções automáticas nas Definições.'
           : `${n} execuções automáticas estão escondidas — liga as execuções automáticas nas Definições.`,
     },
-    // ── o deslizar numa linha de sessão (0.8.0 E): rótulos curtos, cabem em 76 dp ──
+    // ── 0.9.0 C: grupos de SESSÕES criados pelo utilizador (os Groups do desktop) ──
+    sessionGroups: {
+      toggle: (name: string, count: number) => `${name}, ${count} ${count === 1 ? 'sessão' : 'sessões'}`,
+      newTitle: 'Novo grupo',
+      namePlaceholder: 'Nome do grupo',
+      create: 'Criar',
+      rename: 'Renomear grupo',
+      delete: 'Apagar grupo',
+      deleteConfirm: (name: string) =>
+        `Apagar o grupo "${name}"? As sessões lá dentro NÃO são apagadas — voltam para a lista.`,
+      moveUp: 'Subir',
+      moveDown: 'Descer',
+      fileInto: 'Meter num grupo',
+      removeFrom: 'Tirar do grupo',
+      none: 'Sem grupo',
+      filed: (name: string) => `Metida em "${name}".`,
+      ungrouped: 'Sem grupo',
+      empty: 'Grupo vazio — mantém premida uma sessão para a meter aqui.',
+    },
+
+    // ── o swipe numa linha de sessão (0.8.0 E): rótulos curtos — vivem em botões de 76 dp ──
     swipe: {
       archive: 'Arquivar',
       delete: 'Apagar',
