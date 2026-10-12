@@ -65,6 +65,16 @@ const en = {
     automaticCount: (n: number) => (n === 1 ? '1 automatic run' : `${n} automatic runs`),
     automaticHelp:
       'Runs of scheduled tasks. They are not conversations; they are listed here only so you can see them.',
+    // ── which session types the list shows (0.8.0 D) ──────────────────────
+    types: {
+      noneTitle: 'No session types are selected',
+      noneBody: 'Check at least one session type in Settings to see sessions here.',
+      noneAction: 'Open Settings',
+      hidden: (n: number) =>
+        n === 1
+          ? '1 automatic run is hidden — turn automatic runs on in Settings.'
+          : `${n} automatic runs are hidden — turn automatic runs on in Settings.`,
+    },
     noSessions: 'No conversations in this profile.',
     profileErrorTitle: 'Could not read the list of profiles',
     profileErrorBody:
@@ -182,6 +192,14 @@ const en = {
     baseUrl: 'Server address',
     baseUrlHelp: 'E.g. http://10.0.0.5:9119',
     baseUrlHelpGateway: 'E.g. http://10.0.0.5:9222',
+    // ── session types (0.8.0 D): what the session list shows ─────────────
+    sessionTypes: 'Session types',
+    sessionTypesHelp: 'Choose what the session list shows. You can change this at any time.',
+    typeSessions: 'Sessions',
+    typeSessionsHelp: 'Conversations you have with a profile.',
+    typeAutomatic: 'Automatic runs (cron, webhooks)',
+    typeAutomaticHelp: 'Scheduled jobs that ran on their own. They are not conversations.',
+    typeNoneWarning: 'No type is checked, so the session list is empty. Check one to see sessions.',
     profilesFound: 'profiles found',
     logTitle: 'Support log',
     logHelp:
@@ -547,6 +565,16 @@ const pt: Strings = {
     automaticCount: (n: number) => (n === 1 ? '1 execução automática' : `${n} execuções automáticas`),
     automaticHelp:
       'Execuções de tarefas agendadas. Não são conversas; ficam aqui só para poderes vê-las.',
+    // ── que tipos de sessão a lista mostra (0.8.0 D) ──────────────────────
+    types: {
+      noneTitle: 'Nenhum tipo de sessão está selecionado',
+      noneBody: 'Assinala pelo menos um tipo de sessão nas Definições para ver sessões aqui.',
+      noneAction: 'Abrir definições',
+      hidden: (n: number) =>
+        n === 1
+          ? '1 execução automática está escondida — liga as execuções automáticas nas Definições.'
+          : `${n} execuções automáticas estão escondidas — liga as execuções automáticas nas Definições.`,
+    },
     noSessions: 'Sem conversas neste perfil.',
     profileErrorTitle: 'Não foi possível ler a lista de perfis',
     profileErrorBody:
@@ -664,6 +692,14 @@ const pt: Strings = {
     baseUrl: 'Endereço do servidor',
     baseUrlHelp: 'Ex.: http://10.0.0.5:9119',
     baseUrlHelpGateway: 'Ex.: http://10.0.0.5:9222',
+    // ── tipos de sessão (0.8.0 D): o que a lista de sessões mostra ───────
+    sessionTypes: 'Tipos de sessão',
+    sessionTypesHelp: 'Escolhe o que a lista de sessões mostra. Podes mudar isto a qualquer altura.',
+    typeSessions: 'Sessões',
+    typeSessionsHelp: 'Conversas que tens com um perfil.',
+    typeAutomatic: 'Execuções automáticas (cron, webhooks)',
+    typeAutomaticHelp: 'Tarefas agendadas que correram sozinhas. Não são conversas.',
+    typeNoneWarning: 'Nenhum tipo está assinalado, por isso a lista de sessões fica vazia. Assinala um para ver sessões.',
     profilesFound: 'perfis encontrados',
     logTitle: 'Registo de diagnóstico',
     logHelp:

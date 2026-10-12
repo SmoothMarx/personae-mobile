@@ -26,6 +26,7 @@ import { SYNC_KEYS } from '../sync/uiSync';
 import { useAvatars } from '../Avatar';
 import {
   EMPTY_COLOURS,
+  anySessionType,
   attributeBodyHits,
   bodySearchPlan,
   buildRoster,
@@ -110,6 +111,9 @@ export function useRoster() {
 
   const configured = Boolean(settings.baseUrl.trim()) && Boolean(settings.apiKey);
   const loadToken = useRef(0);
+  /** 0.8.0 D: the two Session-types checkboxes, and whether BOTH are off (a legal state). */
+  const sessionTypes = settings.sessionTypes;
+  const typesAllOff = !anySessionType(sessionTypes);
 
   // ── preferences (persisted behind one module, §4) ───────────────────────────
   useEffect(() => {
@@ -309,8 +313,9 @@ export function useRoster() {
         lastSeen,
         loaded,
         perProfile: 10,
+        sessionTypes,
       }),
-    [contacts, lastSeen, loaded, prefs, recents, runs, search],
+    [contacts, lastSeen, loaded, prefs, recents, runs, search, sessionTypes],
   );
 
   const allSessions = useMemo(() => [...recents, ...runs, ...Object.values(loaded).flat()], [recents, runs, loaded]);
@@ -324,6 +329,9 @@ export function useRoster() {
   );
 
   const listRows = useMemo<RosterListRow[]>(() => {
+    // 0.8.0 D: both types off is a legal state, and it is NOT a blank list — the screen shows an
+    // empty state that says why (see app/index.tsx). An empty list is how that state is signalled.
+    if (typesAllOff) return [];
     const out: RosterListRow[] = [];
     const searching = Boolean(query.trim());
     for (const group of groups) {
@@ -358,7 +366,7 @@ export function useRoster() {
       }
     }
     return out;
-  }, [allSessions, groups, prefs.colours, prefs.sections, query]);
+  }, [allSessions, groups, prefs.colours, prefs.sections, query, typesAllOff]);
 
   // ── actions ─────────────────────────────────────────────────────────────────
   const openSession = useCallback(
@@ -558,6 +566,9 @@ export function useRoster() {
     fromServer: contactsResult.fromServer,
     model,
     listRows,
+    /** 0.8.0 D — the two Session-types checkboxes, and whether both are off. */
+    sessionTypes,
+    typesAllOff,
     matches: model.matches,
     searching,
     query,

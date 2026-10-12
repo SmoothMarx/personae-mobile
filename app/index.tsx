@@ -354,6 +354,21 @@ export default function RosterScreen() {
                 <Text style={styles.primaryText}>{t.retry}</Text>
               </Pressable>
             </View>
+          ) : roster.typesAllOff ? (
+            /* 0.8.0 D: BOTH checkboxes off is a legal state, and this is the state that explains
+               itself — "No session types are selected", plus the way out. Never a blank screen. */
+            <View style={styles.centered}>
+              <Text style={styles.emptyTitle}>{t.roster.types.noneTitle}</Text>
+              <Text style={styles.emptyBody}>{t.roster.types.noneBody}</Text>
+              <Pressable
+                onPress={() => router.push('/settings')}
+                accessibilityRole="button"
+                accessibilityLabel={t.roster.types.noneAction}
+                style={({ pressed }) => [styles.primary, pressed && styles.pressed]}
+              >
+                <Text style={styles.primaryText}>{t.roster.types.noneAction}</Text>
+              </Pressable>
+            </View>
           ) : (
             <View style={styles.centered}>
               <Text style={styles.emptyTitle}>{roster.query.trim() ? t.roster.searchEmpty : t.roster.emptyTitle}</Text>
@@ -363,7 +378,11 @@ export default function RosterScreen() {
         }
         ListFooterComponent={
           <View style={styles.footer}>
-            {roster.model.automaticSeen ? (
+            {/* 0.8.0 D: the runs are still there, they are just not drawn — say so, with the way to
+                turn them on. Silence here would read as "this box has no scheduled work". */}
+            {roster.model.automaticHidden ? (
+              <Text style={styles.help}>{t.roster.types.hidden(roster.model.automaticHidden)}</Text>
+            ) : roster.model.automaticSeen ? (
               <Text style={styles.help}>
                 {t.roster.automaticCount(roster.model.automaticSeen)} · {t.roster.automaticHelp}
               </Text>

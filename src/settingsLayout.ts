@@ -19,11 +19,12 @@ import { WIZARD_STEP_IDS } from './connect/wizard';
 
 export const ADVANCED_OPEN_BY_DEFAULT = false;
 
-export type SettingsArea = 'connection' | 'tailscale' | 'advanced';
+export type SettingsArea = 'connection' | 'tailscale' | 'sessions' | 'advanced';
 
 export type SettingsFieldId =
   | 'connection'
   | 'language'
+  | 'sessionTypes'
   | 'tailscale'
   | 'surface'
   | 'baseUrl'
@@ -51,6 +52,10 @@ export type SettingsField = { id: SettingsFieldId; area: SettingsArea };
 export const SETTINGS_FIELDS: readonly SettingsField[] = [
   { id: 'connection', area: 'connection' },
   { id: 'language', area: 'connection' },
+  // 0.8.0 D: the two Session-types checkboxes are a USER-facing choice, so the section stays on the
+  // main screen, right after the language — not behind Advanced. "An option in settings where users
+  // can check/uncheck the type of sessions they want to see" is an ask from the operator's own list.
+  { id: 'sessionTypes', area: 'sessions' },
   { id: 'tailscale', area: 'tailscale' },
   { id: 'surface', area: 'advanced' },
   { id: 'baseUrl', area: 'advanced' },

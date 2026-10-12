@@ -22,6 +22,26 @@ import type { RouteCandidate } from './routes';
  */
 export type Surface = 'dashboard' | 'gateway';
 
+/**
+ * 0.8.0 D — which session types the default list shows.
+ *
+ * Two buckets, decided by ONE classifier (`sessionTypeOf` in `src/logic/rosterFeed.ts`, which is the
+ * only place that reads `NON_CONVERSATION_SOURCES`): a conversation, or a job run. The roster list
+ * and the checkpoint notifications both ask that classifier, so they can never disagree about what
+ * is hidden.
+ *
+ * BOTH OFF IS A LEGAL STATE. The list then shows an empty state that says why, rather than a blank
+ * screen or a silently-filtered list.
+ */
+export type SessionTypes = {
+  /** Conversations: anything whose `source` is not a job-run source. Default ON. */
+  sessions: boolean;
+  /** Job runs (`cron`, `cron_output`, `webhook`). Default OFF. */
+  automatic: boolean;
+};
+
+export const DEFAULT_SESSION_TYPES: SessionTypes = { sessions: true, automatic: false };
+
 export type Settings = {
   /** Origin of the chosen surface, e.g. http://10.0.0.15:9119 . Empty = not configured. */
   baseUrl: string;
@@ -59,6 +79,14 @@ export type Settings = {
   openTailscaleOnFailure: boolean;
   /** Explicit opt-in before using a plain-http non-loopback route. */
   insecureRouteAck: boolean;
+
+  // ── which session types the list shows (0.8.0 D) ─────────────────────────────
+  /**
+   * The two checkboxes in Settings' "Session types" section. Defaults: conversations ON, job runs
+   * OFF — the operator's "make the default view only actual sessions show up in the session list,
+   * no cron jobs".
+   */
+  sessionTypes: SessionTypes;
 
   // ── diagnostics (persisted; read-only on screen) ─────────────────────────────
   /** Has the whole chain (tunnel + route + gateway) ever worked on this phone? */
@@ -98,6 +126,8 @@ export const DEFAULT_SETTINGS: Settings = {
   probeTimeoutMs: 1_500,
   openTailscaleOnFailure: false,
   insecureRouteAck: false,
+  // 0.8.0 D: conversations are the default view; cron/webhook runs are off until asked for.
+  sessionTypes: DEFAULT_SESSION_TYPES,
   everReachedGateway: false,
   lastTriggerResult: '',
   lastErrorKind: '',
@@ -107,6 +137,19 @@ export const DEFAULT_SETTINGS: Settings = {
 };
 
 export type StoredSettings = Omit<Settings, 'apiKey'>;
+
+/**
+ * Coerce a stored `sessionTypes` into the two-boolean shape. Anything missing or malformed falls
+ * back to the DEFAULT for that bucket, which is what makes a 0.7.0 blob (no such key at all) load
+ * as "conversations on, runs off" without a migration write.
+ */
+export function normalizeSessionTypes(value: unknown): SessionTypes {
+  const row = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  return {
+    sessions: typeof row.sessions === 'boolean' ? row.sessions : DEFAULT_SESSION_TYPES.sessions,
+    automatic: typeof row.automatic === 'boolean' ? row.automatic : DEFAULT_SESSION_TYPES.automatic,
+  };
+}
 
 /**
  * Settings as the API client needs them: the same object with `baseUrl` pointing at the route that

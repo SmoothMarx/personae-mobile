@@ -42,7 +42,7 @@ import {
   transportSecurityNote,
   type RouteCandidate,
 } from '../src/routes';
-import { checkBaseUrl, DEFAULT_SETTINGS, healSurface, splitProfiles, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
+import { checkBaseUrl, DEFAULT_SESSION_TYPES, DEFAULT_SETTINGS, healSurface, normalizeSessionTypes, splitProfiles, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
 import { loadSettings, saveSettings, loadLastSeen, saveLastSeen } from '../src/settingsStore';
 import { __resetStoreProbe } from '../src/storage';
 import { candidateAddresses, dashboardAddressFor, pairPageUrl, parseConnectLink, settingsAfterPairing, PairingError, probeService, redeemPairing, REDEEM_PATH } from '../src/pairing';
@@ -91,16 +91,23 @@ import {
 } from '../src/logic/sections';
 import { dotStateFor, isUnread, profileRollup, showBadge } from '../src/logic/lights';
 import {
+  SESSION_TYPE_DEFAULT,
+  anySessionType,
   attributeBodyHits,
   automaticRuns,
   bodySearchPlan,
   buildRoster,
   coloursFor,
   conversations,
+  filterSessionTypes,
   isAutomatic,
   mergeBodyHits,
   rosterContacts,
   searchRoster,
+  sessionTypeChoices,
+  sessionTypeEnabled,
+  sessionTypeOf,
+  sessionVisible,
 } from '../src/logic/rosterFeed';
 import {
   EMPTY_PREFS,
@@ -581,6 +588,230 @@ test('0.8.0 C: the wiring is the geometry — both row species share the column'
   assert.match(src, /<View style=\{styles\.sessionDot\}>/, 'one dot column for both row species');
   assert.match(src, /time-outline/, 'automatic runs swap the dot for the clock in that same column');
   assert.ok(!/paddingLeft: ROW_METRICS\.textX/.test(src), 'the old text-column indent is gone, not shadowed');
+});
+
+// ─────────────────── 0.8.0 D: the list shows conversations, and Settings decides ──
+
+test('0.8.0 D: the defaults are conversations ON, job runs OFF', () => {
+  assert.deepEqual(DEFAULT_SESSION_TYPES, { sessions: true, automatic: false });
+  assert.deepEqual(DEFAULT_SETTINGS.sessionTypes, DEFAULT_SESSION_TYPES, 'a fresh install gets them');
+  assert.deepEqual(SESSION_TYPE_DEFAULT, { sessions: true, automatic: false }, 'and so does a missing key');
+  // A missing key falls back to ITS bucket's default, never to a blanket `true`.
+  assert.equal(sessionTypeEnabled('sessions', null), true);
+  assert.equal(sessionTypeEnabled('automatic', null), false);
+  assert.equal(sessionTypeEnabled('automatic', {} as never), false);
+  assert.equal(anySessionType(null), true, 'no settings object is not "everything off"');
+  // The filter itself — the one the feed and Phase H's watcher both call.
+  const rows: { id: string; source: string }[] = [{ id: 'a', source: 'cron' }, { id: 'b', source: 'oneshot' }];
+  assert.deepEqual(filterSessionTypes(rows, DEFAULT_SESSION_TYPES).map((row) => row.id), ['b']);
+  assert.equal(filterSessionTypes(rows, null).length, 2, 'no opinion passes everything through');
+  assert.equal(filterSessionTypes(rows, { sessions: true, automatic: true }).length, 2);
+});
+
+test('0.8.0 D: a 0.7.0 stored blob with no sessionTypes key loads with the defaults', async () => {
+  __resetStoreProbe();
+  const { storeSet } = await import('../src/storage');
+  // The exact shape 0.7.0 wrote: no `sessionTypes` key anywhere.
+  await storeSet(
+    'personae.settings.v1',
+    JSON.stringify({
+      baseUrl: 'http://10.0.0.15:9119',
+      surface: 'dashboard',
+      profiles: ['cody'],
+      model: '',
+      language: 'pt',
+      autoConnect: true,
+      openTailscaleOnFailure: true,
+    }),
+  );
+  const loaded = await loadSettings();
+  assert.deepEqual(loaded.sessionTypes, { sessions: true, automatic: false }, 'defaults, not undefined');
+  assert.equal(loaded.autoConnect, true, 'and the stored values still survive');
+  assert.deepEqual(loaded.profiles, ['cody']);
+  assert.equal(loaded.language, 'pt');
+  // It round-trips: the next save writes the key, and an explicit choice is preserved.
+  await saveSettings({ ...loaded, sessionTypes: { sessions: false, automatic: true } });
+  assert.deepEqual((await loadSettings()).sessionTypes, { sessions: false, automatic: true });
+  // A half-written key must not take the other bucket down with it.
+  await storeSet('personae.settings.v1', JSON.stringify({ sessionTypes: { sessions: false } }));
+  assert.deepEqual((await loadSettings()).sessionTypes, { sessions: false, automatic: false });
+  await storeSet('personae.settings.v1', JSON.stringify({ sessionTypes: 'junk' }));
+  assert.deepEqual((await loadSettings()).sessionTypes, { sessions: true, automatic: false });
+  assert.deepEqual(normalizeSessionTypes({ automatic: true }), { sessions: true, automatic: true });
+  __resetStoreProbe();
+});
+
+test('0.8.0 D: an UNKNOWN source counts as a conversation — fail-open, with its own test', () => {
+  // The live box already carries `oneshot` (measured 2026-10-12): a real source this app's
+  // classification has never heard of. It must NOT vanish from the user's list.
+  assert.equal(sessionTypeOf({ source: 'oneshot' } as never), 'sessions');
+  assert.equal(sessionTypeOf({ source: 'brand-new-source' } as never), 'sessions');
+  assert.equal(sessionTypeOf({ source: '' } as never), 'sessions');
+  assert.equal(sessionTypeOf({} as never), 'sessions');
+  assert.equal(sessionTypeOf(null), 'sessions');
+  assert.equal(sessionVisible({ source: 'oneshot' } as never, DEFAULT_SESSION_TYPES), true, 'it shows by default');
+  // The job-run bucket is exact, and case-insensitive like `isAutomatic` already is.
+  for (const source of ['cron', 'cron_output', 'webhook', 'CRON', ' Webhook ']) {
+    assert.equal(sessionTypeOf({ source } as never), 'automatic', `${source} is a job run`);
+    assert.equal(sessionVisible({ source } as never, DEFAULT_SESSION_TYPES), false, `${source} is hidden by default`);
+  }
+  // An unknown source is a conversation even when the user has hidden conversations — that is the
+  // user's own choice about the conversation bucket, not the classifier failing open.
+  assert.equal(sessionVisible({ source: 'oneshot' } as never, { sessions: false, automatic: true }), false);
+});
+
+test('0.8.0 D: ONE classifier — the classification exists in exactly one file', () => {
+  // §5: "Session-type classification exists in more than one place" is a fail. The source of truth
+  // is `NON_CONVERSATION_SOURCES`, so this walks the app's own sources and insists it is read in
+  // exactly one of them.
+  const root = join(process.cwd(), 'src');
+  const readers: string[] = [];
+  /** The token in a CODE line — a comment that names it is prose, not a second classifier. */
+  const readsIt = (source: string) =>
+    source
+      .split('\n')
+      .filter((line) => {
+        const trimmed = line.trim();
+        return !trimmed.startsWith('*') && !trimmed.startsWith('//') && !trimmed.startsWith('/*');
+      })
+      .join('\n')
+      .includes('NON_CONVERSATION_SOURCES');
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (!/\.tsx?$/.test(entry.name)) continue;
+      if (readsIt(readFileSync(full, 'utf8'))) readers.push(full.replace(`${process.cwd()}/`, ''));
+    }
+  };
+  walk(root);
+  assert.deepEqual(readers, ['src/logic/rosterFeed.ts'], 'exactly one module classifies a session');
+  const feed = readFileSync(join(root, 'logic', 'rosterFeed.ts'), 'utf8');
+  assert.match(feed, /export function sessionTypeOf/, 'and it exports the classifier the list and the watcher share');
+  /** The same "code, not prose" filter, for the two modules that must NOT carry the rule. */
+  const codeOnly = (source: string) =>
+    source
+      .split('\n')
+      .filter((line) => {
+        const trimmed = line.trim();
+        return !trimmed.startsWith('*') && !trimmed.startsWith('//') && !trimmed.startsWith('/*');
+      })
+      .join('\n');
+  // `settings.ts` may carry the TYPE and the default; it must never carry a second copy of the rule.
+  assert.ok(!/cron/i.test(codeOnly(readFileSync(join(root, 'settings.ts'), 'utf8'))), 'settings.ts: the type, never the rule');
+  // `useRoster` legitimately names the wire's `cron` SLICE (`slices.cron`); what it must not do is
+  // classify a session itself. It delegates: `buildRoster` applies the filter and the hook only asks
+  // whether any type is on.
+  const hook = codeOnly(readFileSync(join(root, 'roster', 'useRoster.ts'), 'utf8'));
+  assert.ok(!/isAutomatic|sessionTypeOf|webhook/.test(hook), 'useRoster.ts: it asks the filter, it does not re-implement it');
+  assert.match(hook, /anySessionType/, 'and it asks whether ANY type is on');
+  assert.match(hook, /sessionTypes,/, 'and it hands the setting to buildRoster');
+});
+
+test('0.8.0 D: the list draws the checked types and explains the ones it hides', () => {
+  const contacts = [{ name: 'cody', label: 'Cody', isDefault: false, hasAvatar: null }];
+  const sessions = [
+    { id: 'chat-1', profile: 'cody', source: 'desktop', preview: 'uma conversa', last_active: 1_700_000_500 },
+    { id: 'oneshot-1', profile: 'cody', source: 'oneshot', preview: 'uma execução pontual', last_active: 1_700_000_400 },
+    { id: 'cron-1', profile: 'cody', source: 'cron', title: 'Scholes - Daily Digest', last_active: 1_700_000_300 },
+    { id: 'hook-1', profile: 'cody', source: 'webhook', title: 'GitHub hook', last_active: 1_700_000_200 },
+  ];
+
+  // The DEFAULT view: conversations only, cron/webhook nowhere in sight.
+  const byDefault = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], sessionTypes: DEFAULT_SESSION_TYPES, now: 1_700_000_000_000 });
+  const titles = byDefault.rows[0].sessions.map((hit) => hit.sessionId);
+  assert.deepEqual(titles, ['chat-1', 'oneshot-1'], 'the conversations, and the unknown source with them');
+  assert.equal(byDefault.rows[0].automatic.length, 0, 'no cron rows under the profile');
+  assert.equal(byDefault.automaticSeen, 2, 'the runs were there…');
+  assert.equal(byDefault.automaticHidden, 2, '…and the model says they are hidden, so the screen can say why');
+  // The profile row's preview describes what is ON the list.
+  assert.equal(byDefault.rows[0].preview, 'uma conversa');
+
+  // Opting in brings them back — same column, marked automatic.
+  const opted = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], sessionTypes: { sessions: true, automatic: true }, now: 1_700_000_000_000 });
+  assert.equal(opted.rows[0].automatic.length, 2, 'cron and webhook runs are drawn');
+  assert.equal(opted.automaticHidden, 0);
+
+  // Conversations off, runs on: the mirror image, and the preview follows the visible set.
+  const runsOnly = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], sessionTypes: { sessions: false, automatic: true }, now: 1_700_000_000_000 });
+  assert.deepEqual(runsOnly.rows[0].sessions, [], 'no conversations drawn');
+  assert.equal(runsOnly.rows[0].automatic.length, 2);
+  assert.equal(runsOnly.rows[0].preview, '', 'and no conversation preview is advertised');
+
+  // No opinion (the 0.7.0 call sites) still shows the runs: the filter is opt-in.
+  const noOpinion = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], now: 1_700_000_000_000 });
+  assert.equal(noOpinion.rows[0].automatic.length, 2);
+  assert.equal(noOpinion.automaticHidden, 0, 'nothing is hidden unless the setting says so');
+});
+
+test('0.8.0 D: both checkboxes off is a legal state that names itself', () => {
+  const off = { sessions: false, automatic: false };
+  assert.equal(anySessionType(off), false);
+  assert.equal(anySessionType({ sessions: true, automatic: false }), true);
+  assert.deepEqual(
+    sessionTypeChoices(off),
+    [
+      { id: 'sessions', enabled: false },
+      { id: 'automatic', enabled: false },
+    ],
+    'the two rows Settings renders, in order',
+  );
+  assert.deepEqual(sessionTypeChoices(DEFAULT_SESSION_TYPES), [
+    { id: 'sessions', enabled: true },
+    { id: 'automatic', enabled: false },
+  ]);
+  const model = buildRoster({
+    contacts: [{ name: 'cody', label: 'Cody', isDefault: false, hasAvatar: null }],
+    sessions: [{ id: 'chat-1', profile: 'cody', source: 'desktop', preview: 'x', last_active: 1 }] as never[],
+    expanded: ['cody'],
+    sessionTypes: off,
+    now: 1_700_000_000_000,
+  });
+  assert.deepEqual(model.rows[0].sessions, []);
+  assert.equal(model.rows[0].automatic.length, 0);
+  // The copy exists in BOTH tables, and says what to do — never a blank screen.
+  for (const language of ['en', 'pt'] as const) {
+    const table = stringsFor(language).roster.types;
+    assert.ok(table.noneTitle.trim().length > 0, `${language}: the empty state has a title`);
+    assert.ok(table.noneBody.trim().length > 0, `${language}: and an explanation`);
+    assert.ok(table.noneAction.trim().length > 0, `${language}: and the way out`);
+    assert.ok(table.hidden(2).length > 0);
+  }
+  assert.match(stringsFor('en').roster.types.noneTitle, /[Ss]ession types/);
+  assert.match(stringsFor('pt').roster.types.noneTitle, /tipo de sessão/);
+  const screen = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+  assert.match(screen, /roster\.typesAllOff/, 'the roster screen renders that state');
+  assert.match(screen, /t\.roster\.types\.noneTitle/, 'with the copy, not a literal');
+});
+
+test('0.8.0 D: search still reaches a session the type filter hides', () => {
+  const contacts = [
+    { name: 'cody', label: 'Cody', isDefault: false, hasAvatar: null },
+    { name: 'scholes', label: 'Scholes', isDefault: false, hasAvatar: null },
+  ];
+  const sessions = [
+    { id: 'chat-1', profile: 'cody', source: 'desktop', title: 'aaaa', preview: 'orçamento do plugin', last_active: 1_700_000_500 },
+    { id: 'cron-1', profile: 'scholes', source: 'cron', title: 'orçamento diário', last_active: 1_700_000_300 },
+  ];
+  const search = searchRoster({ needle: 'orçamento', profiles: contacts, sessions: sessions as never[] });
+  // Conversations OFF: the default view is empty, and the search still finds the conversation.
+  const model = buildRoster({
+    contacts,
+    sessions: sessions as never[],
+    expanded: [],
+    search,
+    sessionTypes: { sessions: false, automatic: true },
+    now: 1_700_000_000_000,
+  });
+  const hits = model.rows.flatMap((row) => row.sessions.map((hit) => hit.sessionId));
+  assert.deepEqual(hits, ['chat-1'], 'a hidden conversation is still reachable by search');
+  // And the honest other half, stated as a test rather than left implicit: the run is NOT in the
+  // search corpus, because `searchRoster` has only ever swept conversations (0.5.0 behaviour, pinned
+  // by the `feed:` tests). Turning a type off therefore never REDUCES what search can find.
+  assert.ok(!hits.includes('cron-1'), 'the cron run was never searchable, filter or no filter');
 });
 
 test('f1: only `false` suppresses the probe (the live flag is null, not false)', () => {
@@ -2547,8 +2778,13 @@ async function main(): Promise<void> {
   test('0.7.0 B: Advanced is CLOSED by default, and nothing 0.6.1 had was deleted', () => {
     assert.equal(ADVANCED_OPEN_BY_DEFAULT, false, 'a fresh install shows no internals');
     const closed = visibleFieldIds(false);
-    assert.deepEqual(closed, ['connection', 'language', 'tailscale']);
+    // SUPERSEDED IN 0.8.0 (phase D): this read `['connection', 'language', 'tailscale']`. The
+    // Session-types checkboxes are a user-facing ask from the operator's own list, so they are on
+    // the main screen — right after the language, and still not behind Advanced.
+    assert.deepEqual(closed, ['connection', 'language', 'sessionTypes', 'tailscale']);
     assert.equal(closed[0], 'connection', 'Connection is the FIRST thing on the screen');
+    assert.ok(!isAdvanced('sessionTypes'), 'the session-type checkboxes are NOT internals');
+    assert.equal(visibleFieldIds(false).indexOf('sessionTypes'), 2, 'they sit after the language');
     const hidden: SettingsFieldId[] = [
       'surface', 'baseUrl', 'apiKey', 'profiles', 'model', 'routes',
       'tailscalePackage', 'deadlines', 'openOnFailure', 'diagnostics', 'testConnection', 'log',

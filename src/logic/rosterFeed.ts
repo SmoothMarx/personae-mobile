@@ -22,6 +22,7 @@ import { formatAge, firstLine, initialOf, toMillis } from '../format';
 import { t } from '../i18n';
 import type { HermesSession } from '../api/client';
 import type { ProfileInfo } from '../api/backend';
+import type { SessionTypes } from '../settings';
 import type { DotState, Rollup } from './lights';
 import { IDLE_ROLLUP, dotStateFor, profileRollup } from './lights';
 import { sessionTitle, toRow, type SessionRow } from './roster';
@@ -51,6 +52,61 @@ export function conversations(sessions: FeedSession[]): FeedSession[] {
 /** The runs: what the feed deliberately leaves out, kept reachable under their own profile. */
 export function automaticRuns(sessions: FeedSession[]): FeedSession[] {
   return sessions.filter((session) => isAutomatic(session));
+}
+
+// ───────────────────────────────────── session types (0.8.0 D) ──
+
+/** The two buckets the Session-types checkboxes select between. */
+export type SessionType = 'sessions' | 'automatic';
+
+/**
+ * What each bucket means when the setting is missing. Conversations are the default view; job runs
+ * are opt-in (the operator's "no cron jobs in the session list").
+ */
+export const SESSION_TYPE_DEFAULT: Record<SessionType, boolean> = { sessions: true, automatic: false };
+
+/**
+ * THE classifier — the one place that decides which bucket a session is in, and therefore the one
+ * place the roster list and the checkpoint notifications can disagree from. It is a thin read of
+ * `isAutomatic`, which is itself the only reader of `NON_CONVERSATION_SOURCES`, so a new job-run
+ * source is added in exactly one line and both features follow.
+ *
+ * FAIL-OPEN, DELIBERATELY: an unknown `source` is a CONVERSATION. A brand-new source the app has
+ * never heard of must not make a real session vanish from the user's list. The live box already
+ * carries one (`oneshot`, measured 2026-10-12), which is exactly the case this rule is for.
+ */
+export function sessionTypeOf(session: HermesSession | null | undefined): SessionType {
+  return isAutomatic(session) ? 'automatic' : 'sessions';
+}
+
+/** Is this bucket switched on? A missing key falls back to that bucket's DEFAULT, not to `true`. */
+export function sessionTypeEnabled(type: SessionType, types: SessionTypes | null | undefined): boolean {
+  const value = types ? types[type] : undefined;
+  return typeof value === 'boolean' ? value : SESSION_TYPE_DEFAULT[type];
+}
+
+/** Is this session one the user asked to see? */
+export function sessionVisible(session: HermesSession | null | undefined, types: SessionTypes | null | undefined): boolean {
+  return sessionTypeEnabled(sessionTypeOf(session), types);
+}
+
+/** The filter itself. `null`/`undefined` means "no opinion" and passes everything through. */
+export function filterSessionTypes<T extends FeedSession>(sessions: T[], types: SessionTypes | null | undefined): T[] {
+  if (!types) return sessions;
+  return sessions.filter((session) => sessionVisible(session, types));
+}
+
+/** Are ANY types selected? Both off is a legal state the list has to explain. */
+export function anySessionType(types: SessionTypes | null | undefined): boolean {
+  return sessionTypeEnabled('sessions', types) || sessionTypeEnabled('automatic', types);
+}
+
+/** The two checkboxes, as data — what Settings renders and what Phase H respects. */
+export function sessionTypeChoices(types: SessionTypes | null | undefined): { id: SessionType; enabled: boolean }[] {
+  return [
+    { id: 'sessions', enabled: sessionTypeEnabled('sessions', types) },
+    { id: 'automatic', enabled: sessionTypeEnabled('automatic', types) },
+  ];
 }
 
 export function profileOf(session: FeedSession): string {
@@ -370,6 +426,12 @@ export type RosterModel = {
   autoExpand: string[];
   /** True when the response carried at least one cron/webhook run, whatever we did with it. */
   automaticSeen: number;
+  /**
+   * 0.8.0 D: runs the response carried that the type filter hid. Non-zero only when the user turned
+   * "Automatic runs" OFF, and it exists so the list can SAY they are being hidden instead of
+   * looking like the box has no scheduled work at all.
+   */
+  automaticHidden: number;
 };
 
 function toHit(session: FeedSession, profile: string): SearchHit {
@@ -399,6 +461,12 @@ export function buildRoster(input: {
   perProfile?: number;
   /** Sessions fetched per profile on demand (R9) — merged in when the user expands the row. */
   loaded?: Record<string, FeedSession[]>;
+  /**
+   * 0.8.0 D: which session types the list draws. Absent means "no opinion" — every type shows, so
+   * the 0.7.0 call sites keep their exact behaviour. Search is deliberately NOT gated by this: it
+   * reveals a hidden type rather than losing it.
+   */
+  sessionTypes?: SessionTypes | null;
 }): RosterModel {
   const now = input.now ?? Date.now();
   const expanded = input.expanded instanceof Set ? input.expanded : new Set(input.expanded ?? []);
@@ -407,6 +475,9 @@ export function buildRoster(input: {
   const perProfile = input.perProfile ?? 10;
   const search = input.search ?? null;
   const needle = search?.needle ?? '';
+  const types = input.sessionTypes ?? null;
+  // No opinion (the 0.7.0 call sites) still shows the runs; only an explicit setting hides them.
+  const showRuns = types ? sessionTypeEnabled('automatic', types) : true;
 
   // The feed: conversations only, from the batched slice plus anything lazily loaded per profile.
   const merged: FeedSession[] = [...input.sessions];
@@ -424,6 +495,9 @@ export function buildRoster(input: {
   for (const contact of input.contacts) {
     const name = contact.name;
     const all = byProfile[name] ?? [];
+    // Every conversation, whatever the type filter says: this is the SEARCH corpus, so hiding a
+    // type from the default view can never make it unreachable by search.
+    const visible = filterSessionTypes(all, types);
     const searching = Boolean(needle);
     const profileHit = Boolean(search?.profileHits.includes(name));
     const sessionHits = all.filter((session) => hitIds.has(`${name}\u0000${session.id}`));
@@ -433,10 +507,13 @@ export function buildRoster(input: {
 
     matches += sessionHits.length + bodyHits.length;
 
-    const latest = all[0];
+    // A row's preview, age and light describe what is actually ON the list, so they come from the
+    // visible set — except while searching, when a revealed hidden session is exactly the point.
+    const shown = searching ? all : visible;
+    const latest = shown[0];
     const alreadyOpen = expanded.has(name) || Boolean(search?.autoExpand.includes(name));
     const isHidden = hidden.has(name) && !searching;
-    const rowsForProfile = alreadyOpen ? (searching && !profileHit ? all : all.slice(0, perProfile)) : [];
+    const rowsForProfile = alreadyOpen ? (searching && !profileHit ? all : visible.slice(0, perProfile)) : [];
     const rowSessions: SearchHit[] = rowsForProfile.map((session) => {
       const hit = hitIds.get(`${name}\u0000${session.id}`);
       if (hit) return { ...hit, snippet: hit.snippet || firstLine(String(session.preview ?? '')) };
@@ -461,10 +538,12 @@ export function buildRoster(input: {
       hidden: isHidden,
       preview: latest ? firstLine(String(latest.preview ?? latest.title ?? '')) : '',
       age: latest ? formatAge(toMillis(latest.last_active ?? latest.started_at), now) : '',
-      dot: profileRollup(all, input.lastSeen?.[name] ?? 0),
+      dot: profileRollup(shown, input.lastSeen?.[name] ?? 0),
       lastActiveMs: latest ? toMillis(latest.last_active ?? latest.started_at) : null,
       sessions: searching ? rowSessions : rowsForProfile.length ? rowSessions : [],
-      automatic: (runsByProfile[name] ?? []).slice(0, perProfile).map((session) => ({ ...toHit(session, name), source: 'metadata' as const })),
+      automatic: showRuns
+        ? (runsByProfile[name] ?? []).slice(0, perProfile).map((session) => ({ ...toHit(session, name), source: 'metadata' as const }))
+        : [],
     });
   }
 
@@ -476,7 +555,7 @@ export function buildRoster(input: {
     return (b.lastActiveMs ?? 0) - (a.lastActiveMs ?? 0);
   });
 
-  return { rows, matches, autoExpand: search?.autoExpand ?? [], automaticSeen: runs.length };
+  return { rows, matches, autoExpand: search?.autoExpand ?? [], automaticSeen: runs.length, automaticHidden: types && !showRuns ? runs.length : 0 };
 }
 
 /** A session row's display model, with the colour that fills it and its own dot. */

@@ -32,11 +32,13 @@ import { contactsOf, probeFromHealth, statusColor, type Probe } from '../src/log
 import {
   checkBaseUrl,
   surfaceLabel,
+  DEFAULT_SESSION_TYPES,
   DEFAULT_SETTINGS,
   redactKey,
   splitProfiles,
   type Settings,
 } from '../src/settings';
+import { anySessionType, sessionTypeChoices, type SessionType } from '../src/logic/rosterFeed';
 import {
   checkRoute,
   moveRoute,
@@ -114,6 +116,21 @@ export default function SettingsScreen() {
     if (problem === 'needs-ack') return t.routes.problemNeedsAck;
     return t.routes.problemBadUrl;
   }, []);
+
+  /**
+   * 0.8.0 D — one checkbox tap. Written to the store IMMEDIATELY (single-field setting, no Save
+   * button), and computed from `form` so two fast taps cannot lose one: each tap reads the value it
+   * is replacing.
+   */
+  const setSessionType = useCallback(
+    (id: SessionType, enabled: boolean) => {
+      const current = form.sessionTypes ?? DEFAULT_SESSION_TYPES;
+      const next = { ...current, [id]: enabled };
+      setForm((prev) => ({ ...prev, sessionTypes: next }));
+      update({ sessionTypes: next });
+    },
+    [form.sessionTypes, update],
+  );
 
   const tri = useCallback(
     (value: boolean | null): string => (value === null ? t.connectivity.unknown : value ? t.connectivity.yes : t.connectivity.no),
@@ -484,6 +501,39 @@ export default function SettingsScreen() {
           })}
         </View>
         <Text style={styles.help}>{t.settings.languageHelp}</Text>
+      </View>
+
+      {/* ── Session types (0.8.0 D) ─────────────────────────────────────────
+          CHECKBOXES, deliberately: that is the operator's own word ("check/uncheck the type of
+          sessions they want to see"), and a checkbox makes "both unchecked" visibly different from
+          "one on". Tapping anywhere on the row toggles it and saves at once — no Save button
+          (pedro-app-defaults: single-field settings save themselves). */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.settings.sessionTypes}</Text>
+        {sessionTypeChoices(form.sessionTypes).map((choice) => {
+          const label = choice.id === 'sessions' ? t.settings.typeSessions : t.settings.typeAutomatic;
+          const help = choice.id === 'sessions' ? t.settings.typeSessionsHelp : t.settings.typeAutomaticHelp;
+          return (
+            <Pressable
+              key={choice.id}
+              onPress={() => setSessionType(choice.id, !choice.enabled)}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: choice.enabled }}
+              accessibilityLabel={`${label} — ${help}`}
+              style={({ pressed }) => [styles.typeRow, pressed && styles.pressed]}
+            >
+              <View style={[styles.typeBox, choice.enabled && styles.typeBoxOn]}>
+                {choice.enabled ? <Ionicons name="checkmark" size={16} color={colors.accentText} /> : null}
+              </View>
+              <View style={styles.typeText}>
+                <Text style={styles.typeLabel}>{label}</Text>
+                <Text style={styles.help}>{help}</Text>
+              </View>
+            </Pressable>
+          );
+        })}
+        <Text style={styles.help}>{t.settings.sessionTypesHelp}</Text>
+        {anySessionType(form.sessionTypes) ? null : <Text style={styles.warning}>{t.settings.typeNoneWarning}</Text>}
       </View>
 
       {/* ── Advanced (0.7.0): CLOSED by default ──────────────────────────────
@@ -1014,6 +1064,22 @@ const styles = StyleSheet.create({
   },
   labelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   label: { color: colors.text, fontSize: font.body, fontWeight: '700' },
+  // ── 0.8.0 D: the session-type checkboxes (named `type*` — `checkRow`/`checkText` already exist) ──
+  typeRow: { flexDirection: 'row', alignItems: 'flex-start', gap: space.sm, paddingVertical: space.xs },
+  typeBox: {
+    width: 22,
+    height: 22,
+    borderRadius: radius.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.bg,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  typeBoxOn: { backgroundColor: colors.accent, borderColor: colors.accent },
+  typeText: { flex: 1, gap: 2 },
+  typeLabel: { color: colors.text, fontSize: font.body },
+  warning: { color: colors.amber, fontSize: font.small },
   composerActions: { flexDirection: 'row', gap: space.sm },
   logInput: { minHeight: 72, textAlignVertical: 'top' },
   logButton: { flexDirection: 'row', gap: 6 },

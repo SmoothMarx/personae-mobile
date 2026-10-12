@@ -13,6 +13,7 @@ import {
   DEFAULT_SETTINGS,
   healSurface,
   LAST_SEEN_STORE_KEY,
+  normalizeSessionTypes,
   SECRET_STORE_KEY,
   SETTINGS_STORE_KEY,
   type Settings,
@@ -80,6 +81,11 @@ export async function loadSettings(): Promise<Settings> {
     probeTimeoutMs: asNumber(parsed.probeTimeoutMs, 1_500, 100, 10_000),
     openTailscaleOnFailure: asBoolean(parsed.openTailscaleOnFailure, DEFAULT_SETTINGS.openTailscaleOnFailure),
     insecureRouteAck: asBoolean(parsed.insecureRouteAck, false),
+    // 0.8.0 D. ADDITIVE, and the interesting case is the ABSENT one: a `personae.settings.v1` blob
+    // written by 0.7.0 has no `sessionTypes` key at all, and it must load as "conversations on, runs
+    // off" — never as `undefined`, which would make `types[name]` throw at the first filter. Only a
+    // real boolean is trusted, per bucket, so a half-written key cannot take the other down with it.
+    sessionTypes: normalizeSessionTypes(parsed.sessionTypes),
     everReachedGateway: asBoolean(parsed.everReachedGateway, false),
     lastTriggerResult: asString(parsed.lastTriggerResult, ''),
     lastErrorKind: asString(parsed.lastErrorKind, ''),
@@ -122,6 +128,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     probeTimeoutMs: settings.probeTimeoutMs,
     openTailscaleOnFailure: settings.openTailscaleOnFailure,
     insecureRouteAck: settings.insecureRouteAck,
+    sessionTypes: settings.sessionTypes,
     everReachedGateway: settings.everReachedGateway,
     lastTriggerResult: settings.lastTriggerResult,
     lastErrorKind: settings.lastErrorKind,
