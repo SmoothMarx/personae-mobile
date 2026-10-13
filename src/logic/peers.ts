@@ -15,7 +15,7 @@
  *     twice, so the picker cannot fill the list with the same address.
  */
 
-import { inferRole, normalizeRouteUrl, type RouteCandidate } from '../routes';
+import { inferRole, normalizeRouteUrl, routeExists, type RouteCandidate } from '../routes';
 import type { Settings } from '../settings';
 
 export const PEERS_PATH = '/api/plugins/personae-mobile-auth/tailscale/peers';
@@ -91,8 +91,9 @@ export function peerRoute(
 ): RouteCandidate | null {
   const url = normalizeRouteUrl(`http://${peer.ip}:${options.port}`);
   if (!url) return null;
-  const existing = options.routes.some((route) => normalizeRouteUrl(route.url) === url);
-  if (existing) return null;
+  // 0.10.0 S5: the duplicate rule is `routes.ts::routeExists`, shared with the manual add path, so
+  // "refused exactly as peerRoute refuses one" is one implementation rather than two that agree today.
+  if (routeExists(options.routes, url)) return null;
   const priority = options.routes.reduce((max, route) => Math.max(max, route.priority), -1) + 1;
   // Plain http by construction, so the flag says so. `checkRoute` gates on the settings-level
   // `insecureRouteAck`, which the picker turns on as part of the same action: choosing a device on

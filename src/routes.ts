@@ -324,6 +324,19 @@ export function effectiveRoutes(settings: { baseUrl: string; routes?: RouteCandi
   return routesFromBaseUrl(settings.baseUrl);
 }
 
+/**
+ * Is this URL already in the list? The ONE duplicate rule, kept here so the peer picker
+ * (`src/logic/peers.ts::peerRoute`, which refuses a duplicate by returning null) and the manual add
+ * (`src/gateway/manage.ts::manualAdd`, 0.10.0 S5) cannot drift apart: 0.10.0 S5 asks the manual path
+ * to refuse "exactly as `peerRoute()` already refuses one", and the way to guarantee "exactly" is one
+ * function. Comparison is on the NORMALISED url, so a trailing slash is not a second route.
+ */
+export function routeExists(routes: RouteCandidate[], url: string): boolean {
+  const clean = normalizeRouteUrl(url);
+  if (!clean) return false;
+  return routes.some((route) => normalizeRouteUrl(route.url) === clean);
+}
+
 /** A new candidate appended below everything else, with the lowest priority in the list. */
 export function nextRoute(routes: RouteCandidate[], url: string): RouteCandidate {
   const priority = routes.reduce((max, route) => Math.max(max, route.priority), -1) + 1;

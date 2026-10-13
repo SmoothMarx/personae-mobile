@@ -293,6 +293,7 @@ import { PAIR_STATES, pairIdFrom, pairStatusUrl, parsePairState, runPairLogin, w
 import { readStatusBody, stagedConnectionTest, TEST_MESSAGE_KEY } from '../src/connect/connectionTest';
 import { buildSupportBundle, maskAddress, pushTimeline, supportText, TIMELINE_CAP } from '../src/connect/support';
 import { DEFAULT_WIZARD_STATE, dismissPatch, normalizeWizardState, resumeStep, shouldAutoOpen, stepPatch, WIZARD_STATE_KEY } from '../src/connect/wizardSession';
+import { deleteRoute, manualAdd, renameRoute, routeAt } from '../src/gateway/manage';
 
 // Most assertions below were written against the Portuguese copy, so the suite runs in PT
 // explicitly. The language tests switch on purpose and always restore 'pt' afterwards.
@@ -5963,6 +5964,108 @@ async function main(): Promise<void> {
     assert.equal(buildProps[0][1].android?.usesCleartextTraffic, true, 'Android cleartext is unchanged');
     assert.equal('networkSecurityConfig' in (buildProps[0][1].android ?? {}), false, 'no second Android mechanism');
     assert.equal('usesCleartextTraffic' in appJson.expo.android, false, 'and none on the android block either');
+  });
+
+
+  test('0.10.0 S5: rename, delete and add a connection — and the credential survives all of it', async () => {
+    const lan = { role: 'lan', priority: 0, url: 'http://10.0.0.15:9119', insecure: true };
+    const remote = { role: 'tailscale', priority: 1, url: 'http://100.64.0.2:9119', insecure: true };
+    const publicRoute = { role: 'public', priority: 2, url: 'https://box.example:10443', insecure: false };
+    const routes = [lan, remote, publicRoute];
+    const ordered = orderRoutes(routes);
+
+    // (a) RENAME changes the label and NOTHING else — field by field, and the other rows are untouched
+    const renamed = renameRoute(routes, 1, '  Phone hotspot  ');
+    assert.equal(renamed[1].label, 'Phone hotspot', 'trimmed');
+    for (const key of ['role', 'priority', 'url', 'insecure'] as const) {
+      assert.equal(renamed[1][key], ordered[1][key], `${key} is carried through unchanged`);
+    }
+    assert.deepEqual(renamed[0], ordered[0]);
+    assert.deepEqual(renamed[2], ordered[2]);
+    assert.equal(renamed.length, routes.length, 'a rename never adds or removes a row');
+    assert.equal(renameRoute(routes, 1, '   ')[1].label, undefined, 'an empty name clears it, back to the kind noun');
+    await inLanguage('en', () => {
+      assert.equal(connectionLabel(renamed[1]), 'Phone hotspot', 'and the dropdown shows the name the user gave it');
+      const row = connectionRows({ ...DEFAULT_SETTINGS, routes: renamed })[1];
+      assert.equal(connectionLabel(row.route), 'Phone hotspot', 'the row title is the name the user gave it');
+      assert.equal(row.kind, 'Remote', 'and the kind is still the role, inferred from the address');
+    });
+    assert.equal(routeAt(routes, 1)?.url, remote.url, 'a row is addressed by its drawn index');
+
+    // (b) DELETE removes the row, keeps the CREDENTIAL, and lands on a defined state
+    const patch = deleteRoute(
+      { routes, baseUrl: lan.url, insecureRouteAck: true, preferredRouteRole: null },
+      0,
+      (route) => route.url === remote.url,
+    );
+    assert.deepEqual(patch.routes.map((route) => route.url), [remote.url, publicRoute.url]);
+    assert.equal(patch.baseUrl, remote.url, 'the app moves to the next route that actually answers');
+    assert.equal(patch.empty, false);
+    // the patch is {routes, baseUrl, decision, empty} and nothing else: no credential can be touched
+    assert.deepEqual(Object.keys(patch).sort(), ['baseUrl', 'decision', 'empty', 'routes']);
+    for (const forbidden of ['apiKey', 'deviceId', 'deviceLabel', 'profiles']) {
+      assert.equal(forbidden in patch, false, `deleting a route must not carry ${forbidden}`);
+    }
+    // deleting the LAST one is the empty state, which is the state that offers the wizard
+    const solo = deleteRoute(
+      { routes: [lan], baseUrl: lan.url, insecureRouteAck: true, preferredRouteRole: null },
+      0,
+      () => false,
+    );
+    assert.deepEqual(solo.routes, []);
+    assert.equal(solo.baseUrl, '', 'no address is left pointing at a route that is gone');
+    assert.equal(solo.empty, true);
+    assert.equal(solo.decision.reason, 'no-routes');
+    // and a deletion that leaves only unreachable rows says so rather than picking one of them
+    const dead = deleteRoute(
+      { routes: [lan, remote], baseUrl: lan.url, insecureRouteAck: true, preferredRouteRole: null },
+      0,
+      () => false,
+    );
+    assert.equal(dead.baseUrl, '');
+    assert.equal(dead.decision.reason, 'none-reachable');
+    assert.equal(dead.empty, false, 'the rows are still there — it is the reachability that is not');
+
+    // (c) a DUPLICATE is refused with the same rule the peer picker uses
+    assert.equal(peerRoute({ name: 'box', ip: '10.0.0.15', os: 'linux', online: true }, { port: 9119, routes, insecureAck: true }), null);
+    assert.deepEqual(manualAdd(routes, '10.0.0.15', { port: 9119 }), { ok: false, reason: 'duplicate' });
+    assert.deepEqual(manualAdd(routes, 'http://10.0.0.15:9119', { port: 9119 }), { ok: false, reason: 'duplicate' }, 'a pasted form is the same route');
+    assert.deepEqual(manualAdd(routes, '10.0.0.15/', { port: 9119 }), { ok: false, reason: 'duplicate' }, 'and so is a trailing slash');
+    assert.deepEqual(manualAdd(routes, '', { port: 9119 }), { ok: false, reason: 'invalid' });
+    // a new address IS added, appended below everything else, with the role inferred from it
+    const added = manualAdd(routes, '10.0.0.99', { port: 9119, insecureAck: true });
+    assert.equal(added.ok, true);
+    if (added.ok) {
+      assert.equal(added.route.url, 'http://10.0.0.99:9119');
+      assert.equal(added.route.role, 'lan', 'the role stays INFERRED — the user is never asked to classify');
+      assert.equal(added.route.priority, 3, 'appended last');
+      assert.deepEqual(added.routes.map((route) => route.priority), [0, 1, 2, 3], 'and renumbered');
+      assert.equal(added.routes.length, routes.length + 1);
+    }
+    const tailnet = manualAdd(routes, 'box.tailnet.ts.net', { port: 9119, insecureAck: true });
+    assert.equal(tailnet.ok && tailnet.route.role, 'tailscale');
+
+    // ONE duplicate rule, one place: `routes.ts::routeExists`, imported by both callers
+    const ruleOwners: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!/\.tsx?$/.test(entry.name)) continue;
+        if (/export function routeExists/.test(readFileSync(full, 'utf8'))) ruleOwners.push(full.slice(process.cwd().length + 1));
+      }
+    };
+    walk(join(process.cwd(), 'src'));
+    assert.deepEqual(ruleOwners, ['src/routes.ts'], 'the duplicate rule is defined once');
+    assert.match(readFileSync(join(process.cwd(), 'src', 'logic', 'peers.ts'), 'utf8'), /routeExists\(/, 'and the peer picker imports it');
+    assert.match(readFileSync(join(process.cwd(), 'src', 'gateway', 'manage.ts'), 'utf8'), /routeExists\(/, 'as does the manual path');
+
+    // (d) the screen wires the three operations to this module (source inspection: no renderer here)
+    const code = settingsCode();
+    assert.match(code, /renameRoute\(/);
+    assert.match(code, /deleteRoute\(/);
+    assert.match(code, /manualAdd\(/);
+    assert.match(code, /connectionLabel\(/, 'and the rows show the renamed label');
   });
 
   // ─────────────────────────────────────────────────────── report ──

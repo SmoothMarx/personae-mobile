@@ -446,6 +446,8 @@ const en = {
     gwNone: 'None',
     gwNoDevice: 'Not paired',
     gwNever: 'Never',
+    gwLabelPlaceholder: 'Name this connection (optional)',
+    gwDuplicateRoute: 'That address is already one of your connections.',
   },
 
   routes: {
@@ -794,6 +796,8 @@ export const EN_ONLY_SETTINGS_KEYS = [
   'gwNone',
   'gwNoDevice',
   'gwNever',
+  'gwLabelPlaceholder',
+  'gwDuplicateRoute',
   'wizBranchTitle',
   'wizBranchLanIntro',
   'wizBranchLan',

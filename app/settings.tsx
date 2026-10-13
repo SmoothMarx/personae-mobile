@@ -19,6 +19,7 @@ import { createBackend } from '../src/api/backend';
 import { normalizeError } from '../src/api/errors';
 import ConnectWizard from '../src/connect/Wizard';
 import { connectionLabel, connectionRows } from '../src/gateway/connections';
+import { deleteRoute, manualAdd, renameRoute } from '../src/gateway/manage';
 import { gatewaySections, pillOptions, statusFields, type GatewaySectionId } from '../src/gateway/plan';
 import { readGatewayStatus, statusUrl, type GatewayStatus } from '../src/gateway/status';
 import { createDotProbe, dotStateOf, probeDots, type DotRow, type DotState } from '../src/gateway/dots';
@@ -68,8 +69,6 @@ import { askPermission, readPermission } from '../src/notifications';
 import {
   checkRoute,
   moveRoute,
-  nextRoute,
-  normalizeRouteUrl,
   orderRoutes,
   roleLabel,
   transportSecurityNote,
@@ -224,17 +223,24 @@ export default function SettingsScreen() {
     [update],
   );
 
+  /**
+   * 0.10.0 S5 — add a connection by hand. It goes through `src/gateway/manage.ts::manualAdd`, which
+   * refuses a duplicate with the SAME rule the peer picker uses (`routes.ts::routeExists`), so the two
+   * paths cannot disagree about what "already there" means.
+   */
   const addRoute = useCallback(() => {
-    const url = normalizeRouteUrl(newRoute);
-    if (!url) return;
-    if (!checkBaseUrl(url).ok) {
-      setRouteProblem(t.routes.problemBadUrl);
+    const result = manualAdd(form.routes, newRoute, {
+      port: peersPort(form),
+      insecureAck: form.insecureRouteAck,
+    });
+    if (!result.ok) {
+      setRouteProblem(result.reason === 'duplicate' ? t.settings.gwDuplicateRoute : t.routes.problemBadUrl);
       return;
     }
     setRouteProblem(null);
-    saveRoutes([...form.routes, nextRoute(form.routes, url)]);
+    saveRoutes(result.routes);
     setNewRoute('');
-  }, [form.routes, newRoute, saveRoutes]);
+  }, [form, newRoute, saveRoutes]);
 
   const problemText = useCallback((problem: RouteProblem): string => {
     if (problem === 'public-http') return t.routes.problemPublicHttp;
@@ -1286,11 +1292,18 @@ export default function SettingsScreen() {
                             text: t.routes.remove,
                             style: 'destructive',
                             onPress: () => {
-                              // Remove by object identity, not by URL: two routes can legitimately
-                              // share a URL (different role/priority), and removing by URL would
-                              // silently delete both.
-                              const ordered = orderRoutes(form.routes);
-                              saveRoutes(form.routes.filter((item) => item !== ordered[index]));
+                              // 0.10.0 S5 — deleting a connection touches the ROUTE LIST and
+                              // nothing else. The credential is per SERVER (one device token in
+                              // secure storage), so there is nothing to revoke here; forgetting the
+                              // device on the server is its own explicit action above. `deleteRoute`
+                              // returns `{routes, baseUrl}` and lands the app on the next route that
+                              // is not known to be down, or on the empty state that offers the
+                              // wizard — never on an address that no longer exists.
+                              // A route is known-down only from the dots (S2): `checking` is not
+                              // "down", so an unprobed route is still eligible.
+                              const patch = deleteRoute(form, index, (candidate) => dotStateOf(dots, candidate.url) !== 'down');
+                              saveRoutes(patch.routes);
+                              update({ baseUrl: patch.baseUrl });
                             },
                           },
                         ])
@@ -1301,6 +1314,19 @@ export default function SettingsScreen() {
                     </Pressable>
                   </View>
                 </View>
+
+                {/* 0.10.0 S5 — rename: the LABEL only. The address stays on its own field below,
+                    and the role stays inferred from the address, so a name can never smuggle a
+                    route past the security policy. */}
+                <TextInput
+                  value={route.label ?? ''}
+                  onChangeText={(value) => saveRoutes(renameRoute(form.routes, index, value), 700)}
+                  placeholder={t.settings.gwLabelPlaceholder}
+                  placeholderTextColor={colors.faint}
+                  style={styles.input}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
 
                 <TextInput
                   value={route.url}
