@@ -71,6 +71,18 @@ const DEFAULTS = {
   replayEpoch: '',
   eventsSince: null,
   resumeWorks: true,
+  /**
+   * 0.13.0 W2 — the ATTACH path's cold-session condition. `file.attach` refuses the first
+   * `coldAttachFailures` attempts with the gateway's in-memory-map answer (code 4001, message
+   * `session not found`), and answers normally after that. `1` is the condition the user's phone hits
+   * (a gateway whose session map no longer holds the thread); a large number proves the STOP.
+   */
+  coldAttachFailures: 0,
+  /**
+   * 0.13.0 W2 — a refusal that is NOT a cold session (e.g. the staging rejection's
+   * `4017 invalid data_url payload`). It must never be retried: one attempt, zero resumes.
+   */
+  attachRefusal: null,
 };
 
 /** 0.9.0 G — every `image.attach_bytes` the app sent (bytes counted, never the payload). */
@@ -322,6 +334,38 @@ export function createMockDashboard(options = {}) {
 
     if (method === 'session.interrupt') {
       socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { ok: true, interrupted: true } })}\n`));
+      return;
+    }
+
+    /**
+     * 0.13.0 W2 — `file.attach` (`tui_gateway/methods_prompt.py:938`): stages ANY media type into the
+     * session workspace and returns the `@file:` ref the agent reads. This is the RPC a voice note
+     * rides. It is answered here for the first time so the 0.13.0 attach liveness rule can be driven
+     * end to end; the two refusal shapes below are the two the app must treat DIFFERENTLY — the
+     * cold-session answer (resume once, retry once) and any other refusal (never retried).
+     */
+    if (method === 'file.attach') {
+      const sessionId = String(params.session_id || '');
+      const reply = (payload) => socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, ...payload })}\n`));
+      // `rpcCalls` is per-instance, so this count is "attempts on THIS mock", not a global tally.
+      const attempts = rpcCalls.filter((call) => call.method === 'file.attach').length;
+      if (config.attachRefusal) {
+        reply({ error: { code: config.attachRefusal.code, message: config.attachRefusal.message } });
+        return;
+      }
+      if (config.coldAttachFailures && attempts <= config.coldAttachFailures) {
+        // `_sess_nowait`: `s = _sessions.get(sid)` missed — the in-memory map, not the database.
+        reply({ error: { code: 4001, message: 'session not found' } });
+        return;
+      }
+      const name = String(params.name || `attachment_${attempts}.bin`);
+      reply({
+        result: {
+          uploaded: true,
+          path: `/home/mock/.hermes/attachments/${name}`,
+          ref_text: `@file:/home/mock/.hermes/attachments/${name}`,
+        },
+      });
       return;
     }
 

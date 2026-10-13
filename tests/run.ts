@@ -22,7 +22,7 @@ import { unified } from 'unified';
 import { createMockGateway } from '../mock/server.mjs';
 import { createMockDashboard, profileFixture, sessionFixture } from '../mock/dashboard.mjs';
 import { createDashboardClient, type GatewayEvent, type PreferenceDocument } from '../src/api/dashboard';
-import { createBackend } from '../src/api/backend';
+import { createBackend, isColdSessionRpc } from '../src/api/backend';
 import { SSEParser, parseFrame } from '../src/api/sse';
 import { createApi } from '../src/api/client';
 import { nodeTransport } from '../src/api/transportNode';
@@ -7692,6 +7692,103 @@ async function main(): Promise<void> {
     const pt = stringsFor('pt').thread.voice.recordFailed('X');
     assert.equal(en, 'The recording failed: X');
     assert.ok(pt.includes('X') && pt !== en, 'the pt-BR definition survives and is its own sentence');
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.13.0 W2 — the attach gets the liveness step the text path always had. The gateway holds its
+  // sessions in an in-memory map (`_sess_nowait`), so an attach to a session it no longer holds
+  // resident answers `4001 session not found`; the rule is ONE resume and ONE retry, then STOP.
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  test('0.13.0 W2: a COLD session resumes once and retries once - a second failure stops, and nothing else is retried', async () => {
+    // (a) the predicate reads BOTH halves of the rejection, and nothing else qualifies
+    assert.equal(isColdSessionRpc(new ApiError('cold', { kind: 'http', status: 4001 })), true, 'the code alone is enough');
+    assert.equal(
+      isColdSessionRpc(new ApiError('Gateway error (4001): session not found', { kind: 'http', status: 4001, detail: 'session not found' })),
+      true,
+    );
+    assert.equal(
+      isColdSessionRpc(new ApiError('Gateway error (500): session not found', { kind: 'http', status: 500, detail: 'session not found' })),
+      true,
+      'the message alone is enough, whatever code carried it',
+    );
+    assert.equal(
+      isColdSessionRpc(new ApiError('settling', { kind: 'http', status: 4009, detail: 'session disconnect interrupt settling' })),
+      false,
+      'the text path own code is NOT a cold session',
+    );
+    assert.equal(isColdSessionRpc(new ApiError('boom', { kind: 'network' })), false, 'a transport failure is not either');
+
+    // (b) the LIVE rule over a real socket: the first attach is refused, the retry works
+    const cold = createMockDashboard({ port: 0, bearer: DASH_BEARER, coldAttachFailures: 1 });
+    await cold.listen();
+    const coldBackend = createBackend(settingsFor(cold.url, { apiKey: DASH_BEARER }));
+    try {
+      const attached = await coldBackend.attachFile('sess-1', 'data:audio/mp4;base64,AAAA', 'voice-1.m4a', '');
+      assert.equal(attached.uploaded, true, 'the RETRY is what makes the voice note go through');
+      assert.match(attached.refText, /^@file:/);
+      const methods = cold.rpcCalls.map((call) => call.method);
+      assert.equal(methods.filter((name) => name === 'file.attach').length, 2, 'one attempt + exactly ONE retry');
+      assert.equal(methods.filter((name) => name === 'session.resume').length, 1, 'exactly ONE resume');
+      const resume = cold.rpcCalls.find((call) => call.method === 'session.resume');
+      assert.equal(String(resume.params.session_id), 'sess-1', 'the resume names the session the attach did');
+    } finally {
+      coldBackend.dispose();
+      await cold.close();
+    }
+
+    // (c) a SECOND failure STOPS: two attempts, one resume, and the REAL reason surfaces
+    const dead = createMockDashboard({ port: 0, bearer: DASH_BEARER, coldAttachFailures: 99 });
+    await dead.listen();
+    const deadBackend = createBackend(settingsFor(dead.url, { apiKey: DASH_BEARER }));
+    try {
+      await expectApiError(
+        () => deadBackend.attachFile('sess-9', 'data:audio/mp4;base64,AAAA', 'voice-1.m4a', ''),
+        (error) => {
+          assert.equal(error.status, 4001, 'the second refusal is what the caller sees');
+          assert.match(error.message, /session not found/, 'and the reason is the real one, not a generic label');
+        },
+      );
+      const methods = dead.rpcCalls.map((call) => call.method);
+      assert.equal(methods.filter((name) => name === 'file.attach').length, 2, 'TWO attempts — never a third');
+      assert.equal(methods.filter((name) => name === 'session.resume').length, 1, 'and still exactly ONE resume');
+    } finally {
+      deadBackend.dispose();
+      await dead.close();
+    }
+
+    // (d) a refusal that is NOT a cold session is never retried at all — no resume, one attempt
+    const staged = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      attachRefusal: { code: 4017, message: 'invalid data_url payload' },
+    });
+    await staged.listen();
+    const stagedBackend = createBackend(settingsFor(staged.url, { apiKey: DASH_BEARER }));
+    try {
+      await expectApiError(
+        () => stagedBackend.attachFile('sess-1', 'data:audio/mp4;base64,AAAA', 'voice-1.m4a', ''),
+        (error) => assert.equal(error.status, 4017, 'the staging refusal is surfaced as it is'),
+      );
+      const methods = staged.rpcCalls.map((call) => call.method);
+      assert.equal(methods.filter((name) => name === 'file.attach').length, 1, 'ONE attempt');
+      assert.equal(methods.filter((name) => name === 'session.resume').length, 0, 'and ZERO resumes');
+    } finally {
+      stagedBackend.dispose();
+      await staged.close();
+    }
+
+    // (e) both attach RPCs ride the one wrapper, and the text path is untouched
+    const backendSrc = readFileSync(join(process.cwd(), 'src', 'api', 'backend.ts'), 'utf8');
+    assert.equal((backendSrc.match(/await attachRpc</g) ?? []).length, 2, 'the image path and the file path');
+    assert.equal(
+      (backendSrc.match(/'session\.resume'/g) ?? []).length,
+      2,
+      'exactly two resume call sites: the attach wrapper and the text path',
+    );
+    assert.match(backendSrc, /if \(normalized\.status === 4007\)/, 'the text path keeps its 4007 branch');
+    assert.match(backendSrc, /if \(normalized\.status === 4009\)/, 'and its 4009 branch');
+    assert.match(backendSrc, /'file\.attach'/, 'the same RPC name it always used');
   });
 
   // ─────────────────────────────────────────────────────── report ──

@@ -350,6 +350,24 @@ async function stateVerb(
   }
 }
 
+/**
+ * 0.13.0 W2 — is this rejection the gateway's IN-MEMORY session map miss?
+ *
+ * `_sess_nowait` (`tui_gateway/server.py`) does `s = _sessions.get(sid)`; when the id is not resident
+ * it answers JSON-RPC error code **4001** with the message **`session not found`**, and `_sess_building`
+ * only builds an agent AFTER that lookup succeeds — so no RPC can warm a cold session. The gateway's
+ * own log line states the contract: *the client should resume the stored session.*
+ *
+ * Both halves are read, because either one alone can be the one that survives the wire: the code
+ * (mapped onto `ApiError.status` by the socket's JSON-RPC error path) and the message (mapped onto
+ * `detail`). Nothing else is treated as a cold session — this is not a general retry predicate.
+ */
+export function isColdSessionRpc(error: ApiError): boolean {
+  if (error.status === 4001) return true;
+  const detail = `${error.detail ?? ''} ${error.message}`.toLowerCase();
+  return detail.includes('session not found');
+}
+
 function createDashboardBackend(settings: Settings): Backend {
   const client = createDashboardClient(settings, {});
   let socket: DashboardSocket | null = null;
@@ -394,6 +412,37 @@ function createDashboardBackend(settings: Settings): Backend {
         });
     socket = await socketPromise;
     return socket;
+  };
+
+  /**
+   * 0.13.0 W2 — ONE liveness step for the ATTACH RPCs, on the socket this client already holds.
+   *
+   * The gateway resolves sessions from an in-memory map, so an attach to a session it no longer holds
+   * resident is rejected `4001 session not found` — and an attach can never warm it (`_sess_building`
+   * runs only after that lookup succeeds). The TEXT path already resolves first
+   * (`watchSession`'s activate-then-resume, below); the attach path had no liveness step at all. That
+   * asymmetry is the bug, and this is the missing half. Exactly one resume and one retry, then stop.
+   */
+  const attachRpc = async <T,>(
+    method: string,
+    params: Record<string, unknown>,
+    profile: string,
+  ): Promise<T> => {
+    const live = await shared();
+    try {
+      return await live.rpc<T>(method, params);
+    } catch (error) {
+      const normalized = normalizeError(error);
+      // Not a cold session: surface it unchanged. Nothing else is ever retried here.
+      if (!isColdSessionRpc(normalized)) throw normalized;
+      // ONE resume …
+      await live.rpc('session.resume', {
+        session_id: String(params.session_id ?? ''),
+        ...(profile ? { profile } : {}),
+      });
+      // … and ONE retry. A second failure propagates: no loop, no backoff, no third attempt.
+      return await live.rpc<T>(method, params);
+    }
   };
 
   return {
@@ -508,15 +557,21 @@ function createDashboardBackend(settings: Settings): Backend {
     /**
      * 0.9.0 G — `image.attach_bytes` over the WS channel the app already speaks. Reply is
      * `{attached, path, count, bytes, …}` (`tui_gateway/methods_prompt.py:849-877`).
+     *
+     * 0.13.0 W2 — rides `attachRpc`, so a cold session is resumed once and the attach retried once
+     * (the liveness step the text path already had and this one never did).
      */
     async attachImage(sessionId, base64, filename, profile = '') {
-      const live = await shared();
-      const result = await live.rpc<Record<string, unknown>>('image.attach_bytes', {
-        session_id: sessionId,
-        content_base64: base64,
-        filename,
-        ...(profile ? { profile } : {}),
-      });
+      const result = await attachRpc<Record<string, unknown>>(
+        'image.attach_bytes',
+        {
+          session_id: sessionId,
+          content_base64: base64,
+          filename,
+          ...(profile ? { profile } : {}),
+        },
+        profile,
+      );
       return { path: String(result.path ?? ''), count: Number(result.count ?? 0) };
     },
 
@@ -524,15 +579,21 @@ function createDashboardBackend(settings: Settings): Backend {
      * 0.9.0 H — `file.attach` (`tui_gateway/methods_prompt.py:938-959`): stages a non-image file into
      * the session workspace and returns the `@file:` ref the agent reads. `data_url` carries the
      * bytes because the phone has no gateway-visible path.
+     *
+     * 0.13.0 W2 — the voice note rides THIS call, and this is the path that was failing: same
+     * resume-once/retry-once liveness step as the image path, on the same shared socket.
      */
     async attachFile(sessionId, dataUrl, name, profile = '') {
-      const live = await shared();
-      const result = await live.rpc<Record<string, unknown>>('file.attach', {
-        session_id: sessionId,
-        data_url: dataUrl,
-        name,
-        ...(profile ? { profile } : {}),
-      });
+      const result = await attachRpc<Record<string, unknown>>(
+        'file.attach',
+        {
+          session_id: sessionId,
+          data_url: dataUrl,
+          name,
+          ...(profile ? { profile } : {}),
+        },
+        profile,
+      );
       return {
         path: String(result.path ?? ''),
         refText: String(result.ref_text ?? ''),
