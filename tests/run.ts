@@ -256,8 +256,12 @@ import {
   PORTABLE_PREFERENCE_KEY,
   PORTABLE_SETTING_IDS,
   SCOPE_LABEL_KEY,
+  SETTINGS_PAGE_PARENT,
+  backFrom,
   keysAreGeometricallyPlain,
   pageRowStyleKeys,
+  pageTitle,
+  parentPage,
   rowIsGeometricallyPlain,
   scopeOfRow,
   scopeOfSetting,
@@ -4890,6 +4894,19 @@ async function main(): Promise<void> {
   // ════════════════════════════════════════════════════════════════════════════════════════
   /** `app/settings.tsx`, for the checks that are about what the screen derives. There is no renderer. */
   const settingsSource = () => readFileSync(join(process.cwd(), 'app', 'settings.tsx'), 'utf8');
+  /**
+   * The same source with comments removed: block comments (JSDoc and JSX comment braces) and
+   * whole-line `//` comments. A comment that names a DELETED identifier is documentation, not a shadow
+   * copy of it; this repo's own convention (0.8.0 D's classifier test strips comments for exactly this
+   * reason). Absence is asserted against the code, presence against the raw source.
+   */
+  const codeOnly = (src: string) =>
+    src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('//'))
+      .join('\n');
+  const settingsCode = () => codeOnly(settingsSource());
 
   test('0.9.1 S1: every index row is geometrically identical — the Notifications indent cannot come back', () => {
     // The plan owns a row's style modifiers, and it offers NONE — for any row, sibling or not.
@@ -4912,22 +4929,66 @@ async function main(): Promise<void> {
     assert.equal(keysAreGeometricallyPlain([]), true);
     // The screen APPLIES what the plan returns and computes no geometry of its own…
     const src = settingsSource();
+    const code = settingsCode();
     assert.match(src, /\[styles\.pageRow, \.\.\.rowModifiers\(row\), pressed && styles\.pressed\]/);
     assert.match(src, /pageRowStyleKeys\(row\)/, 'the modifiers come from the plan, not from the row here');
-    // …and the 0.9.0 indent is deleted, style and all — not merely unapplied. The check is on CODE: the
-    // comment that records WHY it was removed names the removed identifiers, which is documentation in
-    // this repo's convention (0.8.0 D's classifier test strips comments for the same reason).
-    const code = src
-      .split('\n')
-      .filter((line) => {
-        const trimmed = line.trim();
-        return !trimmed.startsWith('*') && !trimmed.startsWith('//') && !trimmed.startsWith('/*');
-      })
-      .join('\n');
+    // …and the 0.9.0 indent is deleted, style and all — not merely unapplied. Absence is asserted on
+    // the CODE; the comment that records WHY it went names the removed identifiers, which is
+    // documentation in this repo's convention (`codeOnly`).
     assert.ok(!/pageRowSibling/.test(code), 'the style and every code reference to it are gone, not shadowed');
     assert.ok(!/marginLeft: space\.lg/.test(code), 'the 0.9.0 indent literal is gone from the stylesheet');
     assert.ok(!/siblingBelow/.test(code), 'the screen can no longer ask which row is a sibling, so it cannot indent one');
     assert.ok(/pageRowSibling/.test(src), 'and the reason it went is written down where the style lived');
+  });
+
+  test('0.9.1 S2: ONE back control — the header\'s — and it walks the plan, never straight to the index', () => {
+    // (b) the parent map, as data
+    assert.deepEqual(
+      SETTINGS_PAGE_PARENT,
+      { index: null, agent: 'index', notifications: 'index', gateway: 'index', advanced: 'gateway' },
+      'where back goes from every page, in one place',
+    );
+    assert.equal(parentPage('advanced'), 'gateway', 'Advanced is reached from Gateway Settings');
+    assert.equal(parentPage('gateway'), 'index');
+    assert.equal(parentPage('agent'), 'index');
+    assert.equal(parentPage('notifications'), 'index');
+    assert.equal(parentPage('index'), null, 'null IS "leave Settings" — the roster is behind the route');
+    // (c) a sub-page lands on its PARENT, and Advanced specifically does NOT land on the index
+    assert.deepEqual(backFrom('advanced'), { kind: 'page', page: 'gateway' });
+    assert.notDeepEqual(backFrom('advanced'), { kind: 'page', page: 'index' });
+    for (const id of ['agent', 'notifications', 'gateway'] as const) {
+      assert.deepEqual(backFrom(id), { kind: 'page', page: 'index' });
+    }
+    // (d) the index back still leaves for the roster — unchanged behaviour, now stated as data
+    assert.deepEqual(backFrom('index'), { kind: 'leave' });
+    // the top bar says where you are
+    assert.equal(pageTitle('index'), t.settings.pagesTitle);
+    assert.equal(pageTitle('agent'), t.settings.pages.agentTitle);
+    assert.equal(pageTitle('notifications'), t.settings.pages.notificationsTitle);
+    assert.equal(pageTitle('gateway'), t.settings.pages.gatewayTitle);
+    assert.equal(pageTitle('advanced'), t.settings.pages.advancedTitle);
+    // (a) a sub-page's BODY renders no back control: ONE glyph in the whole screen, and it is the
+    // header's — inside the options object the screen hands to Stack.Screen. Absence is asserted
+    // against the CODE, so the comment that records what was deleted is not mistaken for it.
+    const src = settingsSource();
+    const code = settingsCode();
+    assert.ok(!/backRow/.test(code), 'the in-body back row is deleted');
+    assert.ok(!/pageBack/.test(code), 'and so are its styles');
+    assert.ok(!/setPage\('index'\)/.test(code), 'nothing in the body jumps straight to the index any more');
+    assert.equal((code.match(/chevron-back/g) ?? []).length, 1, 'exactly ONE back glyph exists in this screen');
+    const atHeaderLeft = code.indexOf('headerLeft:');
+    assert.ok(atHeaderLeft > 0, 'the screen drives the header itself, so the arrow and the plan cannot disagree');
+    assert.ok(code.indexOf('chevron-back') > atHeaderLeft, 'and the only back glyph is inside that headerLeft');
+    assert.match(code, /accessibilityLabel=\{t\.common\.back\}/, 'the label is a table string, not a literal');
+    // BOTH affordances read the SAME plan function — that is what makes them agree
+    assert.match(code, /backFrom\(page\)/, 'the header arrow');
+    assert.match(code, /BackHandler\.addEventListener\('hardwareBackPress'/, 'and Android hardware back');
+    const hardware = code.slice(code.indexOf('BackHandler.addEventListener'));
+    assert.match(hardware, /goBack\(\)/, 'which calls the same function, rather than a second policy');
+    assert.match(hardware, /return true/, 'and consumes the press while a sub-page is on screen');
+    assert.match(code, /router\.canGoBack\(\)/, 'the index leaves for the roster, with a fallback for a bare deep link');
+    // and the deletion is documented where it happened, so the next reader knows why the body is bare
+    assert.match(src, /backRow/);
   });
 
   // ─────────────────────────────────────────────────────── report ──

@@ -12,7 +12,7 @@ import { File, Paths } from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native';
+import { Alert, BackHandler, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { createBackend } from '../src/api/backend';
@@ -23,8 +23,9 @@ import { probeTcp } from '../src/native/tailscale';
 import { ADVANCED_OPEN_BY_DEFAULT } from '../src/settingsLayout';
 import {
   SCOPE_LABEL_KEY,
+  backFrom,
   pageRowStyleKeys,
-  scopeOfRow,
+  pageTitle,
   settingsRows,
   type PreferenceScope,
   type SettingsPageId,
@@ -38,7 +39,7 @@ import { screenInsets } from '../src/insets';
 import { formatTime } from '../src/format';
 import { t } from '../src/i18n';
 import { revokeSelf } from '../src/pairing';
-import { useRouter } from 'expo-router';
+import { useRouter, Stack } from 'expo-router';
 import { contactsOf, probeFromHealth, statusColor, type Probe } from '../src/logic/roster';
 import {
   checkBaseUrl,
@@ -75,20 +76,11 @@ import { colors, font, radius, space } from '../src/theme';
 
 type TestResult = { label: string; probe: Probe; ms: number | null; detail: string };
 
-/** The sub-page title key, kept as a literal map so `t.settings.pages` is read statically typed. */
-const SETTINGS_PAGE_TITLE_KEY = {
-  agent: 'agentTitle',
-  notifications: 'notificationsTitle',
-  gateway: 'gatewayTitle',
-  advanced: 'advancedTitle',
-} as const;
-
-const SETTINGS_PAGE_HELP_KEY = {
-  agent: 'agentHelp',
-  notifications: 'notificationsHelp',
-  gateway: 'gatewayHelp',
-  advanced: 'advancedHelp',
-} as const;
+/**
+ * The sub-page title/help keys now live in the PLAN (`src/settingsPages.ts`, on each row), so the
+ * header and the rows read one source. 0.9.1 S2 deleted the two duplicate maps that used to sit here:
+ * a second copy of the key names is exactly how the header and the row labels drift apart.
+ */
 
 export default function SettingsScreen() {
   const { settings, ready, savedAt, update } = useSettings();
@@ -484,66 +476,112 @@ export default function SettingsScreen() {
   const rowModifiers = (row: SettingsPageRow): StyleProp<ViewStyle>[] =>
     pageRowStyleKeys(row).map((key) => (styles as unknown as Record<string, StyleProp<ViewStyle>>)[key]);
 
+  /**
+   * 0.9.1 S2 — THE back control. `backFrom` is the plan, so the header arrow, Android's hardware back
+   * and the suite all read one fact and cannot disagree about where "back" goes.
+   *
+   *  * a sub-page → its PARENT (advanced → gateway, everything else → the index), as a state change
+   *    inside this same route, so the wizard's in-progress state is never thrown away;
+   *  * the index → out of Settings, back to the roster, exactly as the header arrow always did. A
+   *    deep link that opened Settings with nothing behind it falls back to the roster instead of
+   *    leaving an empty stack.
+   */
+  const goBack = useCallback(() => {
+    const outcome = backFrom(page);
+    if (outcome.kind === 'leave') {
+      if (router.canGoBack()) router.back();
+      else router.replace('/');
+      return;
+    }
+    setPage(outcome.page);
+  }, [page, router]);
+
+  /**
+   * Android's hardware back must pop the SAME one level. It is deliberately not a second policy: it
+   * calls `goBack`, and on the index it returns `false` so the router's own handling (leave for the
+   * roster) stays in charge. Registered while a sub-page is on screen, and removed with it.
+   */
+  useEffect(() => {
+    if (page === 'index') return undefined;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      goBack();
+      return true;
+    });
+    return () => sub.remove();
+  }, [page, goBack]);
+
+  /** The one back affordance in this screen: the header's. Its title says where you are. */
+  const header = (
+    <Stack.Screen
+      options={{
+        title: pageTitle(page),
+        headerLeft: () => (
+          <Pressable
+            onPress={goBack}
+            accessibilityRole="button"
+            accessibilityLabel={t.common.back}
+            hitSlop={12}
+            style={({ pressed }) => [styles.headerBack, pressed && styles.pressed]}
+          >
+            <Ionicons name="chevron-back" size={22} color={colors.accent} />
+          </Pressable>
+        ),
+      }}
+    />
+  );
+
   if (page === 'index') {
     return (
+      <>
+        {header}
+        <ScrollView
+          style={styles.screen}
+          contentContainerStyle={[styles.content, { paddingLeft: space.md + insets.paddingLeft, paddingRight: space.md + insets.paddingRight }]}
+          keyboardShouldPersistTaps="handled"
+        >
+          <Text style={styles.pageTitle}>{t.settings.pagesTitle}</Text>
+          <Text style={styles.help}>{t.settings.pagesHelp}</Text>
+          {settingsRows().map((row) => (
+            <Pressable
+              key={row.id}
+              onPress={() => setPage(row.id)}
+              accessibilityRole="button"
+              accessibilityLabel={`${t.settings.pages[row.title]} — ${t.settings.pages[row.help]}`}
+              // 0.9.1 S1 — every row gets the SAME style array. The modifiers come from the plan
+              // (`pageRowStyleKeys`, empty for all rows), so no row can be indented again: 0.9.0 applied
+              // `styles.pageRowSibling` to the one sibling row, and that indent was the user's "offset".
+              style={({ pressed }) => [styles.pageRow, ...rowModifiers(row), pressed && styles.pressed]}
+            >
+              <View style={styles.pageRowText}>
+                <Text style={styles.label}>{t.settings.pages[row.title]}</Text>
+                <Text style={styles.help}>{t.settings.pages[row.help]}</Text>
+              </View>
+              <View style={styles.scopeChip}>
+                <Text style={styles.scopeChipText}>{scopeLabel(row.scope)}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+            </Pressable>
+          ))}
+          {/* The split, said out loud once, on the page where it matters. */}
+          <Text style={styles.help}>{t.settings.scopeHelp}</Text>
+        </ScrollView>
+      </>
+    );
+  }
+
+  return (
+    <>
+      {header}
       <ScrollView
         style={styles.screen}
         contentContainerStyle={[styles.content, { paddingLeft: space.md + insets.paddingLeft, paddingRight: space.md + insets.paddingRight }]}
         keyboardShouldPersistTaps="handled"
       >
-        <Text style={styles.pageTitle}>{t.settings.pagesTitle}</Text>
-        <Text style={styles.help}>{t.settings.pagesHelp}</Text>
-        {settingsRows().map((row) => (
-          <Pressable
-            key={row.id}
-            onPress={() => setPage(row.id)}
-            accessibilityRole="button"
-            accessibilityLabel={`${t.settings.pages[SETTINGS_PAGE_TITLE_KEY[row.id]]} — ${t.settings.pages[SETTINGS_PAGE_HELP_KEY[row.id]]}`}
-            // 0.9.1 S1 — every row gets the SAME style array. The modifiers come from the plan
-            // (`pageRowStyleKeys`, empty for all rows), so no row can be indented again: 0.9.0 applied
-            // `styles.pageRowSibling` to the one sibling row, and that indent was the user's "offset".
-            style={({ pressed }) => [styles.pageRow, ...rowModifiers(row), pressed && styles.pressed]}
-          >
-            <View style={styles.pageRowText}>
-              <Text style={styles.label}>{t.settings.pages[SETTINGS_PAGE_TITLE_KEY[row.id]]}</Text>
-              <Text style={styles.help}>{t.settings.pages[SETTINGS_PAGE_HELP_KEY[row.id]]}</Text>
-            </View>
-            <View style={styles.scopeChip}>
-              <Text style={styles.scopeChipText}>{scopeLabel(row.scope)}</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={16} color={colors.muted} />
-          </Pressable>
-        ))}
-        {/* The split, said out loud once, on the page where it matters. */}
-        <Text style={styles.help}>{t.settings.scopeHelp}</Text>
-      </ScrollView>
-    );
-  }
-
-  const backRow = (
-    <Pressable
-      onPress={() => setPage('index')}
-      accessibilityRole="button"
-      accessibilityLabel={t.settings.pagesTitle}
-      style={({ pressed }) => [styles.pageBack, pressed && styles.pressed]}
-    >
-      <Ionicons name="chevron-back" size={16} color={colors.accent} />
-      <Text style={styles.pageBackText}>{t.settings.pagesTitle}</Text>
-      <View style={styles.scopeChip}>
-        <Text style={styles.scopeChipText}>{scopeLabel(scopeOfRow(page as Exclude<SettingsPageId, 'index'>))}</Text>
-      </View>
-    </Pressable>
-  );
-
-  return (
-    <ScrollView
-      style={styles.screen}
-      contentContainerStyle={[styles.content, { paddingLeft: space.md + insets.paddingLeft, paddingRight: space.md + insets.paddingRight }]}
-      keyboardShouldPersistTaps="handled"
-    >
-      {backRow}
-      <Text style={styles.pageTitle}>{t.settings.pages[SETTINGS_PAGE_TITLE_KEY[page]]}</Text>
-      <Text style={styles.hint}>{t.settings.autoSave}</Text>
+        {/* 0.9.1 S2 — NO back control in the body. The ONE back affordance is the header's, above; the
+            body starts with the page's own content. It used to open with `backRow`, a second back arrow
+            wired to `setPage('index')`, which is why the user saw two. The page's name is no longer
+            repeated here either: the header title says where you are. */}
+        <Text style={styles.hint}>{t.settings.autoSave}</Text>
       {savedAt ? (
         <Text style={styles.savedLine}>
           {t.settings.saved} · {formatTime(savedAt)}
@@ -1280,7 +1318,8 @@ export default function SettingsScreen() {
       ) : null}
         </>
       ) : null}
-    </ScrollView>
+      </ScrollView>
+    </>
   );
 }
 
@@ -1356,8 +1395,10 @@ const styles = StyleSheet.create({
     paddingVertical: 2,
   },
   scopeChipText: { color: colors.muted, fontSize: 10, fontWeight: '600' },
-  pageBack: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: space.xs },
-  pageBackText: { color: colors.accent, fontSize: font.body, fontWeight: '600', flex: 1 },
+  // 0.9.1 S2: the body's back row is gone. `pageBack` / `pageBackText` — the styles that drew the
+  // SECOND back affordance (a chevron, the word "Settings" and a chip, wired to `setPage('index')`) —
+  // are deleted, not shadowed. The header's arrow replaced them; one glyph, one place, in every page.
+  headerBack: { paddingVertical: space.xs, paddingRight: space.sm },
   screen: { flex: 1, backgroundColor: colors.bg },
   content: { padding: space.md, paddingBottom: space.xl * 2, gap: space.md },
   hint: { color: colors.faint, fontSize: font.small },

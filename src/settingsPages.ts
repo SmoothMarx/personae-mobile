@@ -20,18 +20,27 @@
  * which it is reads as "synced" while quietly never syncing, so every row carries its scope.
  */
 
+import { t } from './i18n';
+
 export type SettingsPageId = 'index' | 'agent' | 'notifications' | 'gateway' | 'advanced';
 
 /** What happens to this row's settings when the other client edits theirs. */
 export type PreferenceScope = 'portable' | 'device-local' | 'mixed';
 
+/**
+ * The string-table keys a page's title and help sentence live under (`t.settings.pages.*`). Kept as
+ * literal unions so the table is indexed statically — a typo is a compile error, not a blank row.
+ */
+export type SettingsPageTitleKey = 'agentTitle' | 'notificationsTitle' | 'gatewayTitle' | 'advancedTitle';
+export type SettingsPageHelpKey = 'agentHelp' | 'notificationsHelp' | 'gatewayHelp' | 'advancedHelp';
+
 export type SettingsPageRow = {
   /** The sub-page this row opens. `index` is the page you are already on. */
   id: Exclude<SettingsPageId, 'index'>;
   /** A key into the string table, resolved by the screen (`t.settings.pages.*`). */
-  title: string;
+  title: SettingsPageTitleKey;
   /** One sentence saying what is inside. Never a bare noun. */
-  help: string;
+  help: SettingsPageHelpKey;
   /**
    * Whether the row sits UNDER the previous row (the user's "sibling row under Agent Preferences").
    *
@@ -228,4 +237,56 @@ export function keysAreGeometricallyPlain(keys: readonly string[]): boolean {
 export function rowIsGeometricallyPlain(row: SettingsPageRow): boolean {
   return keysAreGeometricallyPlain(pageRowStyleKeys(row));
 }
+
+// ──────────────────────────── S2 (0.9.1): ONE back control, in the header, walking this plan ──
+
+/**
+ * Where the single back control goes from each page.
+ *
+ * the user, 2026-10-13: *"the back arrow should be the top, the UI should not introduce a new one."* 0.9.0
+ * drew TWO: the Stack header's arrow, and a `backRow` in the body of every sub-page hard-wired to
+ * `setPage('index')`. The body one could only ever reach the index — so "back" from Advanced skipped
+ * Gateway Settings, which is where Advanced is about to live (S3).
+ *
+ * `index: null` means **leave Settings**: the roster sits behind this route, which is what the header
+ * arrow has always done on the index. Every sub-page names its own parent. As data, so the header
+ * arrow, Android's hardware back and the suite all read ONE fact.
+ */
+export const SETTINGS_PAGE_PARENT: Record<SettingsPageId, SettingsPageId | null> = {
+  index: null,
+  agent: 'index',
+  notifications: 'index',
+  gateway: 'index',
+  advanced: 'gateway',
+};
+
+/** The page a back tap goes to, or `null` when it leaves Settings for the roster. */
+export function parentPage(id: SettingsPageId): SettingsPageId | null {
+  return SETTINGS_PAGE_PARENT[id] ?? null;
+}
+
+/** What one back tap does. The header arrow and Android's hardware back BOTH read this. */
+export type BackOutcome = { kind: 'page'; page: SettingsPageId } | { kind: 'leave' };
+
+export function backFrom(id: SettingsPageId): BackOutcome {
+  const parent = parentPage(id);
+  return parent === null ? { kind: 'leave' } : { kind: 'page', page: parent };
+}
+
+/** The row that draws a page, wherever it is drawn (the index, or inside a sub-page — see S3). */
+export function findPageRow(id: SettingsPageId): SettingsPageRow | null {
+  return SETTINGS_PAGE_ROWS.find((row) => row.id === id) ?? null;
+}
+
+/**
+ * The title the top bar shows for a page. The index shows the page's own title (`pagesTitle`); every
+ * other page shows its row's title — so the bar says where you are, and it is resolved LIVE, so a
+ * language switch follows it (`t` is a view over the current table).
+ */
+export function pageTitle(id: SettingsPageId): string {
+  if (id === 'index') return t.settings.pagesTitle;
+  const row = findPageRow(id);
+  return t.settings.pages[row ? row.title : 'agentTitle'];
+}
+
 
