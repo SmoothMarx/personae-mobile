@@ -368,6 +368,51 @@ export function isColdSessionRpc(error: ApiError): boolean {
   return detail.includes('session not found');
 }
 
+// ───────────────────────────────────────── 0.13.0 W3: the draft-session registry ──
+
+/**
+ * 0.13.0 W3 — the DRAFT registry: session ids THIS APP minted and has not yet successfully read.
+ *
+ * Why it exists. `GET /api/sessions/{id}/messages` answers the SAME body — `404`, detail
+ * `Session not found` — for an id the gateway has no record of AND for the different-profile case, so
+ * the response cannot tell a brand-new session from a real error. The app knows the one thing the body
+ * does not: whether IT minted the id. That is the discriminator, and it is the only one used — no
+ * string is filtered anywhere (a `filter(s => !s.includes('does not exist'))` is not the fix).
+ *
+ * Module-level on purpose, and outside every backend instance: the screen that CONSULTS it
+ * (`app/thread/[id].tsx`) holds a different `Backend` object than the roster that MINTED the id, so a
+ * per-instance field could never see the mark. Placement follows the MINT, not a file name — the only
+ * `createSession` implementations in the client are in this file (dashboard and legacy, below),
+ * reached from the roster through `app/index.tsx` → `src/roster/useRoster.ts` → `backend`.
+ *
+ * Lifecycle: marked when the app mints the id; cleared on the first successful READ or SUBMIT of that
+ * id. A `404` for a marked id renders an EMPTY THREAD; a `404` for an unmarked one surfaces the error
+ * card exactly as before.
+ */
+const draftSessions = new Set<string>();
+
+/** Mark an id this app just minted. */
+export function markDraftSession(id: string): void {
+  const key = String(id ?? '');
+  if (key) draftSessions.add(key);
+}
+
+/** Did THIS app mint this id and not yet read or submit it successfully? */
+export function isDraftSession(id: string): boolean {
+  const key = String(id ?? '');
+  return Boolean(key) && draftSessions.has(key);
+}
+
+/** The first successful read or submit of an id retires its draft mark. */
+export function clearDraftSession(id: string): void {
+  draftSessions.delete(String(id ?? ''));
+}
+
+/** Test seam: the registry is module-level, so a test needs a clean slate. */
+export function __resetDraftSessions(): void {
+  draftSessions.clear();
+}
+
 function createDashboardBackend(settings: Settings): Backend {
   const client = createDashboardClient(settings, {});
   let socket: DashboardSocket | null = null;
@@ -668,6 +713,10 @@ function createDashboardBackend(settings: Settings): Backend {
       const result = await live.rpc<Record<string, unknown>>('session.create', title.trim() ? { title: title.trim() } : {});
       const id = String(result.session_id ?? result.id ?? '');
       if (!id) throw new ApiError(t.errors.server(500, t.errors.sessionNoId), { kind: 'http', status: 500 });
+      // 0.13.0 W3 — the id is REAL to this app and not yet real to the gateway. Mark it a draft, so a
+      // 404 on the first read renders an empty thread instead of an error card. Cleared by the thread
+      // screen on the first successful read or submit.
+      markDraftSession(id);
       return { id, title: title.trim() || null, message_count: 0, last_active: Date.now() / 1000 };
     },
 
@@ -1136,6 +1185,9 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
 
     async createSession(title, profile = '') {
       const body = await api.createSession(title, profile);
+      // 0.13.0 W3 — the same mark on the legacy surface: this is still the APP's own mint, and the
+      // registry follows the mint wherever it happens.
+      if (body?.session?.id) markDraftSession(body.session.id);
       return body.session;
     },
 

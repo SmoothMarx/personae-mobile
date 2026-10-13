@@ -22,7 +22,14 @@ import { unified } from 'unified';
 import { createMockGateway } from '../mock/server.mjs';
 import { createMockDashboard, profileFixture, sessionFixture } from '../mock/dashboard.mjs';
 import { createDashboardClient, type GatewayEvent, type PreferenceDocument } from '../src/api/dashboard';
-import { createBackend, isColdSessionRpc } from '../src/api/backend';
+import {
+  __resetDraftSessions,
+  clearDraftSession,
+  createBackend,
+  isColdSessionRpc,
+  isDraftSession,
+  markDraftSession,
+} from '../src/api/backend';
 import { SSEParser, parseFrame } from '../src/api/sse';
 import { createApi } from '../src/api/client';
 import { nodeTransport } from '../src/api/transportNode';
@@ -7789,6 +7796,78 @@ async function main(): Promise<void> {
     assert.match(backendSrc, /if \(normalized\.status === 4007\)/, 'the text path keeps its 4007 branch');
     assert.match(backendSrc, /if \(normalized\.status === 4009\)/, 'and its 4009 branch');
     assert.match(backendSrc, /'file\.attach'/, 'the same RPC name it always used');
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.13.0 W3 — the new-session 404. The gateway answers the SAME `404` + `Session not found` for a
+  // fresh id and for the different-profile case, so the body cannot discriminate; the app's own
+  // provenance can, and that is the only thing the rule reads.
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  test('0.13.0 W3: a 404 is a draft ONLY for an id this app minted - and the double banner is left alone', async () => {
+    // (a) the registry's own semantics — module-level, exact, and empty-safe
+    __resetDraftSessions();
+    assert.equal(isDraftSession(''), false, 'an empty id is never a draft');
+    assert.equal(isDraftSession('sess-9'), false, 'an id nobody minted is not a draft');
+    markDraftSession('sess-9');
+    assert.equal(isDraftSession('sess-9'), true);
+    markDraftSession('');
+    assert.equal(isDraftSession(''), false, 'marking nothing marks nothing');
+    clearDraftSession('sess-9');
+    assert.equal(isDraftSession('sess-9'), false, 'a successful read or submit retires the mark');
+
+    // (b) a REAL mint marks, and the REAL 404 keeps its sentence intact
+    const mock = createMockDashboard({ port: 0, bearer: DASH_BEARER });
+    await mock.listen();
+    const backend = createBackend(settingsFor(mock.url, { apiKey: DASH_BEARER }));
+    try {
+      const created = await backend.createSession('Nova conversa');
+      assert.ok(created.id, 'the socket mint answered an id');
+      assert.equal(isDraftSession(created.id), true, 'the app knows it minted this id — that is the whole rule');
+      await expectApiError(
+        () => backend.messages(created.id, 'default'),
+        (error) => {
+          assert.equal(error.status, 404);
+          // The banner is the SAME double sentence the user saw — `notFound(detail)` from the error
+          // ladder, with the `technical` line appended by the getter. Nothing here is filtered: the
+          // fix removes the SOURCE (a draft is no longer an error), not the words.
+          assert.equal(
+            error.message,
+            t.errors.notFound(`Session not found: ${created.id}`),
+            'the banner is the unchanged error ladder, composing the server detail verbatim',
+          );
+          assert.match(error.technical, /^HTTP 404 · Session not found: /, 'and the technical line still follows it');
+        },
+      );
+      assert.equal(isDraftSession(created.id), true, 'a FAILED read does not clear the mark — that is the draft case');
+      assert.equal(isDraftSession('sess-9'), false, 'and an id the app never minted is never a draft');
+      // A session the gateway DOES hold reads normally (the mark is not the thing that makes a read work)
+      const rows = await backend.messages('sess-1', 'default');
+      assert.ok(Array.isArray(rows) && rows.length > 0);
+      assert.equal(isDraftSession('sess-1'), false, 'reading someone else id never marks it');
+    } finally {
+      backend.dispose();
+      await mock.close();
+    }
+
+    // (c) the screen's consult is the ONLY change in its error path, and no string is filtered anywhere
+    const src = threadSource();
+    assert.match(src, /if \(normalized\.status === 404 && isDraftSession\(sessionId\)\) \{/, 'the 404 branch reads the registry');
+    assert.equal(
+      (src.match(/clearDraftSession\(sessionId\)/g) ?? []).length,
+      2,
+      'cleared on the first successful READ and on the first successful SUBMIT',
+    );
+    assert.ok(!/includes\('does not exist'\)/.test(src), 'no string filtering in the thread screen');
+    const errorsSrc = readFileSync(join(process.cwd(), 'src', 'api', 'errors.ts'), 'utf8');
+    assert.ok(!/includes\('does not exist'\)/.test(errorsSrc), 'and none in the error ladder');
+    assert.match(errorsSrc, /const what = serverMessage \|\| t\.errors\.resource;/, 'the 404 path is untouched');
+    // (d) the string itself still exists, unmodified — the fix removed its SOURCE, not its words
+    assert.equal(
+      stringsFor('en').errors.notFound('Session not found'),
+      'Session not found does not exist on the gateway (404).',
+    );
+    __resetDraftSessions();
   });
 
   // ─────────────────────────────────────────────────────── report ──

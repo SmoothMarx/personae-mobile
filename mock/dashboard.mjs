@@ -234,6 +234,8 @@ export function createMockDashboard(options = {}) {
   const tickets = new Map();
   const sockets = new Set();
   let seq = 0;
+  /** 0.13.0 W3 — how many sessions the socket-mint handed out (the draft registry's own witness). */
+  let mintedSessions = 0;
   const events = []; // what the fake dispatch emitted, for assertions
   /** The port actually bound; `config.port === 0` means the OS picks a free one. */
   let boundPort = config.port;
@@ -334,6 +336,22 @@ export function createMockDashboard(options = {}) {
 
     if (method === 'session.interrupt') {
       socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { ok: true, interrupted: true } })}\n`));
+      return;
+    }
+
+    /**
+     * 0.13.0 W3 — `session.create`: the dashboard mints sessions over the socket, and this is the id
+     * the app must remember as a DRAFT until the gateway can answer for it. Answered here so the draft
+     * registry can be driven from a REAL mint rather than a hand-written id.
+     */
+    if (method === 'session.create') {
+      mintedSessions += 1;
+      const newSessionId = `sess-new-${mintedSessions}`;
+      socket.write(
+        encodeFrame(
+          `${JSON.stringify({ jsonrpc: '2.0', id, result: { session_id: newSessionId, title: String(params.title || '') } })}\n`,
+        ),
+      );
       return;
     }
 

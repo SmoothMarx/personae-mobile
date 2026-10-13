@@ -42,7 +42,9 @@ import * as Clipboard from 'expo-clipboard';
 import { CameraView, useCameraPermissions } from 'expo-camera';
 
 import type { HermesMessage } from '../../src/api/client';
-import type { LiveTool } from '../../src/api/backend';
+// 0.13.0 W3 — the draft registry: the screen CONSULTS it on a 404 and CLEARS it on the first
+// successful read or submit. The mark is written by the mint, in `src/api/backend.ts`.
+import { clearDraftSession, isDraftSession, type LiveTool } from '../../src/api/backend';
 import { ApiError, normalizeError } from '../../src/api/errors';
 import type { StreamHandle } from '../../src/api/transport';
 import { formatTime } from '../../src/format';
@@ -264,8 +266,26 @@ export default function ThreadScreen() {
         if (title) setLoadedTitle(title);
         setLoadError(null);
         setStatus('ready');
+        // 0.13.0 W3 — the FIRST successful read retires this id's draft mark: from here on a 404 for
+        // it is the error card again (a session genuinely gone, or one under another profile).
+        clearDraftSession(sessionId);
       } catch (error) {
-        setLoadError(normalizeError(error));
+        const normalized = normalizeError(error);
+        /**
+         * 0.13.0 W3 — a 404 on an id THIS APP minted is a DRAFT, not an error.
+         *
+         * The gateway answers the same `404` + `Session not found` for a fresh id and for the
+         * different-profile case, so the BODY cannot discriminate; the app can, because it knows
+         * whether it minted the id. That is the only discriminator used — nothing is filtered out of
+         * the banner, and the error card below is untouched for every other id.
+         */
+        if (normalized.status === 404 && isDraftSession(sessionId)) {
+          setMessages([]);
+          setLoadError(null);
+          setStatus('ready');
+          return;
+        }
+        setLoadError(normalized);
         setStatus('error');
       }
     },
@@ -531,6 +551,9 @@ export default function ThreadScreen() {
         },
         profile,
       );
+      // 0.13.0 W3 — a turn that STARTED is a successful use of the id, so the draft mark retires here
+      // too (the other half of "cleared on the first successful read OR submit").
+      clearDraftSession(sessionId);
       return { ok: true, reason: null };
     },
     [backend, finishTurn, profile, sessionId],
