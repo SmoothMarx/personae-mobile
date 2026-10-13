@@ -7642,6 +7642,58 @@ async function main(): Promise<void> {
     }
   });
 
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.13.0 W1 — the voice banner stops lying. the user's Pixel 8 showed "The recording failed: the
+  // turn did not start" while the app already held the real reason (PROGRESS.md, the recon chain).
+  // The suite cannot render the screen (`app/*.tsx` has no renderer here), so the rule is asserted
+  // against the screen's own bytes — the same shape every earlier screen rule uses.
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  test('0.13.0 W1: the reason travels as data - ONE writer for the note, and the generic sentence is a fallback', () => {
+    const src = threadSource();
+    // (a) the declaration is a structured RESULT, not a boolean
+    assert.match(
+      src,
+      /async \(input: \{ text: string; attachments: StagedAttachment\[\] \}\): Promise<TurnResult>/,
+      'submitTurn returns the outcome as data',
+    );
+    assert.match(src, /type TurnResult = \{ ok: boolean; reason: string \| null \};/);
+    // (b) the write that DESTROYED the reason is gone from inside submitTurn
+    assert.ok(
+      !/setAttachNote\(normalizeError\(error\)\.message\)/.test(src),
+      'submitTurn no longer writes the note slot — the caller is its only writer',
+    );
+    assert.match(src, /return \{ ok: false, reason: normalizeError\(error\)\.message \};/);
+    assert.match(src, /return \{ ok: true, reason: null \};/);
+    // (c) EVERY call site consumes it, and none reads a bare boolean any more
+    assert.equal((src.match(/await submitTurn\(/g) ?? []).length, 2, 'the voice path and the text path');
+    assert.ok(!/const accepted = await submitTurn/.test(src), 'no call site still reads a boolean');
+    assert.equal((src.match(/turn\.ok/g) ?? []).length, 2, 'both call sites branch on `.ok`');
+    assert.ok(!/if \(!accepted\)/.test(src), 'and neither branches on a bare false');
+    // (d) the generic sentence survives EXACTLY ONCE, and only as the fallback for an empty reason
+    assert.equal(
+      (src.match(/the turn did not start/g) ?? []).length,
+      1,
+      'the generic sentence is the fallback, not a label handed to a failure that knows its reason',
+    );
+    assert.match(src, /const reason = \(turn\.reason \?\? ''\)\.trim\(\);/);
+    assert.match(
+      src,
+      /reason \? t\.thread\.voice\.recordFailed\(reason\) : t\.thread\.voice\.recordFailed\('the turn did not start'\)/,
+      'the real reason first, the generic sentence only when the reason is empty',
+    );
+    // (e) the clear on SUCCESS is new code (the five note writes were all failures) and exists on BOTH paths
+    assert.ok(
+      (src.match(/setAttachNote\(null\)/g) ?? []).length >= 2,
+      'a successful turn clears a stale note on both call sites',
+    );
+    // (f) the i18n key is still defined, in both tables
+    const en = stringsFor('en').thread.voice.recordFailed('X');
+    const pt = stringsFor('pt').thread.voice.recordFailed('X');
+    assert.equal(en, 'The recording failed: X');
+    assert.ok(pt.includes('X') && pt !== en, 'the pt-BR definition survives and is its own sentence');
+  });
+
   // ─────────────────────────────────────────────────────── report ──
   let index = 0;
   for (const item of tests) {
