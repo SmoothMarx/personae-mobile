@@ -60,6 +60,10 @@ export type SettingsPageRow = {
  * The index, in order. **Notifications is a sibling of Agent Preferences** — it is not a top-bar
  * destination of its own, and it is not a sixth icon: it lives inside Settings, one row under the
  * preferences it belongs with.
+ *
+ * 0.9.1 S3: **Advanced is no longer an index row.** the user, 2026-10-13: *"The 'advanced' page should be
+ * inside the 'Gateway Settings'."* It moved, with its contents byte-for-byte unchanged, into
+ * `SUBPAGE_ROWS.gateway` below.
  */
 export const SETTINGS_PAGE_ROWS: readonly SettingsPageRow[] = [
   {
@@ -86,15 +90,39 @@ export const SETTINGS_PAGE_ROWS: readonly SettingsPageRow[] = [
     scope: 'device-local',
     always: true,
   },
-  {
-    id: 'advanced',
-    title: 'advancedTitle',
-    help: 'advancedHelp',
-    sibling: false,
-    scope: 'device-local',
-    always: true,
-  },
 ];
+
+/**
+ * 0.9.1 S3 — the rows drawn INSIDE a sub-page. Today exactly one: **Advanced, inside Gateway Settings**.
+ *
+ * It is the same `SettingsPageRow` shape the index uses, so the row is rendered by the same code and
+ * carries the same scope chip, title and help sentence — a move, not a rewrite. The advanced page's
+ * CONTENTS were not touched: connection type, address, key, routes, tailnet internals, status and the
+ * log are what 0.9.0 shipped. Its scope stays `device-local`, which is right: it holds the address,
+ * the key and this device's routes.
+ *
+ * Being here (rather than gone) is what the suite is asked to prove: the index has no advanced row,
+ * Gateway Settings has exactly one row that opens it, and `parentPage('advanced') === 'gateway'` (S2),
+ * so the single header arrow returns here.
+ */
+export const SUBPAGE_ROWS: Partial<Record<SettingsPageId, readonly SettingsPageRow[]>> = {
+  gateway: [
+    {
+      id: 'advanced',
+      title: 'advancedTitle',
+      help: 'advancedHelp',
+      sibling: false,
+      scope: 'device-local',
+      always: true,
+    },
+  ],
+};
+
+/** The rows a sub-page draws, in order. Empty for a page that has none. */
+export function subPageRows(id: SettingsPageId): SettingsPageRow[] {
+  return (SUBPAGE_ROWS[id] ?? []).filter((row) => row.always);
+}
+
 
 export function settingsRows(): SettingsPageRow[] {
   return SETTINGS_PAGE_ROWS.filter((row) => row.always);
@@ -173,7 +201,7 @@ export function scopeOfSetting(id: string): PreferenceScope | 'unknown' {
  * honest word, and the reason the row's help text has to name the exception.
  */
 export function scopeOfRow(page: Exclude<SettingsPageId, 'index'>): PreferenceScope {
-  const row = SETTINGS_PAGE_ROWS.find((entry) => entry.id === page);
+  const row = findPageRow(page);
   return row ? row.scope : 'device-local';
 }
 
@@ -273,9 +301,15 @@ export function backFrom(id: SettingsPageId): BackOutcome {
   return parent === null ? { kind: 'leave' } : { kind: 'page', page: parent };
 }
 
-/** The row that draws a page, wherever it is drawn (the index, or inside a sub-page — see S3). */
+/** The row that draws a page, wherever it is drawn: the index, or inside a sub-page (S3). */
 export function findPageRow(id: SettingsPageId): SettingsPageRow | null {
-  return SETTINGS_PAGE_ROWS.find((row) => row.id === id) ?? null;
+  const onIndex = SETTINGS_PAGE_ROWS.find((row) => row.id === id);
+  if (onIndex) return onIndex;
+  for (const rows of Object.values(SUBPAGE_ROWS)) {
+    const found = (rows ?? []).find((row) => row.id === id);
+    if (found) return found;
+  }
+  return null;
 }
 
 /**

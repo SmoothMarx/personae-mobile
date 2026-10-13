@@ -27,6 +27,7 @@ import {
   pageRowStyleKeys,
   pageTitle,
   settingsRows,
+  subPageRows,
   type PreferenceScope,
   type SettingsPageId,
   type SettingsPageRow,
@@ -710,6 +711,29 @@ export default function SettingsScreen() {
           </Pressable>
         </Pressable>
       </Modal>
+
+      {/* 0.9.1 S3 — Advanced, drawn HERE now: one row in the same `pageRow` shape the index uses, so
+          the move changed where it lives and nothing about how it looks. It opens the same page
+          (`setPage('advanced')`), the advanced contents are untouched, and S2's parent map sends the
+          single header arrow back to THIS page rather than to the index. */}
+      {subPageRows('gateway').map((row) => (
+        <Pressable
+          key={row.id}
+          onPress={() => setPage(row.id)}
+          accessibilityRole="button"
+          accessibilityLabel={`${t.settings.pages[row.title]} — ${t.settings.pages[row.help]}`}
+          style={({ pressed }) => [styles.pageRow, ...rowModifiers(row), pressed && styles.pressed]}
+        >
+          <View style={styles.pageRowText}>
+            <Text style={styles.label}>{t.settings.pages[row.title]}</Text>
+            <Text style={styles.help}>{t.settings.pages[row.help]}</Text>
+          </View>
+          <View style={styles.scopeChip}>
+            <Text style={styles.scopeChipText}>{scopeLabel(row.scope)}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+        </Pressable>
+      ))}
 
         </>
       ) : null}

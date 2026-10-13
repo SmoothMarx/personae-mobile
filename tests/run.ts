@@ -258,6 +258,7 @@ import {
   SCOPE_LABEL_KEY,
   SETTINGS_PAGE_PARENT,
   backFrom,
+  findPageRow,
   keysAreGeometricallyPlain,
   pageRowStyleKeys,
   pageTitle,
@@ -267,6 +268,7 @@ import {
   scopeOfSetting,
   settingsRows,
   siblingBelow,
+  subPageRows,
   visiblePageIds,
 } from '../src/settingsPages';
 import { PLUS_KEYS, profileFromPickerKey, profilePickerEntries, profileSlug, plusMenuEntries } from '../src/roster/plusMenu';
@@ -4693,12 +4695,15 @@ async function main(): Promise<void> {
 
   test('0.9.0 B: Settings is a page of rows, and Notifications is a SIBLING of Agent Preferences', () => {
     const rows = settingsRows();
+    // SUPERSEDED IN 0.9.1 (S3): this read `['agent', 'notifications', 'gateway', 'advanced']`. the user
+    // asked for Advanced to live INSIDE Gateway Settings, so it stopped being an index row — see the
+    // 0.9.1 S3 test, which proves it moved rather than vanished.
     assert.deepEqual(
       rows.map((row) => row.id),
-      ['agent', 'notifications', 'gateway', 'advanced'],
+      ['agent', 'notifications', 'gateway'],
       'the index is a list of section rows, in this order',
     );
-    assert.deepEqual(visiblePageIds(), ['agent', 'notifications', 'gateway', 'advanced']);
+    assert.deepEqual(visiblePageIds(), ['agent', 'notifications', 'gateway']);
     assert.equal(siblingBelow('notifications'), 'agent', 'Notifications sits UNDER Agent Preferences');
     assert.equal(siblingBelow('gateway'), null, 'Gateway Settings is a top-level row, not a sibling');
     assert.equal(rows.filter((row) => row.sibling).length, 1, 'exactly one row is a sibling');
@@ -4747,8 +4752,9 @@ async function main(): Promise<void> {
     // …and the two classes are disjoint by construction, so no setting is both
     const both = PORTABLE_SETTING_IDS.filter((id) => (DEVICE_LOCAL_SETTING_IDS as readonly string[]).includes(id));
     assert.deepEqual(both, []);
-    // the advanced disclosure survives as its own row, with its own page
-    assert.ok(settingsRows().some((row) => row.id === 'advanced'));
+    // the advanced disclosure survives as its own row, with its own page — SUPERSEDED IN 0.9.1 (S3):
+    // it survived the move too, one level down inside Gateway Settings.
+    assert.ok(subPageRows('gateway').some((row) => row.id === 'advanced'), 'the Advanced row still exists, inside Gateway');
     assert.equal(ADVANCED_OPEN_BY_DEFAULT, false, '0.7.0\'s closed-by-default disclosure is untouched');
     assert.ok(visibleFieldIds(true).length >= visibleFieldIds(false).length);
   });
@@ -4989,6 +4995,50 @@ async function main(): Promise<void> {
     assert.match(code, /router\.canGoBack\(\)/, 'the index leaves for the roster, with a fallback for a bare deep link');
     // and the deletion is documented where it happened, so the next reader knows why the body is bare
     assert.match(src, /backRow/);
+  });
+
+  test('0.9.1 S3: Advanced moved INSIDE Gateway Settings — it did not vanish', () => {
+    // the index no longer offers it…
+    assert.ok(!settingsRows().some((row) => row.id === 'advanced'), 'no Advanced row on the index');
+    assert.ok(!visiblePageIds().includes('advanced'));
+    assert.deepEqual(settingsRows().map((row) => row.id), ['agent', 'notifications', 'gateway']);
+    // …and Gateway Settings has exactly ONE row, which opens exactly the advanced page
+    const gatewayRows = subPageRows('gateway');
+    assert.equal(gatewayRows.length, 1, 'exactly one row inside Gateway Settings');
+    assert.equal(gatewayRows[0].id, 'advanced');
+    assert.equal(gatewayRows[0].title, 'advancedTitle');
+    assert.equal(gatewayRows[0].help, 'advancedHelp');
+    assert.ok(!gatewayRows[0].sibling, 'it is a plain row, not an indented one (S1)');
+    assert.deepEqual(pageRowStyleKeys(gatewayRows[0]), [], 'and it is laid out like every other row');
+    // every other page draws none
+    for (const id of ['agent', 'notifications', 'advanced', 'index'] as const) {
+      assert.deepEqual(subPageRows(id), [], `${id} draws no sub-rows`);
+    }
+    // the single back arrow returns HERE, not to the index (S2's map)
+    assert.equal(parentPage('advanced'), 'gateway');
+    assert.deepEqual(backFrom('advanced'), { kind: 'page', page: 'gateway' });
+    // the row is reachable from the plan, wherever it is drawn
+    assert.equal(findPageRow('advanced')?.id, 'advanced', 'the advanced page still has a row that describes it');
+    assert.equal(pageTitle('advanced'), t.settings.pages.advancedTitle);
+    // its scope is unchanged: the address, the key and this device's routes never sync
+    assert.equal(gatewayRows[0].scope, 'device-local', 'the moved row carries the same scope chip');
+    assert.equal(scopeOfRow('advanced'), 'device-local', 'and the page still resolves to device-local');
+    // THE PROOF IT WAS A MOVE: the screen draws the sub-page row with the SAME shape as an index row —
+    // same style token, same three parts (label, help, chevron), no new component and no new style.
+    const code = settingsCode();
+    assert.match(code, /\{subPageRows\('gateway'\)\.map\(\(row\) => \(/);
+    assert.match(code, /\[styles\.pageRow, \.\.\.rowModifiers\(row\), pressed && styles\.pressed\]/, 'the same row style');
+    assert.match(code, /setPage\(row\.id\)/, 'and it opens the page the plan names');
+    assert.ok(!/style=\{styles\.advancedRow\}|\{styles\.subPageRow\}/.test(code), 'no new style was invented for it');
+    // the gateway row's own help sentence now says Advanced is inside it (EN; the PT table is untouched)
+    assert.match(stringsFor('en').settings.pages.gatewayHelp, /Advanced lives inside this page/);
+    // and the advanced page's own content is untouched — 0.7.0's disclosure is still there, still closed
+    assert.ok(code.includes("{page === 'advanced' ? ("), 'the advanced page still exists and still renders');
+    assert.equal(ADVANCED_OPEN_BY_DEFAULT, false);
+    assert.deepEqual(advancedFieldIds(), [
+      'surface', 'baseUrl', 'apiKey', 'profiles', 'model', 'routes',
+      'tailscalePackage', 'deadlines', 'openOnFailure', 'diagnostics', 'testConnection', 'log',
+    ], 'the advanced contents are exactly what 0.9.0 shipped');
   });
 
   // ─────────────────────────────────────────────────────── report ──

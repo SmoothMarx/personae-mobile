@@ -356,7 +356,7 @@ const en = {
       notificationsTitle: 'Notifications',
       notificationsHelp: 'Which checkpoints warn you, and the phone permission they need.',
       gatewayTitle: 'Gateway Settings',
-      gatewayHelp: 'How this phone reaches the gateway: pairing, Tailscale, address and key.',
+      gatewayHelp: 'How this phone reaches the gateway: pairing, Tailscale, address and key. Advanced lives inside this page.',
       advancedTitle: 'Advanced',
       advancedHelp: 'Connection type, address, key, routes, tailnet internals, status and the log.',
     },
