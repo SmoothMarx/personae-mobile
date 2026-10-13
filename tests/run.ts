@@ -7976,6 +7976,20 @@ async function main(): Promise<void> {
     assert.match(bootSrc, /normalized\.isAuth/, 'the refusal is the EXISTING classifier, not a second one');
     const settingsSrc = readFileSync(join(process.cwd(), 'app', 'settings.tsx'), 'utf8');
     assert.match(settingsSrc, /update\(disconnectPatch\(\)\)/, 'the Disconnect action applies the ONE patch');
+    // (i) THE GATE. `shouldAutoOpen` must never be asked of the NOT-YET-LOADED settings: on the first
+    // render `settings` is `DEFAULT_SETTINGS`, and the old code answered "nothing is configured" for a
+    // phone that is fully configured — a race the Pixel 8 measured (the wizard for a connected phone).
+    assert.match(
+      indexSrc,
+      /if \(!settingsReady \|\| !configured \|\| probed\.current\) return undefined;/,
+      'the boot probe waits for loaded settings',
+    );
+    assert.match(
+      indexSrc,
+      /if \(!settingsReady\) return undefined;/,
+      'and so does the wizard auto-open — it may never ask "is anything configured" of the defaults',
+    );
+    assert.match(indexSrc, /\}, \[settings, settingsReady, router\]\);/, 'and the gate is in the effect deps, so it re-decides once they arrive');
   });
 
   // ─────────────────────────────────────────────────────── report ──

@@ -163,6 +163,19 @@ export default function RosterScreen() {
    */
   const autoOpened = useRef(false);
   useEffect(() => {
+    /**
+     * 0.13.0 W4 — THE GATE. This question may only be asked of LOADED settings, and until now it was
+     * not: on the first render `settings` is still `DEFAULT_SETTINGS` (no `baseUrl`, no `routes`), and
+     * `shouldAutoOpen` answered "nothing is configured" for a phone that is fully configured. The
+     * decision then raced the settings load — measured on the Pixel 8 with a diagnostic build
+     * (`[boot-diag] S3 {"dismissedAt":null,...,"baseUrl":"","routes":0}` on frame 1, while the boot
+     * machine's own log two frames later said `stage profiles {configured:true, key:true}` — so some
+     * cold launches opened the wizard for a connected phone and some did not.
+     *
+     * The gate makes the race unwinnable by the wrong side: no `settingsReady`, no decision. The
+     * no-credentials case is still reached — the boot machine below sends it to the same screen.
+     */
+    if (!settingsReady) return undefined;
     if (autoOpened.current) return undefined;
     let live = true;
     void loadWizardState().then((state) => {
@@ -174,7 +187,7 @@ export default function RosterScreen() {
     return () => {
       live = false;
     };
-  }, [settings, router]);
+  }, [settings, settingsReady, router]);
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(clearNotice, 4000);
