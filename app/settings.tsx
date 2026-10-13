@@ -18,7 +18,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createBackend } from '../src/api/backend';
 import { normalizeError } from '../src/api/errors';
 import ConnectWizard from '../src/connect/Wizard';
-import { connectionLabel, connectionRows } from '../src/gateway/connections';
+import { connectionLabel, connectionRows, selectionAfterDelete } from '../src/gateway/connections';
 import { deleteRoute, manualAdd, renameRoute } from '../src/gateway/manage';
 import { gatewaySections, pillOptions, statusFields, type GatewaySectionId } from '../src/gateway/plan';
 import { readGatewayStatus, statusUrl, type GatewayStatus } from '../src/gateway/status';
@@ -42,7 +42,6 @@ import { parseErrorForDisplay } from '../src/api/display';
 import { xhrTransport } from '../src/api/transport';
 import { useConnectivity } from '../src/ConnectivityContext';
 import { screenInsets } from '../src/insets';
-import { formatTime } from '../src/format';
 import { t } from '../src/i18n';
 import { revokeSelf } from '../src/pairing';
 import { useRouter, Stack } from 'expo-router';
@@ -87,7 +86,7 @@ type TestResult = { label: string; probe: Probe; ms: number | null; detail: stri
  */
 
 export default function SettingsScreen() {
-  const { settings, ready, savedAt, update } = useSettings();
+  const { settings, ready, update } = useSettings();
   const router = useRouter();
   const [form, setForm] = useState<Settings>(DEFAULT_SETTINGS);
   const [profilesText, setProfilesText] = useState('');
@@ -646,7 +645,11 @@ export default function SettingsScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.pageTitle}>{t.settings.pagesTitle}</Text>
-          <Text style={styles.help}>{t.settings.pagesHelp}</Text>
+          {/* 0.10.1 S8 — "Each row opens its own page. Everything below it is unchanged." rendered
+              here and is DELETED, with its EN key. the user, 2026-10-13: *"remove 'Each row opens...'
+              text"*. The title STAYS — the screen keeps its name, it just stops explaining itself —
+              and each ROW keeps its own `t.settings.pages[row.help]` sentence, which is a different
+              thing entirely and is read by the accessibility label below. */}
           {settingsRows().map((row) => (
             <Pressable
               key={row.id}
@@ -687,12 +690,12 @@ export default function SettingsScreen() {
             body starts with the page's own content. It used to open with `backRow`, a second back arrow
             wired to `setPage('index')`, which is why the user saw two. The page's name is no longer
             repeated here either: the header title says where you are. */}
-        <Text style={styles.hint}>{t.settings.autoSave}</Text>
-      {savedAt ? (
-        <Text style={styles.savedLine}>
-          {t.settings.saved} · {formatTime(savedAt)}
-        </Text>
-      ) : null}
+        {/* 0.10.1 S4 — "Each field saves itself." and "Saved 12:31" USED TO RENDER HERE, on every
+            settings page. the user, 2026-10-13: *"Remove 'each field saves itself' text"* and *"Remove
+            'Saved MM:SS' text"*. Both were page chrome — they sat below the page ScrollView's close
+            and above the `page === 'gateway'` block — so the removal is GLOBAL, not Gateway-only:
+            there is no page that wants either line. The saving behaviour is unchanged; only the two
+            lines explaining it are gone. */}
 
       {/* ── 0.9.0 B: GATEWAY SETTINGS — everything about reaching the gateway ── */}
       {page === 'gateway' ? (
@@ -706,48 +709,17 @@ export default function SettingsScreen() {
           </Pressable>
         </View>
       ) : null}
-      {/* ── 0.10.0 S1.1: the CONNECTIONS dropdown — one row per route, with its status dot (S2) ──
-          the user, 2026-10-13: *"A dropdown that lists all created connections (both local and remote)
-          along with a status dot indicating their connectivity status."* Each row IS a route (S0):
-          the kind noun, the address, and the dot. Tapping a row selects it — which is what the
-          status panel below is about. */}
-      <View style={styles.field}>
-        <Text style={styles.label}>{sectionText('connections', 'titleKey')}</Text>
-        <Text style={styles.help}>{sectionText('connections', 'helpKey')}</Text>
-        {rows.length ? (
-          rows.map((row) => (
-            <Pressable
-              key={row.url}
-              onPress={() => setSelectedIndex(row.index)}
-              accessibilityRole="button"
-              accessibilityLabel={`${connectionLabel(row.route)} — ${row.url}`}
-              style={({ pressed }) => [
-                styles.connRow,
-                row.index === selectedIndex && styles.connRowActive,
-                pressed && styles.pressed,
-              ]}
-            >
-              <View style={[styles.dot, dotStyle(dotState(row.url))]} />
-              <View style={styles.connText}>
-                <Text style={styles.connTitle} numberOfLines={1}>
-                  {connectionLabel(row.route)}
-                </Text>
-                <Text style={styles.help} numberOfLines={1}>
-                  {row.url}
-                </Text>
-              </View>
-              <Text style={styles.help}>{row.kind}</Text>
-            </Pressable>
-          ))
-        ) : (
-          <Text style={styles.help}>{t.routes.empty}</Text>
-        )}
-      </View>
+      {/* ── 0.10.1 S6 (2026-10-13): CONNECTION STATUS FIRST. the user's second message of the day:
+          *"Put \"Connection status\" section on top, \"Connections\" below, \"Local\" and \"Remote\" pills
+          underneath for prioritization."* That is the LATER word on the order and it SUPERSEDES the
+          reading his 0.10.0 §4 list implied — that list drew the dropdown first (its item 1) while item
+          2 of the same message already said "put it on the top". The order lives in
+          `src/gateway/plan.ts`, which is where the reason is recorded next to the value.
 
-      {/* ── 0.10.0 S1.2: CONNECTION STATUS — kept (his §3: it stays) and moved to the TOP of what
-          matters, populated from the SELECTED row (his §4) rather than from the route the engine is
-          using. The paired-device line and the one destructive verb that acts on the SERVER live
-          here, because that is the panel that describes this phone's identity. ── */}
+          The panel is still populated from the SELECTED row rather than from the route the engine is
+          using, and the paired-device line plus the destructive verbs that act on the SERVER (revoke
+          this device, remove this connection, 0.10.1 S5) still live here, because this is the panel
+          that describes the connection you picked. ── */}
       <View style={styles.field}>
         <Text style={styles.label}>{sectionText('status', 'titleKey')}</Text>
         <Text style={styles.help}>{sectionText('status', 'helpKey')}</Text>
@@ -782,6 +754,92 @@ export default function SettingsScreen() {
             </Pressable>
           </>
         ) : null}
+        {/* 0.10.1 S5 — "the user should be able to remove the route they created." The capability
+            already EXISTS, is already pure and is already tested (`deleteRoute`,
+            `tests/run.ts:5996-6020`: active→next, last→empty, dead-only→none-reachable, and a
+            credential-free `{routes, baseUrl, decision, empty}` patch). This is its SECOND call site
+            — on the panel that already owns the destructive verbs about the SELECTED connection —
+            and it reuses the three lines the Advanced editor uses, nothing more.
+
+            The index is the trap: `selectedRow.index` is the DRAWN index `connectionRows()` hands
+            back, which is the same space `deleteRoute` indexes after its own `orderRoutes()`. A raw
+            `form.routes` index silently deletes a DIFFERENT row whenever stored priority ≠ display
+            order, so it is never used here. `checking` is deliberately not `down` either: an
+            unprobed route stays eligible to be the next active one.
+
+            Rejected alternative, recorded in the 0.10.1 §3 decisions: a destructive control inside
+            EVERY connection row. Those rows' primary action is select, and a mis-tap in a picker
+            list is silent data loss with no undo. */}
+        {selectedRoute ? (
+          <Pressable
+            onPress={() =>
+              Alert.alert(t.routes.title, t.routes.removeConfirm(selectedRoute.url), [
+                { text: t.roster.cancel, style: 'cancel' },
+                {
+                  text: t.routes.remove,
+                  style: 'destructive',
+                  onPress: () => {
+                    const removedIndex = selectedRow ? selectedRow.index : selectedIndex;
+                    const patch = deleteRoute(form, removedIndex, (candidate) => dotStateOf(dots, candidate.url) !== 'down');
+                    saveRoutes(patch.routes);
+                    update({ baseUrl: patch.baseUrl });
+                    // The selection is RE-DERIVED from the patch, never decremented.
+                    setSelectedIndex(
+                      selectionAfterDelete(
+                        connectionRows({ ...form, routes: patch.routes, baseUrl: patch.baseUrl }),
+                        patch.baseUrl,
+                      ),
+                    );
+                  },
+                },
+              ])
+            }
+            accessibilityRole="button"
+            accessibilityLabel={`${t.routes.remove} — ${selectedRoute.url}`}
+            style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
+          >
+            <Text style={[styles.secondaryText, styles.dangerText]}>{t.routes.remove}</Text>
+          </Pressable>
+        ) : null}
+      </View>
+
+      {/* ── 0.10.1 S6: the CONNECTIONS dropdown comes SECOND now (it was first).
+          the user, 2026-10-13: *"A dropdown that lists all created connections (both local and remote)
+          along with a status dot indicating their connectivity status."* — kept, unchanged in shape,
+          and demoted below the status panel by his later instruction. One row per route: the kind
+          noun, the address, and the dot. Tapping a row SELECTS it, which is what the panel above is
+          about. ── */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{sectionText('connections', 'titleKey')}</Text>
+        <Text style={styles.help}>{sectionText('connections', 'helpKey')}</Text>
+        {rows.length ? (
+          rows.map((row) => (
+            <Pressable
+              key={row.url}
+              onPress={() => setSelectedIndex(row.index)}
+              accessibilityRole="button"
+              accessibilityLabel={`${connectionLabel(row.route)} — ${row.url}`}
+              style={({ pressed }) => [
+                styles.connRow,
+                row.index === selectedIndex && styles.connRowActive,
+                pressed && styles.pressed,
+              ]}
+            >
+              <View style={[styles.dot, dotStyle(dotState(row.url))]} />
+              <View style={styles.connText}>
+                <Text style={styles.connTitle} numberOfLines={1}>
+                  {connectionLabel(row.route)}
+                </Text>
+                <Text style={styles.help} numberOfLines={1}>
+                  {row.url}
+                </Text>
+              </View>
+              <Text style={styles.help}>{row.kind}</Text>
+            </Pressable>
+          ))
+        ) : (
+          <Text style={styles.help}>{t.routes.empty}</Text>
+        )}
       </View>
 
       {/* ── 0.10.0 S1.3: the pills — which KIND of connection to prefer. This IS
@@ -997,6 +1055,17 @@ export default function SettingsScreen() {
           under the title says plainly that nothing is switched off by any of this. */}
       <View style={styles.field}>
         <Text style={styles.label}>{t.settings.sessionTypes}</Text>
+        {/* 0.10.1 S7 — the help sentence sits DIRECTLY UNDER THE HEADING now. the user, 2026-10-13:
+            *"Move the 'What the session list...' text to underneath 'Display Session Types'."* It is a
+            pure render-order move: the sentence already existed and not one word changed. It used to
+            render BELOW the four boxes, while this block's own comment described the intended layout
+            ("the help text under the title says plainly that nothing is switched off by any of this")
+            — the render had drifted from the intent, so the render is what moved.
+
+            `typeNoneWarning` deliberately did NOT travel with it: that line reports a STATE the user
+            just created (nothing checked, so the list is empty), not an explanation of the section, so
+            it stays after the choices it talks about. Dragging it up here is this item's regression. */}
+        <Text style={styles.help}>{t.settings.sessionTypesHelp}</Text>
         {sessionTypeChoices(form.sessionTypes).map((choice) => {
           const { label, help } = TYPE_LABELS[choice.id];
           return (
@@ -1018,7 +1087,6 @@ export default function SettingsScreen() {
             </Pressable>
           );
         })}
-        <Text style={styles.help}>{t.settings.sessionTypesHelp}</Text>
         {anySessionType(form.sessionTypes) ? null : <Text style={styles.warning}>{t.settings.typeNoneWarning}</Text>}
       </View>
 
@@ -1398,9 +1466,10 @@ export default function SettingsScreen() {
         </View>
         <Text style={styles.help}>{t.routes.ackHelp}</Text>
 
-        {/* 0.10.0 S1.3 — the preferred-kind pills MOVED to the top of Gateway Settings (they are
-            the first thing after the status panel there). They are not drawn twice: one
-            `preferredRouteRole`, one control. The rule they encode is unchanged. */}
+        {/* 0.10.1 S6 — the preferred-kind pills are the THIRD section of Gateway Settings, below the
+            connections list (they moved to the top in 0.10.0 S1.3; the user's later instruction put the
+            status panel above the connections and the pills underneath them). They are not drawn
+            twice: one `preferredRouteRole`, one control. The rule they encode is unchanged. */}
       </View>
 
       {/* ── Ligação internals (Advanced): the knobs a user never reasons about ─ */}
@@ -1648,8 +1717,6 @@ const styles = StyleSheet.create({
   headerBack: { paddingVertical: space.xs, paddingRight: space.sm },
   screen: { flex: 1, backgroundColor: colors.bg },
   content: { padding: space.md, paddingBottom: space.xl * 2, gap: space.md },
-  hint: { color: colors.faint, fontSize: font.small },
-  savedLine: { color: colors.green, fontSize: font.small },
   field: {
     backgroundColor: colors.panel,
     borderRadius: radius.md,

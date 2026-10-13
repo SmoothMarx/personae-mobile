@@ -329,7 +329,6 @@ const en = {
     modelHelp: "Leave empty to use the gateway's default model.",
     effective: 'In use now',
     clear: 'Clear',
-    saved: 'Saved',
     savedKey: 'Key saved',
     clearKey: 'Delete key',
     clearKeyConfirm: 'Delete the API key saved on this phone?',
@@ -337,7 +336,6 @@ const en = {
     testing: 'Testing…',
     testOk: (v: string) => `Connection OK · version ${v}`,
     testFail: 'Failed',
-    autoSave: 'Each field saves itself.',
     showKey: 'Show',
     hideKey: 'Hide',
     valueSet: 'set',
@@ -362,7 +360,6 @@ const en = {
     advancedHide: 'Hide advanced settings',
     // ── 0.9.0 B: Settings as a page of rows ──────────────────────────────
     pagesTitle: 'Settings',
-    pagesHelp: 'Each row opens its own page. Everything below it is unchanged.',
     pages: {
       agentTitle: 'Agent Preferences',
       agentHelp: 'Which session types the list shows, and how the list is displayed.',
@@ -413,7 +410,6 @@ const en = {
     wizBranchRemoteHelp: 'From anywhere, through Tailscale.',
     wizAddressTitle: 'Address',
     wizIpLabel: 'IP address',
-    wizIpHelp: 'Numbers and dots only, for example 192.168.1.50. The app adds http:// itself.',
     wizPortLabel: 'Port',
     wizPortHelp: 'The port the dashboard listens on. Usually 9119.',
     wizHostLabel: 'Device name',
@@ -806,7 +802,6 @@ export const EN_ONLY_SETTINGS_KEYS = [
   'wizBranchRemoteHelp',
   'wizAddressTitle',
   'wizIpLabel',
-  'wizIpHelp',
   'wizPortLabel',
   'wizPortHelp',
   'wizHostLabel',
@@ -1135,7 +1130,6 @@ const pt: PtStrings = {
     modelHelp: 'Vazio usa o modelo por omissão do gateway.',
     effective: 'Em uso agora',
     clear: 'Limpar',
-    saved: 'Guardado',
     savedKey: 'Chave guardada',
     clearKey: 'Apagar chave',
     clearKeyConfirm: 'Apagar a chave de API guardada neste telefone?',
@@ -1143,7 +1137,6 @@ const pt: PtStrings = {
     testing: 'A testar…',
     testOk: (v: string) => `Ligação OK · versão ${v}`,
     testFail: 'Falhou',
-    autoSave: 'Cada campo é guardado sozinho.',
     showKey: 'Mostrar',
     hideKey: 'Esconder',
     valueSet: 'definido',
@@ -1168,7 +1161,6 @@ const pt: PtStrings = {
     advancedHide: 'Esconder definições avançadas',
     // ── 0.9.0 B: Settings as a page of rows ──────────────────────────────
     pagesTitle: 'Definições',
-    pagesHelp: 'Cada linha abre a sua própria página. Nada abaixo mudou.',
     pages: {
       agentTitle: 'Preferências do Agente',
       agentHelp: 'A língua desta app e que tipos de sessão aparecem na lista.',

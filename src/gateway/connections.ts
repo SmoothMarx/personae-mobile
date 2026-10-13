@@ -83,3 +83,26 @@ export function connectionRows(settings: Settings): ConnectionRow[] {
 export function rowForUrl(rows: ConnectionRow[], url: string): ConnectionRow | null {
   return rows.find((row) => row.url === url) ?? null;
 }
+
+/**
+ * Which row is selected after a delete (0.10.1 S5).
+ *
+ * the user, 2026-10-13: *"The user should be able to remove the route they created."* The panel that
+ * hosts the new verb — Connection Status — describes the **selected** row, so removing one has to
+ * re-derive the selection from what the delete left behind. `selectedIndex - 1` is the obvious-looking
+ * answer and it is wrong twice over: it points at the wrong row when the deleted row sat BELOW the
+ * selection, and it points past the end when the deleted row was the last one.
+ *
+ * The honest answer comes from the patch `deleteRoute` returns: the newly ACTIVE route
+ * (`patch.baseUrl`) is the row to select, and `-1` — nothing selected, and the status block then
+ * draws `t.settings.gwPickOne` — is what an emptied list gets.
+ *
+ * It lives HERE, beside `connectionRows()`, because UI state is not testable on this host: the suite
+ * can pin a pure function, not a `useState`.
+ */
+export function selectionAfterDelete(rows: ConnectionRow[], baseUrl: string): number {
+  const wanted = String(baseUrl ?? '');
+  if (!wanted) return -1;
+  const row = rowForUrl(rows, wanted);
+  return row ? row.index : -1;
+}

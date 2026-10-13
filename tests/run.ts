@@ -71,6 +71,7 @@ import {
 import { threadTitle } from '../src/logic/roster';
 import { peersPort, peerRoute, peersState, normalizePeers, type PeerRow } from '../src/logic/peers';
 import { isInlineWizard, wizardStepIds, wizardSteps, WIZARD_STEP_IDS } from '../src/connect/wizard';
+import { SERVICE_ENTRY_WITH_ADDRESS, addressFieldOpen, autoProbeTarget } from '../src/connect/wizard';
 import {
   ADVANCED_OPEN_BY_DEFAULT,
   PEER_LIST_MAX_HEIGHT,
@@ -278,7 +279,7 @@ import {
   visiblePageIds,
 } from '../src/settingsPages';
 import { PLUS_KEYS, profileFromPickerKey, profilePickerEntries, profileSlug, plusMenuEntries } from '../src/roster/plusMenu';
-import { connectionKind, connectionLabel, connectionRows } from '../src/gateway/connections';
+import { connectionKind, connectionLabel, connectionRows, selectionAfterDelete } from '../src/gateway/connections';
 import {
   STATUS_FIELD_IDS,
   gatewaySectionIds,
@@ -5427,13 +5428,18 @@ async function main(): Promise<void> {
   });
 
 
-  test('0.10.0 S1: the gateway page is a plan — connections, status, pills, wizard, Advanced last', async () => {
+  test('0.10.1 S6: the gateway page is a plan — status on top, connections below, pills, wizard, Advanced last', async () => {
     await inLanguage('en', () => {
-      // (a) the ORDER, top to bottom: the user's §3 (status stays, and moves up) and §4.
-      assert.deepEqual(gatewaySectionIds(), ['connections', 'status', 'pills', 'wizard', 'link', 'advanced']);
+      // (a) the ORDER, top to bottom. This assertion SUPERSEDES 0.10.0 S1's: the user's later instruction
+      // ("Put \"Connection status\" section on top, \"Connections\" below, \"Local\" and \"Remote\" pills
+      // underneath for prioritization", 2026-10-13) is the later word, and the 0.10.0 shape — which
+      // read his numbered §4 list as the order and drew the dropdown first — now contradicts it. The
+      // test's NAME changed with the assertion, so the supersession is legible in the diff instead of
+      // looking like a weakened invariant. Everything else in this test is unchanged.
+      assert.deepEqual(gatewaySectionIds(), ['status', 'connections', 'pills', 'wizard', 'link', 'advanced']);
       const at = (id: string) => (gatewaySectionIds() as string[]).indexOf(id);
-      assert.ok(at('connections') < at('status'), 'the dropdown is first');
-      assert.ok(at('status') < at('pills'), 'the status panel sits above the pills');
+      assert.ok(at('status') < at('connections'), 'the status panel is first');
+      assert.ok(at('connections') < at('pills'), 'the connections list sits between status and the pills');
       assert.ok(at('pills') < at('wizard'), 'the pills sit above the wizard button');
       assert.ok(at('wizard') < at('advanced'), 'the wizard button sits above Advanced');
       assert.equal(gatewaySectionIds()[gatewaySectionIds().length - 1], 'advanced', 'Advanced is LAST (his §4)');
@@ -5506,6 +5512,20 @@ async function main(): Promise<void> {
     // the screen is wired to the plan (no renderer on this host, so this half is source inspection)
     const code = settingsCode();
     assert.match(code, /gatewaySections\(\)/, 'the sections come from the plan');
+    // 0.10.1 S6 — and the PLAN's order is the SCREEN's order: the status block precedes the
+    // connections block in the file. Without this the two can drift apart silently, which is exactly
+    // how the 0.10.0 order survived a whole review cycle. Read from the RAW source, not
+    // `codeOnly`: the blocks are identified by their own header comments, and comments are stripped
+    // from `settingsCode()` — which is the mistake that made this check fail on the first pass.
+    {
+      const raw = settingsSource();
+      const statusAt = raw.indexOf('0.10.1 S6 (2026-10-13): CONNECTION STATUS FIRST');
+      const connAt = raw.indexOf('0.10.1 S6: the CONNECTIONS dropdown comes SECOND');
+      const pillsAt = raw.indexOf('0.10.0 S1.3: the pills');
+      assert.ok(statusAt > 0 && connAt > 0 && pillsAt > 0, 'all three gateway sections are still in the file');
+      assert.ok(statusAt < connAt, 'the status panel is drawn ABOVE the connections list');
+      assert.ok(connAt < pillsAt, 'and the pills follow the connections list');
+    }
     assert.match(code, /connectionRows\(/, 'the dropdown rows come from S0s reader');
     assert.match(code, /pillOptions\(/, 'the pills come from the plan');
     assert.match(code, /useState\(0\)/, 'the selection starts on the first row');
@@ -6144,6 +6164,286 @@ async function main(): Promise<void> {
       !/<ScrollView style=\{styles\.embedded\}/.test(code),
       'the embedded body is still not a scroller',
     );
+  });
+
+  test('0.10.1 S2: the scheme is a visible prefix on BOTH address fields, and the sentence is gone', async () => {
+    const code = wizardCode();
+    // (a) the literal `http://` is RENDERED, immediately before each input, inside the same row —
+    //     a string-table key would not be a visible prefix, which is why this is a source assertion.
+    for (const field of ['value={ip}', 'value={host}']) {
+      const at = code.indexOf(field);
+      assert.ok(at > 0, `${field} is drawn`);
+      const rowAt = code.lastIndexOf('<View style={styles.inputRow}>', at);
+      assert.ok(rowAt > 0 && rowAt < at, `${field} sits inside the compound row`);
+      const row = code.slice(rowAt, code.indexOf('</View>', at));
+      assert.match(row, /<Text style=\{styles\.inputPrefix\}>http:\/\/<\/Text>/, `${field} has the prefix`);
+      assert.ok(
+        row.indexOf('http://') < row.indexOf(field),
+        'the prefix is to the LEFT of the input, not after it',
+      );
+      // NO DOUBLE BORDER: the input inside the row draws no border of its own
+      assert.match(row, /style=\{styles\.inputBare\}/);
+      assert.ok(
+        !/style=\{styles\.input\}/.test(row),
+        `${field} must not also carry the bordered field inside the bordered row`,
+      );
+    }
+    // the port fields keep the plain bordered field — they are not address fields
+    const portAt = code.indexOf('value={port}');
+    assert.ok(portAt > 0, 'the port field is still drawn');
+    assert.match(
+      code.slice(code.lastIndexOf('<TextInput', portAt), portAt),
+      /style=\{styles\.input\}/,
+      'the port fields keep the plain bordered field: only the two address fields became compound',
+    );
+    // (b) the sentence is DELETED — node, EN key and the EN-only list entry, and nothing names it.
+    //     Read through `stringsFor`, not the live `t`: the suite's ambient language is PT, and the
+    //     EN-only mechanism is exactly what this assertion is about (nothing in the app can switch it).
+    const en = stringsFor('en');
+    assert.ok(!('wizIpHelp' in en.settings), 'the key is gone from the EN table');
+    assert.ok(!('wizIpHelp' in stringsFor('pt').settings), 'and PT never had it');
+    assert.ok(!EN_ONLY_SETTINGS_KEYS.includes('wizIpHelp' as never), 'and from the EN-only list');
+    for (const dir of ['app', 'src']) {
+      const walk = (path: string): string[] =>
+        readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
+          const full = join(path, entry.name);
+          if (entry.isDirectory()) return walk(full);
+          return /\.tsx?$/.test(entry.name) ? [full] : [];
+        });
+      const hits = walk(join(process.cwd(), dir)).filter((file) =>
+        readFileSync(file, 'utf8').includes('wizIpHelp'),
+      );
+      assert.deepEqual(hits, [], `no file under ${dir}/ may name the deleted key — even in a comment`);
+    }
+    // (c) the OTHER sentence survives: `wizHostHelp` is about the name and still explains that field
+    assert.match(code, /\{t\.settings\.wizHostHelp\}/);
+    assert.ok(en.settings.wizHostHelp.trim().length > 10);
+    // (d) the scheme is still the APP's, never the user's: the prefix is display-only
+    assert.equal(lanUrl('192.168.1.50', 9119), 'http://192.168.1.50:9119');
+    assert.equal(remoteUrl('x.tailnet.ts.net', 9119), 'http://x.tailnet.ts.net:9119');
+  });
+
+  test('0.10.1 S3: step 1 probes ONCE, by itself — a re-render does not, a changed address does', () => {
+    // The guard, executable. "Result, not input": entering the step with an address in hand diagnoses
+    // it without a tap; a re-render must not fire a second probe at the same address, and a CHANGED
+    // address must (that is what the one-tap correction does).
+    const entered = autoProbeTarget('service', 'http://10.0.0.5:9119', '');
+    assert.equal(entered, 'http://10.0.0.5:9119', 'entering step 1 with an address probes it');
+    assert.equal(
+      autoProbeTarget('service', 'http://10.0.0.5:9119', entered as string),
+      null,
+      'a re-render with the same address must NOT probe again',
+    );
+    assert.equal(
+      autoProbeTarget('service', 'http://10.0.0.6:9119', entered as string),
+      'http://10.0.0.6:9119',
+      'a CHANGED address does probe again',
+    );
+    assert.equal(autoProbeTarget('service', '   ', ''), null, 'a blank address is a question, not a diagnosis');
+    assert.equal(autoProbeTarget('kind', 'http://10.0.0.5:9119', ''), null, 'only step 1 auto-probes');
+    assert.equal(autoProbeTarget('sign-in', 'http://10.0.0.5:9119', ''), null);
+    assert.equal(autoProbeTarget('check', 'http://10.0.0.5:9119', ''), null);
+    // and the screen runs that guard rather than re-deriving it
+    const code = wizardCode();
+    assert.match(code, /const target = autoProbeTarget\(step, address, probedRef\.current\)/);
+    assert.match(code, /probedRef\.current = target;/, 'the stamp is what makes it once');
+    // the probe itself is injectable, so this is testable without a renderer or a socket
+    assert.match(code, /const probeRun = props\.probe \?\? probeService;/);
+    assert.match(code, /setVerdict\(await probeRun\(checked\.value\)\)/);
+  });
+
+  test('0.10.1 S3: the editable address is a CORRECTION behind a disclosure, and the diagnosis stays', () => {
+    // Initial state, by origin — the decision is a function, because there is no renderer here.
+    assert.equal(addressFieldOpen('address-in-hand'), false, 'arrived with an address → closed');
+    assert.equal(addressFieldOpen('no-address'), true, 'nothing stored → the user has to type one');
+    assert.equal(SERVICE_ENTRY_WITH_ADDRESS, 'address-in-hand');
+    const code = wizardCode();
+    // ONE helper writes the step-1 address, so no entry path can produce a different disclosure state
+    for (const writer of ['useLanAddress', 'useRemoteAddress', 'pickPeer']) {
+      const at = code.indexOf(`const ${writer}`);
+      assert.ok(at > 0, `${writer} is still there`);
+      // the window ends at the next TOP-LEVEL `const ` (two-space indent) — NOT at the first `const`
+      // inside the callback, which is the mistake that made this assertion vacuous on the first pass
+      const next = code.indexOf('\n  const ', at + 10);
+      assert.ok(next > at, `${writer} is followed by another top-level declaration`);
+      assert.match(code.slice(at, next), /openServiceWithAddress\(/, `${writer} arrives through the one helper`);
+    }
+    assert.match(code, /setAddressOpen\(addressFieldOpen\(SERVICE_ENTRY_WITH_ADDRESS\)\)/);
+    assert.match(code, /useState\(\(\) => addressFieldOpen\('no-address'\)\)/);
+    // the editable field is INSIDE the disclosure, and the address is still shown as text
+    const stepAt = code.indexOf('stepService.title');
+    const labelAt = code.indexOf('{t.connect.addressLabel}', stepAt);
+    const openAt = code.indexOf('{addressOpen ? (', labelAt);
+    const closeAt = code.indexOf(') : null}', openAt);
+    assert.ok(labelAt > stepAt && openAt > labelAt, 'the address line is drawn before the disclosure');
+    assert.ok(closeAt > openAt, 'the disclosure closes');
+    const disclosure = code.slice(openAt, closeAt);
+    assert.match(disclosure, /<TextInput/, 'the editable field is inside the disclosure');
+    assert.match(disclosure, /value=\{address\}/, 'and it edits the same address the line shows');
+    // the diagnosis is what made the step worth keeping: the verdict card and the one-tap correction
+    assert.match(code, /t\.connect\.useDashboardPort\(dashboardAddressFor\(address\)\)/);
+    assert.match(code, /t\.connect\.isGateway/);
+    // and the step count did NOT move: "smallest change — wizard stays 3 steps"
+    assert.deepEqual(wizardStepIds(), ['service', 'sign-in', 'check']);
+  });
+
+  test('0.10.1 S4: the two sentences of chrome are gone, and the decoy "saved" survives', () => {
+    // the user, on Gateway Settings: "Remove 'each field saves itself' text" and "Remove 'Saved MM:SS'
+    // text". Both were page chrome — they rendered on EVERY settings page — so both went globally.
+    const en = stringsFor('en');
+    assert.ok(!('saved' in en.settings), 'the Saved key is gone');
+    assert.ok(!('autoSave' in en.settings), 'and so is the self-explanation');
+    // THE DECOY, asserted in the same test so the two can never drift apart: `apiKeySet` is a
+    // DIFFERENT key whose VALUE is the word "saved", and it must still read exactly that.
+    assert.equal(en.settings.apiKeySet, 'saved', 'apiKeySet is a different key and keeps its value');
+    assert.ok(en.settings.savedKey.length > 0 && en.settings.clearKey.length > 0);
+    assert.ok(en.settings.clearKeyConfirm.length > 0);
+    // neither name may appear anywhere under app/ or src/ — comments included, because a comment that
+    // names a deleted identifier invites someone to re-render it. (The positive control: the same
+    // walk finds `sessionTypesHelp` in 3 files.)
+    const walk = (path: string): string[] =>
+      readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
+        const full = join(path, entry.name);
+        if (entry.isDirectory()) return walk(full);
+        return /\.tsx?$/.test(entry.name) ? [full] : [];
+      });
+    const files = [...walk(join(process.cwd(), 'app')), ...walk(join(process.cwd(), 'src'))];
+    assert.ok(files.length > 20, 'the walk really visited the tree');
+    const hits = files.filter((file) => /autoSave|t\.settings\.saved\b/.test(readFileSync(file, 'utf8')));
+    assert.deepEqual(hits, [], 'neither deleted name survives anywhere under app/ or src/');
+    const control = files.filter((file) => readFileSync(file, 'utf8').includes('sessionTypesHelp'));
+    assert.ok(control.length > 0, 'positive control: the walk DOES find a name that is still there');
+    // THE ORPHANS are what made this more than two lines: without this the item passes while tsc is red
+    const settingsSrc = settingsSource();
+    assert.ok(!/formatTime/.test(settingsSrc), 'the now-orphaned import is gone');
+    assert.ok(!/\bsavedAt\b/.test(settingsSrc), 'so is the destructured provider value');
+    assert.ok(!/savedLine/.test(settingsSrc), 'and the style it used');
+    // `savedAt` stays in the PROVIDER: it is the context's API, not this screen's property
+    assert.match(
+      readFileSync(join(process.cwd(), 'src', 'SettingsContext.tsx'), 'utf8'),
+      /savedAt/,
+      'the plumbing stays; only the render went',
+    );
+  });
+
+  test('0.10.1 S5: the DRAWN index is what a delete acts on — a raw index deletes another row', () => {
+    // The stored order is NOT the display order: `orderRoutes` sorts ascending by priority. This is
+    // the exact list where the two disagree, so the trap is exercised rather than described.
+    const stored = [
+      { role: 'lan' as const, priority: 2, url: 'http://10.0.0.2:9119', insecure: true },
+      { role: 'lan' as const, priority: 0, url: 'http://10.0.0.1:9119', insecure: true },
+    ];
+    const settings = { ...DEFAULT_SETTINGS, routes: stored, baseUrl: 'http://10.0.0.1:9119', insecureRouteAck: true } as Settings;
+    const rows = connectionRows(settings);
+    assert.deepEqual(rows.map((row) => row.url), ['http://10.0.0.1:9119', 'http://10.0.0.2:9119'], 'display order');
+    assert.deepEqual(rows.map((row) => row.index), [0, 1], 'and the rows carry the DRAWN index');
+    // the row the user SAW at the top is the one at drawn index 0
+    const patch = deleteRoute(settings, rows[0].index, () => true);
+    assert.deepEqual(patch.routes.map((route) => route.url), ['http://10.0.0.2:9119'], 'the row the user saw went');
+    // …and the paired assertion: indexing the STORED array would have removed the other one, which is
+    // exactly the silent mis-delete the drawn-index rule prevents.
+    const raw = deleteRoute({ ...settings, routes: orderRoutes(stored) }, 0, () => true);
+    const storedDelete = stored.filter((_route, position) => position !== 0);
+    assert.deepEqual(storedDelete.map((route) => route.url), ['http://10.0.0.1:9119']);
+    assert.notDeepEqual(
+      raw.routes.map((route) => route.url),
+      ['http://10.0.0.1:9119'],
+      'a raw index into `form.routes` would NOT have removed the row the user saw',
+    );
+  });
+
+  test('0.10.1 S5: the selection after a delete is RE-DERIVED, never `selectedIndex - 1`', () => {
+    const three = [
+      { role: 'lan' as const, priority: 0, url: 'http://10.0.0.1:9119', insecure: true },
+      { role: 'lan' as const, priority: 1, url: 'http://10.0.0.2:9119', insecure: true },
+      { role: 'lan' as const, priority: 2, url: 'http://10.0.0.3:9119', insecure: true },
+    ];
+    const settings = { ...DEFAULT_SETTINGS, routes: three, baseUrl: 'http://10.0.0.1:9119', insecureRouteAck: true } as Settings;
+    // the user has row 0 selected and deletes row 2 — BELOW the selection
+    const patch = deleteRoute(settings, 2, () => true);
+    assert.equal(patch.baseUrl, 'http://10.0.0.1:9119', 'the active route is unchanged by a delete below it');
+    const rows = connectionRows({ ...settings, routes: patch.routes, baseUrl: patch.baseUrl });
+    const selectedIndex = 0;
+    const derived = selectionAfterDelete(rows, patch.baseUrl);
+    assert.equal(derived, 0, 'the new active row');
+    assert.notEqual(derived, selectedIndex - 1, 'a decrement would have pointed at nothing');
+    // deleting the SELECTED row hands the selection to whatever became active
+    const second = deleteRoute(settings, 0, () => true);
+    assert.equal(second.baseUrl, 'http://10.0.0.2:9119', 'the next route takes over');
+    const rows2 = connectionRows({ ...settings, routes: second.routes, baseUrl: second.baseUrl });
+    assert.equal(selectionAfterDelete(rows2, second.baseUrl), 0);
+    // …and the empty end state is the FEATURE: no routes, baseUrl '', and nothing selected
+    const last = deleteRoute({ ...settings, routes: [three[0]], baseUrl: three[0].url }, 0, () => true);
+    assert.deepEqual(last.routes, []);
+    assert.equal(last.baseUrl, '');
+    assert.equal(last.empty, true);
+    assert.equal(last.decision.reason, 'no-routes');
+    assert.equal(selectionAfterDelete([], last.baseUrl), -1, '-1 makes the status block draw `gwPickOne`');
+  });
+
+  test('0.10.1 S5: the Gateway page hosts the verb, reusing the existing strings and the drawn index', () => {
+    const code = settingsCode();
+    // the second call site exists, and it is on the Gateway page (the status block, beside revoke)
+    assert.match(code, /selectionAfterDelete\(/, 'the selection is re-derived by the pure helper');
+    assert.match(code, /deleteRoute\(form, removedIndex,/, 'and deleteRoute is reused, not re-implemented');
+    assert.match(code, /dotStateOf\(dots, candidate\.url\) !== 'down'/, 'the same reachability predicate as the Advanced editor');
+    // NO NEW STRING: the confirm dialog reuses the pair the Advanced editor already renders
+    assert.match(code, /t\.routes\.removeConfirm\(selectedRoute\.url\)/);
+    assert.match(code, /\{ text: t\.roster\.cancel, style: 'cancel' \}/);
+    assert.match(code, /text: t\.routes\.remove,/);
+    assert.match(code, /style: 'destructive',/);
+    // and no NEW key was introduced for the verb — the string the Advanced editor draws is the one used
+    assert.ok(!/removeConnection|deleteConnection/.test(code), 'no second vocabulary for the same verb');
+    // the empty state still offers the wizard — nothing new had to be built for it
+    assert.match(code, /gwWizardButton/, 'the wizard button is on the page that now has an empty state');
+    // and the DRAWN index is what is passed: no raw `selectedIndex` into deleteRoute
+    assert.ok(
+      !/deleteRoute\(form, selectedIndex,/.test(code),
+      'the raw selection as a stored-array index is exactly the bug this item is about',
+    );
+  });
+
+  test('0.10.1 S7: the session-types help sits directly under its heading, and the warning stays LAST', () => {
+    const code = settingsCode();
+    const fieldAt = code.indexOf('{t.settings.sessionTypes}', code.indexOf('Display session types (0.8.0 D', 0));
+    const labelAt = code.indexOf('{t.settings.sessionTypes}', 0);
+    assert.ok(labelAt > 0, 'the section label is rendered');
+    void fieldAt;
+    const helpAt = code.indexOf('{t.settings.sessionTypesHelp}', labelAt);
+    const choicesAt = code.indexOf('sessionTypeChoices(', labelAt);
+    const warningAt = code.indexOf('{t.settings.typeNoneWarning}', choicesAt);
+    assert.ok(helpAt > labelAt, 'the help sentence comes AFTER the heading');
+    assert.ok(choicesAt > helpAt, '…and BEFORE the four checkboxes — "underneath Display Session Types"');
+    assert.ok(warningAt > choicesAt, 'while the none-checked warning stays last, after the choices it reports on');
+    // the words did not change: this is a MOVE, so the sentence is still the display-filter sentence
+    const en = stringsFor('en');
+    assert.match(en.settings.sessionTypesHelp, /display filter/i);
+    assert.ok(en.settings.typeNoneWarning.trim().length > 10);
+    // and it touched no plan: the field order the suite pinned in 0.9.1 is unchanged
+    assert.equal(visibleFieldIds(false).indexOf('sessionTypes'), 1);
+  });
+
+  test('0.10.1 S8: the index stops explaining itself, and the ROWS keep their sentences', () => {
+    const en = stringsFor('en');
+    assert.ok(!('pagesHelp' in en.settings), 'the deleted key is gone');
+    // THE TWO DECOYS, in the same test: the title stays, and the per-row help keys stay
+    assert.equal(en.settings.pagesTitle, 'Settings');
+    for (const key of ['agentHelp', 'notificationsHelp', 'gatewayHelp', 'advancedHelp'] as const) {
+      assert.ok(en.settings.pages[key] && en.settings.pages[key].trim().length > 10, `${key} survives`);
+    }
+    const walk = (path: string): string[] =>
+      readdirSync(path, { withFileTypes: true }).flatMap((entry) => {
+        const full = join(path, entry.name);
+        if (entry.isDirectory()) return walk(full);
+        return /\.tsx?$/.test(entry.name) ? [full] : [];
+      });
+    const hits = [...walk(join(process.cwd(), 'app')), ...walk(join(process.cwd(), 'src'))].filter((file) =>
+      readFileSync(file, 'utf8').includes('pagesHelp'),
+    );
+    assert.deepEqual(hits, []);
+    // source assertion: the index still renders each ROW's own help sentence
+    assert.match(settingsSource(), /\{t\.settings\.pages\[row\.help\]\}/, 'the rows were not collateral');
+    assert.match(settingsSource(), /\{t\.settings\.pagesTitle\}/, 'and the screen keeps its title');
   });
 
   // ─────────────────────────────────────────────────────── report ──

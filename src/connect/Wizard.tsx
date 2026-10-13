@@ -51,7 +51,16 @@ import {
 import { readStatusBody, stagedConnectionTest, TEST_MESSAGE_KEY, type TestResult } from './connectionTest';
 import { runPairLogin } from './pairflow';
 import { buildSupportBundle, pushTimeline, supportText, type TimelineEntry } from './support';
-import { branchRows, installCheckVisible, tunnelRowVisible, wizardBranches, type WizardBranchId } from './wizard';
+import {
+  SERVICE_ENTRY_WITH_ADDRESS,
+  addressFieldOpen,
+  autoProbeTarget,
+  branchRows,
+  installCheckVisible,
+  tunnelRowVisible,
+  wizardBranches,
+  type WizardBranchId,
+} from './wizard';
 import { DEFAULT_WIZARD_STATE, dismissPatch, loadWizardState, resumeStep, saveWizardState, stepPatch, type WizardState } from './wizardSession';
 
 import { t, useLanguage } from '../i18n';
@@ -107,6 +116,13 @@ export type WizardProps = {
   embedded?: boolean;
   /** What "Concluído" does. Defaults to the roster, which is right for the standalone route. */
   onDone?: () => void;
+  /**
+   * 0.10.1 S3 — the probe step 1 runs BY ITSELF, injectable. The suite has no renderer and must
+   * never open a socket (0.10.1 §1.12), so it injects its own verdict-maker; production passes
+   * nothing and gets `probeService` from `../pairing`. Same injected-deps shape as
+   * `stagedConnectionTest`.
+   */
+  probe?: (url: string) => Promise<ProbeVerdict>;
 };
 
 export default function ConnectWizard(props: WizardProps = {}) {
@@ -114,6 +130,12 @@ export default function ConnectWizard(props: WizardProps = {}) {
   const router = useRouter();
   const params = useLocalSearchParams<{ base?: string; code?: string; label?: string; expires?: string }>();
   const { settings, update, ready } = useSettings();
+  /**
+   * 0.10.1 S3 — the probe is INJECTABLE (`props.probe`): the suite has no renderer and never opens a
+   * socket, so it supplies its own verdict-maker and can pin "step 1 probes once, by itself".
+   * Production passes nothing and gets `probeService`.
+   */
+  const probeRun = props.probe ?? probeService;
 
   const [address, setAddress] = useState(settings.baseUrl ? dashboardAddressFor(settings.baseUrl) : '');
   const [verdict, setVerdict] = useState<ProbeVerdict | null>(null);
@@ -136,8 +158,18 @@ export default function ConnectWizard(props: WizardProps = {}) {
   /** LAN: an IPv4 field and a SEPARATE port field (§2 of the user's spec). `http://` is appended here. */
   const [ip, setIp] = useState('');
   const [port, setPort] = useState(String(DEFAULT_PORT));
-  /** Remote: the MagicDNS name, which is the one field that is NOT IPv4-strict. */
+  /**
+   * Remote: the MagicDNS name, which is the one field that is NOT IPv4-strict.
+   */
   const [host, setHost] = useState('');
+  /**
+   * 0.10.1 S3 — is the editable address field on step 1 showing? Entered with NO address (a resume
+   * with nothing stored, the standalone route, a fresh install) it starts OPEN, because there the
+   * user genuinely has to type one. The branch card and a picked device close it: they arrive with
+   * the address already written, so the field is a correction, one tap away. `addressFieldOpen` is the
+   * decision, not a comment — the suite has no renderer to look at.
+   */
+  const [addressOpen, setAddressOpen] = useState(() => addressFieldOpen('no-address'));
   /** The remote branch's fast path: the host's own tailnet list (a phone cannot enumerate one). */
   const [peers, setPeers] = useState<PeersResult | null>(null);
   const [peersBusy, setPeersBusy] = useState(false);
@@ -186,6 +218,19 @@ export default function ConnectWizard(props: WizardProps = {}) {
   }, []);
 
   /**
+   * 0.10.1 S3 — arriving at step 1 WITH the address the branch just built. The editable field closes
+   * (`addressFieldOpen(SERVICE_ENTRY_WITH_ADDRESS)`): the step's job now is to REPORT on this address,
+   * and the field is there for a correction. All three writers — the LAN card, the Remote card and a
+   * picked device — come through here, so the disclosure's initial state cannot differ per path.
+   */
+  const openServiceWithAddress = useCallback((url: string) => {
+    setAddress(url);
+    setVerdict(null);
+    setAddressOpen(addressFieldOpen(SERVICE_ENTRY_WITH_ADDRESS));
+    setStep('service');
+  }, []);
+
+  /**
    * The LAN manual entry: two fields in, ONE route out — `http://<ipv4>:<port>`, the scheme appended
    * by the app (§2). The address is written as a route so the rest of the app (and the engine) sees
    * it exactly like any other connection.
@@ -193,8 +238,7 @@ export default function ConnectWizard(props: WizardProps = {}) {
   const useLanAddress = useCallback(() => {
     const url = lanUrl(ip, portOr(port));
     if (!url) return;
-    setAddress(url);
-    setVerdict(null);
+    openServiceWithAddress(url);
     const routes = orderRoutes(settings.routes).filter((route) => normalizeRouteUrl(route.url) !== url);
     update({
       baseUrl: url,
@@ -202,8 +246,7 @@ export default function ConnectWizard(props: WizardProps = {}) {
       insecureRouteAck: true,
     });
     note(`LAN ${url}`, 0, 0);
-    setStep('service');
-  }, [ip, port, note, settings.routes, update]);
+  }, [ip, port, note, openServiceWithAddress, settings.routes, update]);
 
   /** A pasted `1.2.3.4:9119` splits into the two fields instead of filling one with junk. */
   const pasteAddress = useCallback((raw: string) => {
@@ -216,11 +259,9 @@ export default function ConnectWizard(props: WizardProps = {}) {
   const useRemoteAddress = useCallback(() => {
     const url = remoteUrl(host, portOr(port));
     if (!url) return;
-    setAddress(url);
-    setVerdict(null);
+    openServiceWithAddress(url);
     note(`Remote ${url}`, 0, 0);
-    setStep('service');
-  }, [host, port, note]);
+  }, [host, port, note, openServiceWithAddress]);
 
   /** Read the host's tailnet list through the one route that can answer it (never the phone). */
   const readPeers = useCallback(async () => {
@@ -249,13 +290,11 @@ export default function ConnectWizard(props: WizardProps = {}) {
         return;
       }
       const url = route.url;
-      setAddress(url);
-      setVerdict(null);
+      openServiceWithAddress(url);
       update({ baseUrl: url, routes: [...orderRoutes(settings.routes), route], insecureRouteAck: true });
       note(`peer ${peerAddress(peer, chosen)}`, 0, 0);
-      setStep('service');
     },
-    [settings, note, update],
+    [settings, note, openServiceWithAddress, update],
   );
 
   // The Android-only install check (S3.2). On iOS it is NOT run: `isPackageInstalled` has no iOS half.
@@ -345,11 +384,27 @@ export default function ConnectWizard(props: WizardProps = {}) {
     setProbing(true);
     setMessage(null);
     try {
-      setVerdict(await probeService(checked.value));
+      setVerdict(await probeRun(checked.value));
     } finally {
       setProbing(false);
     }
-  }, [address]);
+  }, [address, probeRun]);
+
+  /**
+   * 0.10.1 S3 — "the step opens as a RESULT". Entering step 1 with an address in hand probes it ONCE,
+   * by itself, so the verdict is already there instead of waiting behind a button. The ref holds the
+   * last probed address, which is what makes a re-render probe not at all and a CHANGED address probe
+   * again — the same `scannedRef` shape this file already uses. The rule itself lives in
+   * `autoProbeTarget` (the plan module) so the suite can prove it: there is no renderer here.
+   */
+  const probedRef = useRef('');
+  useEffect(() => {
+    if (!ready) return;
+    const target = autoProbeTarget(step, address, probedRef.current);
+    if (!target) return;
+    probedRef.current = target;
+    void probe(target);
+  }, [ready, step, address, probe]);
 
   /** Redeem → store the device token → verify with /api/profiles. Zero typing. */
   const complete = useCallback(async (link: ConnectLink) => {
@@ -550,17 +605,26 @@ export default function ConnectWizard(props: WizardProps = {}) {
       {branch === 'lan' ? (
         <View style={styles.card}>
           <Text style={styles.label}>{t.settings.wizIpLabel}</Text>
-          <TextInput
-            style={styles.input}
-            value={ip}
-            onChangeText={(value) => pasteAddress(value)}
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="numbers-and-punctuation"
-            placeholder="192.168.1.50"
-            placeholderTextColor={colors.faint}
-          />
-          <Text style={styles.help}>{t.settings.wizIpHelp}</Text>
+          {/* 0.10.1 S2 — ONE compound field: the row carries the border and the background, a static
+              `http://` sits at its left, and the input has NO border of its own. Two nested borders is
+              the classic regression of this change. The prefix is SCHEME-ONLY — four characters of
+              literal text, no host, no port, no example address: 0.10.0's first artifact was rejected by
+              the verifier's own host-literal check for using a real address as an example, and this
+              change must not reintroduce that class. The sentence that had to explain the scheme is
+              deleted with it, because the screen now shows it. ── */}
+          <View style={styles.inputRow}>
+            <Text style={styles.inputPrefix}>http://</Text>
+            <TextInput
+              style={styles.inputBare}
+              value={ip}
+              onChangeText={(value) => pasteAddress(value)}
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="numbers-and-punctuation"
+              placeholder="192.168.1.50"
+              placeholderTextColor={colors.faint}
+            />
+          </View>
           <Text style={styles.label}>{t.settings.wizPortLabel}</Text>
           <TextInput
             style={styles.input}
@@ -626,15 +690,22 @@ export default function ConnectWizard(props: WizardProps = {}) {
               : null}
 
           <Text style={styles.label}>{t.settings.wizManualTitle}</Text>
-          <TextInput
-            style={styles.input}
-            value={host}
-            onChangeText={setHost}
-            autoCapitalize="none"
-            autoCorrect={false}
-            placeholder="my-desktop.tailnet.ts.net"
-            placeholderTextColor={colors.faint}
-          />
+          {/* 0.10.1 S2 — the same compound field as the LAN one: `remoteUrl()` also always builds
+              `http://` (`src/connect/address.ts`), so the prefix is true here too. The stored value
+              stays the bare hostname; the scheme stays the app's. `wizHostHelp` is about the NAME, so
+              it stays — nothing was dropped along with the sentence that went. ── */}
+          <View style={styles.inputRow}>
+            <Text style={styles.inputPrefix}>http://</Text>
+            <TextInput
+              style={styles.inputBare}
+              value={host}
+              onChangeText={setHost}
+              autoCapitalize="none"
+              autoCorrect={false}
+              placeholder="my-desktop.tailnet.ts.net"
+              placeholderTextColor={colors.faint}
+            />
+          </View>
           <Text style={styles.help}>{t.settings.wizHostHelp}</Text>
           <Text style={styles.label}>{t.settings.wizPortLabel}</Text>
           <TextInput
@@ -667,20 +738,39 @@ export default function ConnectWizard(props: WizardProps = {}) {
       ) : null}
 
       <Text style={styles.step}>{stepService.title}</Text>
+      {/* 0.10.1 S3 — the step opens as a RESULT. The address the branch card (or a picked device)
+          already wrote is shown as a plain line, the probe runs by itself, and the editable field is a
+          CORRECTION behind a disclosure: closed when the wizard ARRIVED with an address, open when it
+          entered with none. the user's words: "Result, not input — auto-probe the address the branch
+          already set, keep the field read-only-ish for correction, keep the wrong-service diagnosis
+          (smallest change — wizard stays 3 steps)". ── */}
       <Text style={styles.label}>{t.connect.addressLabel}</Text>
-      <TextInput
-        style={styles.input}
-        value={address}
-        onChangeText={(v) => {
-          setAddress(v);
-          setVerdict(null);
-        }}
-        autoCapitalize="none"
-        autoCorrect={false}
-        keyboardType="url"
-        placeholder="http://host:9119"
-        placeholderTextColor={colors.faint}
-      />
+      <Pressable
+        onPress={() => setAddressOpen((open) => !open)}
+        accessibilityRole="button"
+        accessibilityLabel={t.connect.addressLabel}
+        style={styles.addressRow}
+      >
+        <Text style={styles.addressValue} numberOfLines={1}>
+          {address || '—'}
+        </Text>
+        <Text style={styles.addressToggle}>{addressOpen ? '▾' : '▸'}</Text>
+      </Pressable>
+      {addressOpen ? (
+        <TextInput
+          style={styles.input}
+          value={address}
+          onChangeText={(v) => {
+            setAddress(v);
+            setVerdict(null);
+          }}
+          autoCapitalize="none"
+          autoCorrect={false}
+          keyboardType="url"
+          placeholder="http://host:9119"
+          placeholderTextColor={colors.faint}
+        />
+      ) : null}
       {suggestions.length > 0 && (
         <View style={styles.chips}>
           <Text style={styles.help}>{t.connect.suggestions}</Text>
@@ -846,6 +936,39 @@ const styles = StyleSheet.create({
   chips: { gap: space.xs },
   /** 0.10.1 S1 — the bounded peer list's own vertical rhythm, inside its ScrollView. */
   chipList: { gap: space.xs },
+  /* 0.10.1 S3 — the address line: what the step REPORTS, with the disclosure toggle at its right. */
+  addressRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: space.sm,
+    backgroundColor: colors.panel,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+    paddingVertical: space.sm,
+  },
+  addressValue: { color: colors.text, fontSize: font.body, flexShrink: 1 },
+  addressToggle: { color: colors.accent, fontSize: font.body },
+  /* 0.10.1 S2 — the compound address field: the ROW carries the border and the background, the
+     prefix is plain text, and the input draws nothing of its own. One border, one field. */
+  inputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: colors.panel,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    paddingHorizontal: space.md,
+  },
+  inputPrefix: { color: colors.muted, fontSize: font.body },
+  inputBare: {
+    flex: 1,
+    color: colors.text,
+    paddingVertical: space.sm,
+    fontSize: font.body,
+  },
   chip: { backgroundColor: colors.panelAlt, borderRadius: radius.pill, paddingHorizontal: space.md, paddingVertical: space.xs, alignSelf: 'flex-start' },
   chipText: { color: colors.accent, fontSize: font.small },
   card: { backgroundColor: colors.panel, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: space.md, gap: space.sm },

@@ -26,6 +26,23 @@
  * is now ALSO the wizard's own row (S3.2) because §1.1.2 asks for it there. It sits between the
  * wizard button and Advanced, so all five of his are still in his relative order and Advanced is
  * still LAST, which is what his §4 says.
+ *
+ * ── SUPERSEDED ORDER, 2026-10-13 (0.10.1 S6): STATUS FIRST ──────────────────────────────────────
+ *
+ * The list above is the order the page was built to in 0.10.0 — and it fought itself: item 1 drew the
+ * connections dropdown first, while item 2 of the SAME message said *"Keep the Connection status
+ * Section, put it on the top."* 0.10.0 read the numbered list as the order and drew the dropdown
+ * first. the user settled it the next day, in his second review message:
+ *
+ *   *"Put \"Connection status\" section on top, \"Connections\" below, \"Local\" and \"Remote\" pills
+ *   underneath for prioritization."*
+ *
+ * That is the LATER word, so it wins: `GATEWAY_SECTION_IDS` now opens with `status`. Recorded HERE,
+ * next to the value, precisely so a later reader cannot "restore" the old order from the 0.10.0 list
+ * above — which is exactly what this module exists to prevent.
+ *
+ * Everything else is untouched: what each section CONTAINS, the pills' rule that a single kind draws
+ * no pills at all, `wizardButtonAction()`, and the selection starting on the first drawn row.
  */
 
 import { formatAge } from '../format';
@@ -36,7 +53,7 @@ import { transportSecurityNote, type RouteCandidate } from '../routes';
 import { surfaceLabel, type Surface } from '../settings';
 
 /** The page, top to bottom. `advanced` is last, by the user's own list. */
-export const GATEWAY_SECTION_IDS = ['connections', 'status', 'pills', 'wizard', 'link', 'advanced'] as const;
+export const GATEWAY_SECTION_IDS = ['status', 'connections', 'pills', 'wizard', 'link', 'advanced'] as const;
 export type GatewaySectionId = (typeof GATEWAY_SECTION_IDS)[number];
 
 /**
@@ -79,18 +96,30 @@ export type GatewaySection = {
   helpKey: GatewayTextKey | null;
 };
 
-const SECTIONS: readonly GatewaySection[] = [
-  { id: 'connections', titleKey: 'gwConnectionsTitle', helpKey: 'gwConnectionsHelp' },
-  { id: 'status', titleKey: 'gwStatusTitle', helpKey: 'gwStatusHelp' },
-  { id: 'pills', titleKey: 'gwKindsTitle', helpKey: 'gwKindsHelp' },
-  { id: 'wizard', titleKey: 'gwWizardButton', helpKey: 'gwWizardHelp' },
-  { id: 'link', titleKey: null, helpKey: null },
-  { id: 'advanced', titleKey: null, helpKey: null },
-];
+/**
+ * What each section IS — its heading and its one-sentence explanation — keyed by id.
+ *
+ * `titleKey`/`helpKey` are `null` for the two sections that already had their own copy before this
+ * batch — `link` (0.9.1 S3's Tailscale section, `t.connectivity.*`) and `advanced` (the sub-page row,
+ * `t.settings.pages.advancedHelp`) — because re-wording a shipped section is not what S1 asks for.
+ *
+ * **0.10.1 S6 — THE ORDER IS NOT IN HERE.** It is `GATEWAY_SECTION_IDS` above, and `gatewaySections()`
+ * now READS it. Until S6 there were two lists — this array and the id list — and this one silently
+ * won, which is exactly how the page went on drawing the connections dropdown first while the module
+ * that "owns the order" said status came first. One list, one order, no second copy to drift.
+ */
+const SECTION_DETAILS: Record<GatewaySectionId, { titleKey: GatewayTextKey | null; helpKey: GatewayTextKey | null }> = {
+  connections: { titleKey: 'gwConnectionsTitle', helpKey: 'gwConnectionsHelp' },
+  status: { titleKey: 'gwStatusTitle', helpKey: 'gwStatusHelp' },
+  pills: { titleKey: 'gwKindsTitle', helpKey: 'gwKindsHelp' },
+  wizard: { titleKey: 'gwWizardButton', helpKey: 'gwWizardHelp' },
+  link: { titleKey: null, helpKey: null },
+  advanced: { titleKey: null, helpKey: null },
+};
 
-/** The sections in the order the page draws them. */
+/** The sections in the order the page draws them — the order is `GATEWAY_SECTION_IDS`, and only it. */
 export function gatewaySections(): GatewaySection[] {
-  return SECTIONS.map((section) => ({ ...section }));
+  return GATEWAY_SECTION_IDS.map((id) => ({ id, ...SECTION_DETAILS[id] }));
 }
 
 /** The order, as ids — the one fact the layout test reads. */

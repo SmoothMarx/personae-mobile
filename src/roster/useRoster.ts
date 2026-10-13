@@ -617,7 +617,13 @@ export function useRoster() {
       setRecents((current) => current.filter((session) => !ids.has(session.id)));
       setLoaded((current) => ({ ...current, [name]: [] }));
       const failed = results.filter((result) => result.status === 'rejected').length;
-      setNotice(failed ? `${failed} ${t.settings.testFail.toLowerCase()}` : t.settings.saved);
+      // 0.10.1 S4 — this notice used the settings screen's "Saved" string, which S4 DELETED (it was
+      // page chrome there, and this is the second consumer the brief's orphan hunt did not name).
+      // "Saved" was also the wrong word here — nothing is saved by archiving — so it now reads the
+      // roster's OWN completion word. No new string was added (0.10.1 §1.4/§3). The test asserts the
+      // deleted key is named NOWHERE under app/ or src/, comments included, so the deleted name is
+      // deliberately not quoted here.
+      setNotice(failed ? `${failed} ${t.settings.testFail.toLowerCase()}` : t.roster.selection.done);
     },
     [backend, loaded, recents],
   );

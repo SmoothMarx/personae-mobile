@@ -134,3 +134,54 @@ export function branchRows(branch: WizardBranchId, platform: string): string[] {
 export function installCheckVisible(platform: string): boolean {
   return platform === 'android';
 }
+
+// ─────────────────────────── 0.10.1 S3: step 1 reports; it does not ask again ──
+
+/**
+ * the user, 2026-10-13: *"Does the '1. Service' have to exist or has it become redundant?"* — and his
+ * pick, verbatim: **"Result, not input: auto-probe the address the branch already set, keep the
+ * field read-only-ish for correction, keep the wrong-service diagnosis (smallest change — wizard
+ * stays 3 steps)"**.
+ *
+ * The step's **diagnosis** is not redundant: nothing else catches "you pointed at
+ * hermes-gateway.service — no profiles, no sessions, the dashboard is :9119" and offers the one-tap
+ * correction (`t.connect.isGateway` + `t.connect.useDashboardPort`). The step's **input** was
+ * redundant: `useLanAddress`, `useRemoteAddress` and `pickPeer` each already build the URL, store
+ * it and move to step 1, so the screen was asking the user to type the address it had just written.
+ *
+ * Both decisions are FUNCTIONS rather than comments, because `Wizard.tsx` cannot be rendered on this
+ * host (no device, no renderer): the suite can then *prove* the one-probe guard and the disclosure's
+ * initial state instead of reading around them.
+ */
+export type ServiceEntry = 'address-in-hand' | 'no-address';
+
+/**
+ * How the wizard ENTERED step 1, which is what decides whether the editable field starts open.
+ *
+ * Arriving from the branch card or a picked device means the address is already known, and the field
+ * is a CORRECTION — one tap away, closed by default. Entering with nothing (a resume with no stored
+ * address, the standalone route, a fresh install) means the user genuinely has to type one, so there
+ * it is open.
+ */
+export function addressFieldOpen(entry: ServiceEntry): boolean {
+  return entry === 'no-address';
+}
+
+/** The entry the branch card and a picked device produce. Named so the screen cannot pass a typo. */
+export const SERVICE_ENTRY_WITH_ADDRESS: ServiceEntry = 'address-in-hand';
+
+/**
+ * Should step 1 probe by ITSELF, right now? `null` means no.
+ *
+ * The rule, and the only one: probe when the wizard is ON step 1, the address is not blank, and it is
+ * not the address that was already probed. That makes entering the step probe exactly ONCE (the
+ * caller stamps `lastProbed` with what this returned), a re-render probe not at all, and a CHANGED
+ * address probe again — which is the whole of "the step opens as a result". A blank address is never
+ * probed: an empty URL is not a diagnosis, it is a question the user has not answered yet.
+ */
+export function autoProbeTarget(step: string, address: string, lastProbed: string): string | null {
+  if (step !== 'service') return null;
+  const value = String(address ?? '').trim();
+  if (!value) return null;
+  return value === lastProbed ? null : value;
+}
