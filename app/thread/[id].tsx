@@ -18,15 +18,17 @@
  */
 
 import { Ionicons } from '@expo/vector-icons';
-import { Stack, useLocalSearchParams } from 'expo-router';
+import { Stack, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import {
   ActivityIndicator,
   FlatList,
   Image,
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
+  PanResponder,
   Platform,
   Pressable,
   RefreshControl,
@@ -47,13 +49,18 @@ import { formatTime } from '../../src/format';
 import { t, useLanguage } from '../../src/i18n';
 import {
   ATTACHMENT_MAX_BYTES,
+  ATTACH_ROWS,
+  attachLabelKey,
   base64Of,
   fileCardLine,
   humanSize,
+  liveLabelFor,
   stage,
   unstage,
+  wireTextFor,
   type StagedAttachment,
 } from '../../src/logic/attachments';
+import { isStaleAnswer, slashQueryOf, spliceCompletion, type SlashItem } from '../../src/logic/slash';
 import { useAudioPlayer, useAudioPlayerStatus, useAudioRecorder } from 'expo-audio';
 import { AudioModule, RecordingPresets } from 'expo-audio';
 import { ActionSheet } from '../../src/roster/components';
@@ -74,9 +81,19 @@ import { buildItems, type ThreadItem } from '../../src/logic/thread';
 import { horizontalInset } from '../../src/insets';
 import { threadTitle } from '../../src/logic/roster';
 import { useBackend } from '../../src/useBackend';
+import { useSettings } from '../../src/SettingsContext';
 import { colors, font, radius, space } from '../../src/theme';
 
 type Live = { user: string | null; text: string } | null;
+
+/**
+ * 0.11.0 R5 — how long typing pauses before the completer is asked. The menu must never hold, block or
+ * slow typing, so a request is never fired per keystroke.
+ */
+const SLASH_DEBOUNCE_MS = 140;
+
+/** One row of the `/` menu, as the screen holds it: what to show, and the group it belongs to. */
+type SlashRow = { item: SlashItem; group: string };
 
 /**
  * 0.9.0 H — an inbound voice note: a play button, the duration when the wire carries one, and a
@@ -112,10 +129,46 @@ export default function ThreadScreen() {
   const profile = String(params.profile || '');
   const paramTitle = String(params.title || '');
   const { backend, ready } = useBackend();
+  /**
+   * 0.11.0 R3 — the mic's mode is READ FROM SETTINGS here, so this screen re-renders when the choice
+   * changes. A setting that needs an app restart is not a setting.
+   */
+  const { settings } = useSettings();
+  const micMode = settings.micMode;
+  /** The latest draft, readable from a selection event (which fires with the NEW text's selection). */
+  const draftRef = useRef('');
+  /** 0.11.0 R7 — `true` while a turn this screen started is still running. Used to tell a truncated
+   *  turn (socket gone) from a socket that closed after the work was already done. */
+  const inFlight = useRef(false);
 
   const [messages, setMessages] = useState<HermesMessage[]>([]);
   // Re-render (and refresh the list cells) when the interface language changes.
   const language = useLanguage();
+
+  /**
+   * 0.11.0 R2 — a paperclip row's LABEL, resolved from the row.
+   *
+   * `app/thread/[id].tsx` used to resolve a label through a ternary chain whose final `else` was
+   * `document`, so every row added without extending that chain would be labelled "Send a file" — the
+   * trap this map removes by construction. An unknown key shows the key itself rather than the WRONG
+   * words. Rebuilt on the language: `t` is a live view, and a cached string would freeze one language.
+   */
+  const attachLabels = useMemo<Record<string, string>>(
+    () => ({
+      camera: t.thread.attach.camera,
+      photo: t.thread.attach.photo,
+      document: t.thread.attach.document,
+      clipboard: t.thread.attach.clipboard,
+    }),
+    [language],
+  );
+  const attachLabelOf = useCallback(
+    (key: string) => {
+      const labelKey = attachLabelKey(key);
+      return (labelKey && attachLabels[labelKey]) || key;
+    },
+    [attachLabels],
+  );
   const [loadedTitle, setLoadedTitle] = useState('');
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');
   const [loadError, setLoadError] = useState<ApiError | null>(null);
@@ -124,6 +177,8 @@ export default function ThreadScreen() {
   const [live, setLive] = useState<Live>(null);
   const [liveTools, setLiveTools] = useState<LiveTool[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
+  /** 0.11.0 R7.b — the model's live reasoning, as it streams (`reasoning.delta`). */
+  const [liveReasoning, setLiveReasoning] = useState('');
   const [refreshing, setRefreshing] = useState(false);
   /** Per-run expansion: a Set of item keys, never one global boolean (F3, cause 2). */
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
@@ -154,6 +209,18 @@ export default function ThreadScreen() {
   const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const [voice, setVoice] = useState<VoiceRecording>(IDLE_RECORDING);
   const [voiceNow, setVoiceNow] = useState(0);
+  /**
+   * 0.11.0 R5 — the `/` menu: the query it answered, the rows, the splice index, and whether an answer
+   * is still in flight. `null` = no menu. The sequence ref is the last-write-wins guard.
+   */
+  const [slash, setSlash] = useState<{ query: string; rows: SlashRow[]; replaceFrom: number; loading: boolean } | null>(null);
+  const slashSeq = useRef(0);
+  const slashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Is the caret at the END of the draft? `replace_from` is computed from the string's end, so the
+   *  menu is only honest while the caret is there (§R5). */
+  const caretAtEnd = useRef(true);
+  /** 0.11.0 R7 — the live subscription, dropped on blur. */
+  const watchRef = useRef<{ close(): void } | null>(null);
 
   const handleRef = useRef<StreamHandle | null>(null);
   const liveTextRef = useRef('');
@@ -201,16 +268,20 @@ export default function ThreadScreen() {
   useEffect(
     () => () => {
       handleRef.current?.close();
+      watchRef.current?.close();
+      watchRef.current = null;
       backend.dispose();
     },
     [backend],
   );
+
 
   const finishTurn = useCallback(
     async (aborted: boolean, error: ApiError | null) => {
       const text = liveTextRef.current;
       const asked = pendingRef.current;
       setStreaming(false);
+      inFlight.current = false;
       handleRef.current = null;
       setLive(null);
       liveTextRef.current = '';
@@ -237,12 +308,215 @@ export default function ThreadScreen() {
     [loadThread],
   );
 
+  /**
+   * 0.11.0 R7 — THE SUBSCRIPTION. This is the item the user reported: *"your responses and reasoning
+   * should show up on the conversation in real-time, it should not need a refresh from the user (exist
+   * session and come back in)"*. The thread screen never attached to its own session before, so a turn
+   * started anywhere else had no listener here, and the only path to its content was a fresh mount
+   * re-reading the database.
+   *
+   * FOCUS-SCOPED (§R7, §10.12): attach on focus, detach on blur. While the phone is attached its
+   * transport counts as a live peer, so a hidden thread must not keep a session pinned in the gateway —
+   * and a session whose last client leaves is parked and then torn down by the server's own orphan
+   * policy (§R7.d). Returning re-attaches, which is what makes the catch-up below pay off.
+   *
+   * The handlers are the SAME ones the composer used to pass to `chatStream`, which is what makes a
+   * foreign turn paint into the bubble and the tool rows this screen already renders.
+   */
+  useFocusEffect(
+    useCallback(() => {
+      if (!ready || !sessionId) return undefined;
+      let dropped = false;
+      void backend
+        .watchSession(
+          sessionId,
+          {
+            onDelta: (delta) => {
+              liveTextRef.current += delta;
+              setLive((prev) =>
+                prev ? { ...prev, text: liveTextRef.current } : { user: '', text: liveTextRef.current },
+              );
+            },
+            onFinal: (content) => {
+              if (content) {
+                liveTextRef.current = content;
+                setLive((prev) => (prev ? { ...prev, text: content } : { user: '', text: content }));
+              }
+              // `message.complete` ends the turn — for a turn started HERE and for one started on
+              // another machine. It is reported by the subscription because the folded socket no longer
+              // closes when a turn ends.
+              void finishTurn(false, errorRef.current);
+            },
+            onReasoning: (text) => {
+              // R7.b — the model's live reasoning, painted as it arrives. No client-side gate: the
+              // server emits `reasoning.delta` only when the session displays reasoning.
+              setLiveReasoning((prev) => prev + text);
+            },
+            onTool: (tool) => {
+              setLiveTools((prev) => {
+                const index = prev.findIndex((entry) => entry.id && entry.id === tool.id);
+                if (index >= 0) {
+                  const next = [...prev];
+                  next[index] = { ...next[index], ...tool, args: tool.args || next[index].args };
+                  return next;
+                }
+                return [...prev, tool];
+              });
+            },
+            onError: (error) => {
+              errorRef.current = error;
+            },
+            // A holey replay is never stitched: the thread is re-read instead (see `watchSession`).
+            onRefetch: () => {
+              void loadThread({ silent: true });
+            },
+            // A watcher that cannot attach must not look broken: the thread stays readable, on the
+            // history the REST read already gave us.
+            onUnavailable: () => {
+              void loadThread({ silent: true });
+            },
+          },
+          profile,
+        )
+        .then((handle) => {
+          if (dropped) {
+            handle.close();
+            return;
+          }
+          watchRef.current = handle;
+        })
+        .catch(() => undefined);
+      return () => {
+        dropped = true;
+        watchRef.current?.close();
+        watchRef.current = null;
+      };
+    }, [backend, finishTurn, loadThread, profile, ready, sessionId]),
+  );
+
+  /**
+   * 0.11.0 R8 — Android's keyboard lift, taken from the KEYBOARD's own report.
+   *
+   * The app is RN 0.86 / Expo 57 — the edge-to-edge era, where the Android window no longer resizes
+   * under the keyboard, so `KeyboardAvoidingView`'s `behavior="height"` had nothing solid left to
+   * subtract against. This is dependency-free: a listener and a padding. `react-native-keyboard-controller`
+   * is the usual answer and is deliberately NOT added (§15 — the two Expo SDK pickers are this batch's
+   * whole dependency budget).
+   *
+   * NOTHING HERE IS VERIFIED WITHOUT A DEVICE, and it is reported that way (§14): the build carries it
+   * as `MANUAL: R8 keyboard lift — awaiting device confirmation`, never as PASS.
+   */
+  const [keyboardLift, setKeyboardLift] = useState(0);
+  useEffect(() => {
+    if (Platform.OS !== 'android') return undefined;
+    const show = Keyboard.addListener('keyboardDidShow', (event) => {
+      const reported = Number(event?.endCoordinates?.height ?? 0) || Number(Keyboard.metrics?.()?.height ?? 0);
+      setKeyboardLift(Math.max(0, Math.round(reported)));
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardLift(0));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
+
+  /**
+   * The lift APPLIED to the composer row, floored at the safe-area inset so the composer can never be
+   * left floating or below the gesture bar. On hide it resets to the inset. The Android keyboard's
+   * reported height already INCLUDES the navigation bar, so the inset is not added on top of it — that
+   * is the classic double-gap. iOS is untouched: its `KeyboardAvoidingView` still does the padding.
+   */
+  const composerLift =
+    Platform.OS === 'android' ? (keyboardLift > 0 ? Math.max(keyboardLift, insets.bottom) : insets.bottom) : 0;
+
   /** The recording bar's clock: one tick a second, and only while a recording exists. */
   useEffect(() => {
     if (voice.phase === 'idle') return;
     const timer = setInterval(() => setVoiceNow(Date.now()), 250);
     return () => clearInterval(timer);
   }, [voice.phase]);
+
+  /**
+   * 0.11.0 R2/R4 — ONE read implementation for phone-side bytes, shared by the voice note and by both
+   * pickers: `expo-file-system`'s `File(uri)`. `expo-file-system` used to resolve only because `expo`
+   * depends on it (a transitive dependency doing load-bearing work under a dynamic import), so R4
+   * DECLARES it — the next SDK bump cannot take the voice path with it.
+   */
+  const dataUrlFromUri = useCallback(async (uri: string, mime: string): Promise<string> => {
+    const { File } = await import('expo-file-system');
+    const base64 = await new File(uri).base64();
+    return `data:${mime || 'application/octet-stream'};base64,${base64}`;
+  }, []);
+
+  /**
+   * 0.11.0 R1 + R7.e — the ONE place a turn is submitted, and the order inside it is load-bearing:
+   *
+   *   1. every staged item is ATTACHED first, and a non-image's `refText` is COLLECTED. This is the bug
+   *      behind "the voice message … is not being sent through" and, once a picker existed, "sending a
+   *      file does not work" — one bug, not two: `file.attach` stages the bytes and queues NOTHING, so
+   *      the reply's `@file:` ref has to ride the message text, and 0.10.0 threw that reply away;
+   *   2. the WIRE text is caption + refs (`wireTextFor`), and that is what travels to the agent;
+   *   3. the DISPLAY text is the caption alone, with a label when there is none, so no user ever reads
+   *      `@file:/home/…` in their own bubble — and the bubble is never blank;
+   *   4. only then is the turn submitted, on the socket the subscription is already riding (§R7).
+   *
+   * `captionFor` is untouched: it answers "what did the user type", this answers "what does the model
+   * read". Returns `true` when the turn actually started, so the caller knows whether to clear its
+   * staging strip.
+   */
+  const submitTurn = useCallback(
+    async (input: { text: string; attachments: StagedAttachment[] }): Promise<boolean> => {
+      const refs: string[] = [];
+      if (input.attachments.length) {
+        try {
+          for (const item of input.attachments) {
+            // An image rides `image.attach_bytes` (queued server-side, consumed by the next submit);
+            // anything else — including a voice note — rides `file.attach`, whose decoder takes any
+            // media type, and whose ref must be carried by the text.
+            if (item.kind === 'image') await backend.attachImage(sessionId, base64Of(item.dataUrl), item.name, profile);
+            else {
+              const attached = await backend.attachFile(sessionId, item.dataUrl, item.name, profile);
+              if (attached.refText) refs.push(attached.refText);
+            }
+          }
+        } catch (error) {
+          setAttachNote(normalizeError(error).message);
+          return false;
+        }
+      }
+      setNotice(null);
+      setLoadError(null);
+      pendingRef.current = input.text;
+      liveTextRef.current = '';
+      errorRef.current = null;
+      setLiveTools([]);
+      setLive({ user: liveLabelFor(input.text, input.attachments), text: '' });
+      inFlight.current = true;
+      setStreaming(true);
+
+      handleRef.current = backend.chatStream(
+        sessionId,
+        wireTextFor(input.text, refs),
+        {
+          /**
+           * 0.11.0 R7 — this screen's delta/tool handlers now live on the SUBSCRIPTION (below), which
+           * is what makes a turn started on another machine paint into the same bubble. `onClose` is
+           * therefore the ONLY thing this handle still reports, and it reports the cases the
+           * subscription cannot: an interrupt, an error, or a socket that died mid-turn.
+           */
+          onError: (error) => {
+            errorRef.current = error;
+          },
+          onClose: ({ aborted }) => {
+            if (aborted || errorRef.current) void finishTurn(aborted, errorRef.current);
+          },
+        },
+        profile,
+      );
+      return true;
+    },
+    [backend, finishTurn, profile, sessionId],
+  );
 
   const beginVoice = useCallback(async () => {
     if (voice.phase !== 'idle' || streaming) return;
@@ -261,44 +535,97 @@ export default function ThreadScreen() {
     }
   }, [recorder, streaming, voice.phase]);
 
-  const endVoice = useCallback(async () => {
-    if (voice.phase === 'idle') return;
-    const outcome = releaseRecording(voice, Date.now());
+  /** Stop the recorder without deciding what happens to the audio. Shared by send and cancel. */
+  const stopRecorder = useCallback(async () => {
     setVoice(IDLE_RECORDING);
     try {
       await recorder.stop();
     } catch {
       /* a recorder that never started has nothing to stop */
     }
-    if (outcome.kind === 'cancel') {
-      setAttachNote(outcome.reason === 'slid' ? t.thread.voice.cancelled : t.thread.voice.tooShort);
-      return;
-    }
-    // Read the file back as base64 and stage it, so nothing is sent until Send.
-    const uri = recorder.uri;
-    if (!uri) {
-      setAttachNote(t.thread.voice.recordFailed('no file'));
-      return;
-    }
-    try {
-      const { File } = await import('expo-file-system');
-      const base64 = await new File(uri).base64();
-      const stagedVoice = voiceAttachment(outcome.durationMs, base64);
-      setStaged((current) => [
-        ...current,
-        {
-          id: `voice-${Date.now()}`,
-          name: stagedVoice.name,
-          mime: VOICE_MIME,
-          sizeBytes: Math.floor((base64.length * 3) / 4),
-          kind: 'file',
-          dataUrl: stagedVoice.dataUrl,
+  }, [recorder]);
+
+  /**
+   * 0.11.0 R3.a — the HOLD mode's slide, WIRED.
+   *
+   * `updateSlide` was imported here and called NOWHERE: there was no move handler on the mic, so
+   * `slideLabel` never returned 'cancelling', `CANCEL_DX` was unreachable, and the bar's "Slide left to
+   * cancel, release to keep" promised a gesture that did nothing. `releaseRecording` already reads
+   * `slideDx` and treats a slide past `CANCEL_DX` as a cancel — the logic was finished; only the input
+   * was missing. `onMoveShouldSetPanResponder` only claims the touch once the thumb has actually
+   * travelled, so a plain hold is still a hold.
+   */
+  const slidePan = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => false,
+        onMoveShouldSetPanResponder: (_event, gesture) => Math.abs(gesture.dx) > 4,
+        onPanResponderMove: (_event, gesture) => {
+          setVoice((current) => updateSlide(current, gesture.dx));
         },
-      ]);
-    } catch (error) {
-      setAttachNote(t.thread.voice.recordFailed(String((error as Error)?.message ?? error)));
-    }
-  }, [recorder, voice]);
+        onPanResponderRelease: () => undefined,
+      }),
+    [],
+  );
+
+  /**
+   * 0.11.0 R3.b — STOPPING SENDS, in both modes.
+   *
+   * Not staged into the strip: the user's report is that a recorded note does not go through, and a second
+   * gesture between "I recorded it" and "it was sent" is exactly what he is complaining about. The strip
+   * keeps its job for images and files, where choosing and sending are genuinely two acts.
+   */
+  const endVoice = useCallback(
+    async (options?: { cancel?: boolean }) => {
+      if (voice.phase === 'idle') return;
+      const outcome = releaseRecording(voice, Date.now());
+      await stopRecorder();
+      if (options?.cancel === true || outcome.kind === 'cancel') {
+        setAttachNote(
+          options?.cancel === true
+            ? t.thread.voice.cancelled
+            : outcome.kind === 'cancel' && outcome.reason === 'slid'
+              ? t.thread.voice.cancelled
+              : t.thread.voice.tooShort,
+        );
+        return;
+      }
+      const uri = recorder.uri;
+      if (!uri) {
+        setAttachNote(t.thread.voice.recordFailed('no file'));
+        return;
+      }
+      try {
+        const base64 = (await dataUrlFromUri(uri, VOICE_MIME)).split(',')[1] ?? '';
+        const stagedVoice = voiceAttachment(outcome.durationMs, base64);
+        // The caption typed before recording rides along, and is cleared like any other send.
+        const caption = draft.trim();
+        if (caption) setDraft('');
+        const accepted = await submitTurn({
+          text: caption,
+          attachments: [
+            {
+              id: `voice-${Date.now()}`,
+              name: stagedVoice.name,
+              mime: VOICE_MIME,
+              sizeBytes: Math.floor((base64.length * 3) / 4),
+              kind: 'file',
+              dataUrl: stagedVoice.dataUrl,
+            },
+          ],
+        });
+        if (!accepted) setAttachNote(t.thread.voice.recordFailed('the turn did not start'));
+      } catch (error) {
+        setAttachNote(t.thread.voice.recordFailed(String((error as Error)?.message ?? error)));
+      }
+    },
+    [dataUrlFromUri, draft, recorder, stopRecorder, submitTurn, voice],
+  );
+
+  /** 0.11.0 R3 — tap mode's cancel: the recording is DISCARDED and nothing is sent. */
+  const cancelVoice = useCallback(() => {
+    void endVoice({ cancel: true });
+  }, [endVoice]);
 
   /** One staged item in. A refusal is SAID, never silently dropped. */
   const addStaged = useCallback((input: { name: string; dataUrl: string; mime?: string }) => {
@@ -324,74 +651,186 @@ export default function ThreadScreen() {
     }
   }, [addStaged]);
 
+  /**
+   * 0.11.0 R2 — the FILE picker. the user chose it ("Any file"), and it needs `expo-document-picker`, an
+   * Expo SDK package at the version `expo@57.x` pins — no floating version, no third-party picker.
+   *
+   * THE SIZE IS CHECKED BEFORE THE BYTES ARE READ. A picker can hand over a multi-gigabyte URI, and
+   * reading it to find out would be an out-of-memory on a phone; `stage()` would also refuse it, but
+   * only after the whole file had been turned into a base64 string in memory.
+   */
+  const pickDocument = useCallback(async () => {
+    setPickerOpen(false);
+    try {
+      const DocumentPicker = await import('expo-document-picker');
+      const result = await DocumentPicker.getDocumentAsync({ multiple: false, copyToCacheDirectory: true });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      if (typeof asset.size === 'number' && asset.size > ATTACHMENT_MAX_BYTES) {
+        setAttachNote(t.thread.attach.refused(asset.name ?? 'file', t.thread.attach.tooLarge));
+        return;
+      }
+      const mime = asset.mimeType ?? '';
+      const dataUrl = await dataUrlFromUri(asset.uri, mime);
+      addStaged({ name: asset.name || 'file', dataUrl, mime });
+    } catch (error) {
+      setAttachNote(t.thread.attach.fileFailed(String((error as Error)?.message ?? error)));
+    }
+  }, [addStaged, dataUrlFromUri]);
+
+  /**
+   * 0.11.0 R2 — the PHOTO LIBRARY. Same shape as the camera's result (a URI + a name + a mime) and the
+   * same ONE staging door: `stage()`, which enforces the 25 MB cap and returns the reason the screen
+   * already displays. A refused permission is a SENTENCE, never a crash — in the same note slot the
+   * camera uses.
+   */
+  const pickPhoto = useCallback(async () => {
+    setPickerOpen(false);
+    try {
+      const ImagePicker = await import('expo-image-picker');
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        setAttachNote(t.thread.attach.photoDenied);
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], quality: 0.7 });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      if (typeof asset.fileSize === 'number' && asset.fileSize > ATTACHMENT_MAX_BYTES) {
+        setAttachNote(t.thread.attach.refused(asset.fileName ?? 'photo', t.thread.attach.tooLarge));
+        return;
+      }
+      const name = asset.fileName ?? `photo-${Date.now()}.jpg`;
+      const mime = asset.mimeType ?? 'image/jpeg';
+      const dataUrl = await dataUrlFromUri(asset.uri, mime);
+      addStaged({ name, dataUrl, mime });
+    } catch (error) {
+      setAttachNote(t.thread.attach.photoFailed(String((error as Error)?.message ?? error)));
+    }
+  }, [addStaged, dataUrlFromUri]);
+
+  /** The menu closes the moment the draft stops being a `/` query — including on backspacing past it. */
+  const dismissSlash = useCallback(() => {
+    if (slashTimer.current) clearTimeout(slashTimer.current);
+    slashSeq.current += 1;
+    setSlash(null);
+  }, []);
+
+  /**
+   * 0.11.0 R5 — ask the SERVER's own completer, debounced, with last-write-wins.
+   *
+   * Nothing here decides what a command IS: `complete.slash` answers only for a leading `/`, decides
+   * `kind` (`command` / `skill`) and computes the splice index. The two rails that ARE ours:
+   *
+   *   * **debounce** — typing `/he` must not fire three requests;
+   *   * **drop a stale answer** — a slower earlier reply must never overwrite a later one.
+   *
+   * A backend that cannot answer CLOSES the menu, silently and non-blockingly: a completion request
+   * must never hold, block or slow typing, and must never surface an error the user did not ask for.
+   */
+  const querySlash = useCallback(
+    (text: string) => {
+      if (slashTimer.current) clearTimeout(slashTimer.current);
+      const query = slashQueryOf(text, caretAtEnd.current);
+      if (!query) {
+        dismissSlash();
+        return;
+      }
+      const seq = (slashSeq.current += 1);
+      setSlash((prev) => ({
+        query,
+        rows: prev && prev.query === query ? prev.rows : [],
+        replaceFrom: prev ? prev.replaceFrom : 1,
+        loading: true,
+      }));
+      slashTimer.current = setTimeout(() => {
+        void backend
+          .completeSlash(sessionId, query, profile)
+          .then((answer) => {
+            if (isStaleAnswer(seq, slashSeq.current)) return;
+            const rows: SlashRow[] = answer.items.map((item) => ({
+              item,
+              group: item.kind === 'skill' ? t.thread.slash.skills : t.thread.slash.commands,
+            }));
+            if (!rows.length) {
+              setSlash(null);
+              return;
+            }
+            setSlash({ query, rows, replaceFrom: answer.replaceFrom, loading: false });
+          })
+          .catch(() => {
+            if (!isStaleAnswer(seq, slashSeq.current)) setSlash(null);
+          });
+      }, SLASH_DEBOUNCE_MS);
+    },
+    [backend, dismissSlash, profile, sessionId],
+  );
+
+  /**
+   * 0.11.0 R5 — tapping a row INSERTS; it does not send. The splice happens at the server's
+   * `replace_from`, then the menu RE-QUERIES with the new text — which is what surfaces a command's
+   * argument stage (`/model `) instead of closing the menu on it.
+   */
+  const applySlashItem = useCallback(
+    (item: SlashItem) => {
+      const next = spliceCompletion(draft, slash ? slash.replaceFrom : 1, item.text);
+      setDraft(next);
+      caretAtEnd.current = true;
+      querySlash(next);
+    },
+    [draft, querySlash, slash],
+  );
+
+  /**
+   * 0.11.0 R6 (approach A, confirmed by the user) — a draft that starts with `/` is a COMMAND.
+   *
+   * `prompt.submit` has NO slash handling: without this, tapping `/help` and pressing send would submit
+   * the literal string "/help" as a prompt — handing the user dead text. The output goes in the notice
+   * card that already exists (`attachNote`, the slot the attachment refusals use).
+   *
+   * §R6.b — a command turn opens NO stream: no `chatStream`, no `setStreaming(true)`, no live bubble, so
+   * the composer is never left disabled behind a stream that was never started.
+   *
+   * §R6.c — the limitation, stated rather than papered over: the output is TRANSIENT. It lives in a
+   * card, not in the transcript, so it does not survive a thread refresh and does not scroll with the
+   * conversation. A real row is approach B, declined for this build.
+   */
+  const runCommand = useCallback(
+    async (command: string) => {
+      setDraft('');
+      dismissSlash();
+      setAttachNote(null);
+      try {
+        const result = await backend.runSlashCommand(sessionId, command, profile);
+        setAttachNote(result.output || t.thread.slash.noOutput);
+      } catch (error) {
+        // A failed command SAYS SO. Nothing vanishes silently.
+        setAttachNote(t.thread.slash.failed(normalizeError(error).message));
+      }
+    },
+    [backend, dismissSlash, profile, sessionId],
+  );
+
+  /**
+   * 0.11.0 R6.a/R7.e — the guard runs FIRST, then the `/` interception, then the compose-and-submit.
+   *
+   * The guard is CORRECT AS WRITTEN and stays a guard rather than becoming the fix: with an empty wire
+   * text the turn would still carry nothing the agent can open. A command sent together with a staged
+   * attachment is out of scope — send the file first.
+   */
   const send = useCallback(async () => {
     const text = draft.trim();
     if ((!text && !staged.length) || streaming || !sessionId) return;
+    dismissSlash();
+    if (text.startsWith('/')) {
+      await runCommand(text);
+      return;
+    }
     setDraft('');
     setAttachNote(null);
-    /**
-     * 0.9.0 G — the attachment goes to the SERVER first (`image.attach_bytes`), so the agent on the
-     * box can reach it; only then is the turn submitted. Attaching is not part of the stream, so a
-     * failed attach leaves the strip intact and nothing is lost.
-     */
-    if (staged.length) {
-      try {
-        for (const item of staged) {
-          // An image rides `image.attach_bytes`; anything else — including a voice note — rides
-          // `file.attach`, whose decoder takes any media type.
-          if (item.kind === 'image') await backend.attachImage(sessionId, base64Of(item.dataUrl), item.name, profile);
-          else await backend.attachFile(sessionId, item.dataUrl, item.name, profile);
-        }
-        setStaged([]);
-      } catch (error) {
-        setAttachNote(normalizeError(error).message);
-        return;
-      }
-    }
-    setNotice(null);
-    setLoadError(null);
-    pendingRef.current = text;
-    liveTextRef.current = '';
-    errorRef.current = null;
-    setLiveTools([]);
-    setLive({ user: text, text: '' });
-    setStreaming(true);
-
-    handleRef.current = backend.chatStream(
-      sessionId,
-      text,
-      {
-        onDelta: (delta) => {
-          liveTextRef.current += delta;
-          setLive((prev) => (prev ? { ...prev, text: liveTextRef.current } : { user: text, text: liveTextRef.current }));
-        },
-        onFinal: (content) => {
-          if (content) {
-            liveTextRef.current = content;
-            setLive((prev) => (prev ? { ...prev, text: content } : { user: text, text: content }));
-          }
-        },
-        onTool: (tool) => {
-          setLiveTools((prev) => {
-            const index = prev.findIndex((entry) => entry.id && entry.id === tool.id);
-            if (index >= 0) {
-              const next = [...prev];
-              next[index] = { ...next[index], ...tool, args: tool.args || next[index].args };
-              return next;
-            }
-            return [...prev, tool];
-          });
-        },
-        onError: (error) => {
-          errorRef.current = error;
-        },
-        onClose: ({ aborted }) => {
-          void finishTurn(aborted, errorRef.current);
-        },
-      },
-      profile,
-    );
-  }, [backend, draft, finishTurn, profile, sessionId, staged, streaming]);
+    const accepted = await submitTurn({ text, attachments: staged });
+    if (accepted) setStaged([]);
+  }, [dismissSlash, draft, runCommand, staged, streaming, submitTurn]);
 
   const stop = useCallback(() => {
     handleRef.current?.close();
@@ -514,7 +953,25 @@ export default function ThreadScreen() {
 
   const footer = (
     <View>
-      {live ? (
+      {/* 0.11.0 R7.b — the LIVE reasoning block. `reasoning.delta` was already on the wire
+          (`agent_callbacks.py:135-138`) and the client's five-case switch dropped it, so reasoning only
+          ever appeared after a re-entry, read back from the stored transcript. It renders with the
+          existing reasoning card, and is shown OPEN while it streams: the user asked to see the reasoning
+          in real time. */}
+      {liveReasoning ? (
+        <View style={styles.reasoningCard}>
+          <View style={styles.runHead}>
+            <Ionicons name="bulb-outline" size={16} color={colors.amber} />
+            <Text style={[styles.runText, styles.reasoningTitle]}>{t.thread.reasoning}</Text>
+          </View>
+          <Text style={styles.reasoningBody} numberOfLines={10}>
+            {liveReasoning}
+          </Text>
+        </View>
+      ) : null}
+      {/* R1 — the user's own bubble carries the CAPTION, never the `@file:` refs, and exists only when
+          there is something to show: a turn started on another machine has no caption to echo. */}
+      {live && live.user ? (
         <View style={[styles.bubbleRow, styles.bubbleRowMine]}>
           <View style={[styles.bubble, styles.bubbleMine]}>
             <Text style={styles.bubbleRole}>{t.thread.you}</Text>
@@ -566,9 +1023,14 @@ export default function ThreadScreen() {
   return (
     <KeyboardAvoidingView
       style={styles.screen}
-      /* 0.9.0 F (landscape): Android needs `height`, not nothing — with no behaviour the raised
-         keyboard covers the composer in a short viewport, which is the "composer swallowed" case. */
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      /* 0.11.0 R8 — Android gets NO KAV behaviour any more. 0.9.0 gave it `height` on the reading that
+         "with no behaviour the raised keyboard covers the composer"; on RN 0.86 / Expo 57 the Android
+         window no longer resizes under the keyboard (edge-to-edge), so `height` has nothing solid left to
+         subtract against — and the user's report is exactly the composer staying hidden. The lift is now
+         applied directly, as padding on the composer container, from the keyboard's own report
+         (`composerLift`). Two spacers fighting is the classic double-gap, so Android gets ONE. iOS keeps
+         `padding` plus its offset, untouched. */
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
     >
       {/* F4: title -> id, never a raw id while a title exists. */}
@@ -628,8 +1090,26 @@ export default function ThreadScreen() {
           <View style={styles.voiceDot} />
           <Text style={styles.voiceElapsed}>{formatDuration(elapsedMs(voice, voiceNow || Date.now()))}</Text>
           <Text style={styles.voiceHint}>
-            {slideLabel(voice) === 'cancelling' ? t.thread.voice.releaseToCancel : t.thread.voice.slideToCancel}
+            {micMode === 'tap'
+              ? t.thread.voice.tapHint
+              : slideLabel(voice) === 'cancelling'
+                ? t.thread.voice.releaseToCancel
+                : t.thread.voice.slideToCancel}
           </Text>
+          {/* 0.11.0 R3 — tap mode has no drag, so CANCEL must be a button here: a mode with no way to
+              abort a recording is a trap. In hold mode the gesture IS the affordance (slide left past
+              CANCEL_DX), so this control is not drawn. */}
+          {micMode === 'tap' ? (
+            <Pressable
+              onPress={cancelVoice}
+              accessibilityRole="button"
+              accessibilityLabel={t.thread.voice.cancel}
+              hitSlop={8}
+              style={({ pressed }) => [styles.voiceCancel, pressed && styles.pressed]}
+            >
+              <Ionicons name="close" size={16} color={colors.accentText} />
+            </Pressable>
+          ) : null}
         </View>
       ) : null}
 
@@ -670,7 +1150,48 @@ export default function ThreadScreen() {
         </ScrollView>
       ) : null}
 
-      <View style={[styles.composer, sidePad]}>
+      {/* 0.11.0 R8 — the ONE lifted container: the `/` menu and the composer row move TOGETHER. On
+          Android the KAV itself no longer moves (§R8), so the menu has to live inside this box; a
+          command menu that stays behind the keyboard is worse than no menu at all. The lift itself is
+          the composer row's own `paddingBottom` below. */}
+      <View>
+        {/* 0.11.0 R5 — the `/` menu: a PLAIN view in the flow, directly above the composer row, never a
+            `Modal` (so it has no keyboard math of its own). The rows are the SERVER's list; no new
+            dependency and no new socket (§10.10). */}
+        {slash ? (
+          <View style={[styles.slashMenu, sidePad]}>
+            <Text style={styles.slashTitle}>{t.thread.slash.title}</Text>
+            {!slash.rows.length ? (
+              <Text style={styles.slashNote}>
+                {slash.loading ? t.thread.slash.loading : t.thread.slash.empty}
+              </Text>
+            ) : null}
+            <ScrollView style={styles.slashList} keyboardShouldPersistTaps="handled" nestedScrollEnabled>
+              {slash.rows.map((row) => (
+                <Pressable
+                  key={`${row.item.kind}-${row.item.text}`}
+                  onPress={() => applySlashItem(row.item)}
+                  accessibilityRole="button"
+                  accessibilityLabel={row.item.display}
+                  style={({ pressed }) => [styles.slashRow, pressed && styles.pressed]}
+                >
+                  <View style={styles.slashRowText}>
+                    <Text style={styles.slashRowLabel} numberOfLines={1}>
+                      {row.item.display}
+                    </Text>
+                    {row.item.meta ? (
+                      <Text style={styles.slashMeta} numberOfLines={1}>
+                        {row.item.meta}
+                      </Text>
+                    ) : null}
+                  </View>
+                  <Text style={styles.slashGroup}>{row.group}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
+        <View style={[styles.composer, sidePad, { paddingBottom: space.md + composerLift }]}>
         {/* WhatsApp's paperclip, at the composer's LEFT. */}
         <Pressable
           onPress={() => setPickerOpen(true)}
@@ -682,7 +1203,20 @@ export default function ThreadScreen() {
         </Pressable>
         <TextInput
           value={draft}
-          onChangeText={setDraft}
+          onChangeText={(value) => {
+            draftRef.current = value;
+            setDraft(value);
+            // 0.11.0 R5 — every keystroke re-asks, debounced and last-write-wins. A draft that stops
+            // starting with `/` (or a caret parked mid-text) CLOSES the menu instead of leaving a stale
+            // list on screen.
+            querySlash(value);
+          }}
+          onSelectionChange={(event) => {
+            // `replace_from` is computed from the STRING'S END, so the menu is only honest with the caret
+            // there (§R5). The menu hides rather than splicing into a guess.
+            caretAtEnd.current = event.nativeEvent.selection.end >= draftRef.current.length;
+          }}
+          onBlur={dismissSlash}
           placeholder={t.thread.composerPlaceholder}
           placeholderTextColor={colors.faint}
           style={styles.composerInput}
@@ -690,19 +1224,37 @@ export default function ThreadScreen() {
           editable={!streaming}
         />
         {/* F2: icon-only buttons carry a PT-PT accessibility label. */}
-        {/* 0.9.0 H — hold to record, slide left to cancel, release to stage. `onPressOut` is what
-            ends the recording, so a drag off the button still resolves instead of recording forever. */}
+        {/* 0.11.0 R3 — the mic, in the mode the user chose. The GLYPH follows the gesture: in 'tap' mode
+            a recording turns the button into a red STOP square (the user's own words), and in 'hold' mode it
+            stays the mic, because while a thumb is held down a stop square offers nothing to act on.
+            `releaseRecording` and the recorder's state machine are untouched — the mode adds an entry
+            point and an icon, it does not fork the machine (R3.c). */}
         <Pressable
-          onPressIn={() => void beginVoice()}
-          onPressOut={() => void endVoice()}
-          onPress={() => undefined}
+          {...(micMode === 'hold' ? slidePan.panHandlers : {})}
+          onPressIn={micMode === 'hold' ? () => void beginVoice() : undefined}
+          onPressOut={micMode === 'hold' ? () => void endVoice() : undefined}
+          onPress={micMode === 'tap' ? () => (voice.phase === 'idle' ? void beginVoice() : void endVoice()) : () => undefined}
           delayLongPress={0}
           accessibilityRole="button"
-          accessibilityLabel={t.thread.voice.hold}
+          accessibilityLabel={
+            micMode === 'tap'
+              ? voice.phase === 'idle'
+                ? t.thread.voice.start
+                : t.thread.voice.stop
+              : t.thread.voice.hold
+          }
           hitSlop={8}
-          style={({ pressed }) => [styles.micButton, pressed && styles.pressed]}
+          style={({ pressed }) => [
+            styles.micButton,
+            micMode === 'tap' && voice.phase !== 'idle' && styles.micButtonStop,
+            pressed && styles.pressed,
+          ]}
         >
-          <Ionicons name="mic-outline" size={22} color={colors.muted} />
+          <Ionicons
+            name={micMode === 'tap' && voice.phase !== 'idle' ? 'stop' : 'mic-outline'}
+            size={22}
+            color={micMode === 'tap' && voice.phase !== 'idle' ? colors.accentText : colors.muted}
+          />
         </Pressable>
         <Pressable
           onPress={streaming ? stop : () => void send()}
@@ -717,30 +1269,16 @@ export default function ThreadScreen() {
           />
         </Pressable>
       </View>
-      {/* ── 0.9.0 G: the picker. The two sources this app can reach without a second native
-             dependency: the camera (expo-camera, already installed) and the clipboard
-             (expo-clipboard, already installed). */ }
+      </View>
+      {/* ── 0.11.0 R2: the picker. FOUR sources now, and the rows come from `ATTACH_ROWS` so a row's
+             label is looked up by its own key. Re-enabled: the `document` row (it is no longer
+             `disabled` — the picker exists) and the new photo-library row. the user chose the sources:
+             "Any file + the photo library". ── */}
       <ActionSheet
         visible={pickerOpen}
         title={t.thread.attach.add}
-        entries={[
-          { key: 'camera', label: 'camera', icon: 'camera-outline' },
-          { key: 'clipboard', label: 'clipboard', icon: 'clipboard-outline' },
-          {
-            key: 'document',
-            label: 'document',
-            icon: 'document-outline',
-            disabled: true,
-            reason: t.thread.attach.documentReason,
-          },
-        ]}
-        labelOf={(key: string) =>
-          key === 'camera'
-            ? t.thread.attach.camera
-            : key === 'clipboard'
-              ? t.thread.attach.clipboard
-              : t.thread.attach.document
-        }
+        entries={ATTACH_ROWS.map((row) => ({ key: row.id, label: row.id, icon: row.icon }))}
+        labelOf={attachLabelOf}
         onClose={() => setPickerOpen(false)}
         onPick={async (key: string) => {
           if (key === 'clipboard') {
@@ -755,6 +1293,14 @@ export default function ThreadScreen() {
               return;
             }
             setCameraOpen(true);
+            return;
+          }
+          if (key === 'photo') {
+            await pickPhoto();
+            return;
+          }
+          if (key === 'document') {
+            await pickDocument();
             return;
           }
           setPickerOpen(false);
@@ -984,5 +1530,38 @@ const styles = StyleSheet.create({
   voiceTrack: { flex: 1, height: 4, borderRadius: 2, backgroundColor: colors.border, overflow: 'hidden' },
   voiceProgress: { height: 4, backgroundColor: colors.accentText },
   voiceTime: { color: colors.accentText, fontSize: 11, fontVariant: ['tabular-nums'] },
+  /** 0.11.0 R3 — the tap mode's controls: a red STOP square on the mic, and a cancel button on the bar. */
+  micButtonStop: { backgroundColor: colors.red, borderRadius: radius.sm },
+  voiceCancel: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: colors.red,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  // ── 0.11.0 R5: the `/` menu, inside the composer's own box ──
+  slashMenu: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.panelAlt,
+    paddingTop: space.sm,
+    paddingBottom: space.sm,
+    gap: 2,
+  },
+  slashTitle: { color: colors.faint, fontSize: 10, fontWeight: '700', textTransform: 'uppercase' },
+  slashNote: { color: colors.muted, fontSize: font.small },
+  /** Bounded, so a long command list cannot push the composer off the screen. */
+  slashList: { maxHeight: 180 },
+  slashRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingVertical: 6,
+  },
+  slashRowText: { flex: 1 },
+  slashRowLabel: { color: colors.text, fontSize: font.small, fontWeight: '600' },
+  slashMeta: { color: colors.faint, fontSize: 10 },
+  slashGroup: { color: colors.accent, fontSize: 10, fontWeight: '700' },
   pressed: { opacity: 0.8 },
 });

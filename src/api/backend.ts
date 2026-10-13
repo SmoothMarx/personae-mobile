@@ -22,6 +22,7 @@ import {
   type ProfileCreateResult,
 } from './dashboard';
 import { normalizePeers, type PeersResult } from '../logic/peers';
+import type { SlashCompletion, SlashItem } from '../logic/slash';
 import { xhrTransport, type StreamHandle } from './transport';
 import { ApiError, normalizeError } from './errors';
 import { t } from '../i18n';
@@ -39,6 +40,24 @@ export type LiveTool = {
 
 export type ChatHandlers = ChatStreamHandlers & {
   onTool?: (event: LiveTool) => void;
+};
+
+/**
+ * 0.11.0 R7 — what a live subscription delivers. Every one of these is a frame the gateway already
+ * emits; the subscription adds no new vocabulary of its own.
+ */
+export type SessionWatchHandlers = {
+  onDelta?: (text: string) => void;
+  onFinal?: (text: string, payload: Record<string, unknown>) => void;
+  /** `reasoning.delta` — the live thinking block. The SERVER gates this (a session flag, else the
+   *  config default), so there is deliberately no client-side gate here. */
+  onReasoning?: (text: string) => void;
+  onTool?: (tool: LiveTool) => void;
+  onError?: (error: ApiError) => void;
+  /** The watcher re-attached (or the gateway restarted) and the caller must REFETCH, not stitch. */
+  onRefetch?: (reason: 'truncated' | 'epoch') => void;
+  /** The watcher could not attach at all: the thread must still be readable. Never an error card. */
+  onUnavailable?: () => void;
 };
 
 export type ProfileInfo = {
@@ -116,6 +135,35 @@ export type Backend = {
   rename(id: string, title: string, profile?: string): Promise<string>;
   createSession(title: string, profile?: string): Promise<HermesSession>;
   chatStream(sessionId: string, text: string, handlers: ChatHandlers, profile?: string): StreamHandle;
+  /**
+   * 0.11.0 R7 — subscribe this device to a session's LIVE frames, on the socket it already sends on.
+   *
+   * The gateway routes events to the SESSION's transport, and a socket only receives a session's
+   * frames once it has attached to it (`session.activate`, additive by construction:
+   * `_rebind_live_transport` — "Attach a live peer without displacing existing subscribers"). Before
+   * this method the app never attached, so a turn started anywhere else had NO listener here and the
+   * only way to see it was to leave the screen and come back. Returns an unsubscribe.
+   *
+   * `handlers` are the SAME handlers the screen paints a turn with (delta / final / reasoning / tool),
+   * which is what makes a turn started on another machine stream into the bubble this screen renders.
+   */
+  watchSession(
+    sessionId: string,
+    handlers: SessionWatchHandlers,
+    profile?: string,
+  ): Promise<{ close(): void }>;
+  /**
+   * 0.11.0 R5 — the gateway's OWN slash completer (`complete.slash`). One request over the shared
+   * socket; the server decides what is offered (it answers nothing at all unless the text starts with
+   * `/`, and `replace_from` is computed from the END of the string).
+   */
+  completeSlash(sessionId: string, text: string, profile?: string): Promise<SlashCompletion>;
+  /**
+   * 0.11.0 R6 — run one slash command and return its text. `prompt.submit` has NO slash handling;
+   * commands are dispatched by client-called RPCs, which is why the menu would otherwise hand out dead
+   * text. `slash.exec` first, `command.dispatch` once on the documented 4018 skill refusal.
+   */
+  runSlashCommand(sessionId: string, command: string, profile?: string): Promise<{ output: string }>;
   /** Avatar as a data URL (dashboard only; the legacy surface returns null). */
   avatar(profile: string): Promise<string | null>;
   /**
@@ -130,12 +178,116 @@ export type Backend = {
   dispose(): void;
 };
 
-/** One message-body hit from `GET /api/plugins/messenger/search`. */
+/**
+ * One message-body hit from `GET /api/plugins/messenger/search`. */
 export type MessageHit = {
   session_id: string;
   role?: string;
   snippet: string;
 };
+
+// ───────────────────────────────────────── 0.11.0 R5/R6/R7: the live wire, in ONE place ──
+
+/**
+ * Turn one gateway frame into the app's channels (text / tool / reasoning).
+ *
+ * 0.11.0 R7 hoists this out of `chatStream` for a reason that is the item's whole point: the frames a
+ * SUBSCRIPTION receives and the frames a turn's own socket receives are the same frames, and two
+ * copies of this switch is how the two drift apart. `true` means the turn completed (`message.complete`)
+ * — the value the caller must not throw away (§R7.c).
+ *
+ * `thinking.delta` is deliberately NOT here: it carries wait notices and the quiet spinner, with a
+ * comment in the serving code saying outright they are not reasoning blocks
+ * (`agent_callbacks.py:117-125`). It stays dropped (§15).
+ */
+function routeEvent(
+  event: { type: string; payload: Record<string, unknown> },
+  handlers: {
+    onDelta?: (text: string) => void;
+    onFinal?: (text: string, payload: Record<string, unknown>) => void;
+    onReasoning?: (text: string) => void;
+    onTool?: (tool: LiveTool) => void;
+    onError?: (error: ApiError) => void;
+  },
+): boolean {
+  const text = typeof event.payload.text === 'string' ? event.payload.text : '';
+  switch (event.type) {
+    case 'message.delta':
+      if (text) handlers.onDelta?.(text);
+      return false;
+    case 'message.complete':
+      handlers.onFinal?.(text, event.payload);
+      return true;
+    case 'tool.start':
+      handlers.onTool?.({
+        phase: 'start',
+        id: String(event.payload.tool_call_id ?? event.payload.id ?? ''),
+        name: String(event.payload.name ?? ''),
+        args: typeof event.payload.arguments === 'string' ? event.payload.arguments : JSON.stringify(event.payload.arguments ?? ''),
+        result: null,
+        ok: true,
+      });
+      return false;
+    case 'tool.complete':
+      handlers.onTool?.({
+        phase: 'complete',
+        id: String(event.payload.tool_call_id ?? event.payload.id ?? ''),
+        name: String(event.payload.name ?? ''),
+        args: '',
+        result: typeof event.payload.result === 'string' ? event.payload.result : JSON.stringify(event.payload.result ?? ''),
+        ok: event.payload.ok !== false,
+      });
+      return false;
+    case 'reasoning.delta':
+      // 0.11.0 R7.b — the model's live reasoning. Emitted by the gateway as `reasoning.delta`
+      // (`agent_callbacks.py:135-138`) and gated SERVER-side by `_session_show_reasoning(sid)`
+      // ("missing means the config default, not hidden"), so there is no gate here.
+      if (text) handlers.onReasoning?.(text);
+      return false;
+    case 'turn.error':
+      handlers.onError?.(
+        new ApiError(t.errors.server(500, String(event.payload.message ?? t.errors.turnFailed)), {
+          kind: 'http',
+          detail: String(event.payload.message ?? ''),
+        }),
+      );
+      return false;
+    default:
+      // About two dozen more types ride the wire (`message.start`, `message.interim`,
+      // `tool.generating`, `notification.show`, `status.update`, `session.usage`, …). An unknown frame
+      // is not an error.
+      return false;
+  }
+}
+
+/**
+ * The text a COMMAND's reply carries.
+ *
+ * `command.dispatch` payloads are command-specific and are not always `{output}`: a dispatch may answer
+ * `{output}`, a `{type:'send', message}` seed, or a plugin's own shape. So this renders `output` when
+ * it is there and otherwise the first message-like string — and it deliberately does NOT invent a
+ * renderer per command.
+ */
+function commandText(result: Record<string, unknown>): string {
+  for (const key of ['output', 'message', 'text', '_exec_out', 'warning']) {
+    const value = result[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+/** One completion row as the app's shape, from the server's. Junk is dropped, never rendered. */
+function toSlashItem(raw: unknown): SlashItem | null {
+  const row = raw && typeof raw === 'object' ? (raw as Record<string, unknown>) : {};
+  const text = String(row.text ?? '').trim();
+  if (!text) return null;
+  return {
+    text,
+    display: String(row.display ?? text).trim() || text,
+    meta: String(row.meta ?? '').trim(),
+    kind: String(row.kind ?? 'command'),
+  };
+}
 
 /** The batched slices, normalised away from the wire (`recents.sessions` → `recents`). */
 export type SidebarSlices = {
@@ -209,10 +361,37 @@ function createDashboardBackend(settings: Settings): Backend {
   let stateProbe: Promise<boolean> | null = null;
   const stateUp = () => (stateProbe ??= client.stateAvailable());
 
+  /**
+   * 0.11.0 R7 — who wants to know when the ONE socket dies.
+   *
+   * `shared()` opens a single lazily-opened socket for everything this screen does, which is what makes
+   * "one socket per mounted thread screen" true (§10.11). But nothing could OBSERVE that socket dying:
+   * the subscription needs it (to re-attach and catch up) and so does the turn (a socket close without
+   * `message.complete` is a TRUNCATED reply, not a finished turn — §R7.c). So the socket is opened
+   * with one close hook that fans out to whoever registered.
+   */
+  const deathHandlers = new Set<() => void>();
+  const onSocketDeath = (handler: () => void): (() => void) => {
+    deathHandlers.add(handler);
+    return () => deathHandlers.delete(handler);
+  };
+
   /** One lazily-opened socket serves every avatar fetch, so the roster never opens N of them. */
   const shared = async (): Promise<DashboardSocket> => {
     if (socket && !socket.closed) return socket;
-    socketPromise = socketPromise && socket && !socket.closed ? socketPromise : client.connect({});
+    socketPromise = socketPromise && socket && !socket.closed
+      ? socketPromise
+      : client.connect({
+          onClose: () => {
+            for (const notify of Array.from(deathHandlers)) {
+              try {
+                notify();
+              } catch {
+                /* one bad listener must not stop the others */
+              }
+            }
+          },
+        });
     socket = await socketPromise;
     return socket;
   };
@@ -431,80 +610,59 @@ function createDashboardBackend(settings: Settings): Backend {
       return { id, title: title.trim() || null, message_count: 0, last_active: Date.now() / 1000 };
     },
 
+    /**
+     * 0.11.0 R7 (§R7.e) — the turn is SUBMITTED on the socket this screen already holds, and the
+     * returned handle keeps its `{close}` shape.
+     *
+     * What changed from 0.10.0 and why: the per-turn socket is FOLDED IN rather than run alongside the
+     * subscription (§10.11 — one socket per mounted thread screen). Paint is the SUBSCRIPTION's job
+     * (`watchSession` routes every frame of this session through the same handlers), so a turn started
+     * here and a turn started on another machine take ONE code path. This method owns exactly two
+     * things: the `prompt.submit` that starts the turn, and the END of it —
+     *
+     *   * `message.complete` is a completed turn;
+     *   * a socket close without one is a TRUNCATED reply. `sawCompletion` used to be computed and then
+     *     thrown away (`void sawCompletion`), which painted a mid-turn disconnect as a normal end of
+     *     turn, while the comment above it promised the caller was told "never silently".
+     */
     chatStream(sessionId, text, handlers, profile = '') {
       let live: DashboardSocket | null = null;
-      let closed = false;
+      let settled = false;
       let sawCompletion = false;
+      const offs: (() => void)[] = [];
 
       const finish = (aborted: boolean) => {
-        if (closed) return;
-        closed = true;
-        try {
-          live?.close();
-        } catch {
-          /* already gone */
-        }
+        if (settled) return;
+        settled = true;
+        for (const off of offs.splice(0)) off();
+        offDeath();
         handlers.onClose({ aborted });
       };
 
+      const offDeath = onSocketDeath(() => {
+        if (!settled && !sawCompletion) finish(true);
+      });
+
       void (async () => {
         try {
-          live = await client.connect({
-            onClose: () => finish(false),
-            onError: (error) => handlers.onError(normalizeError(error)),
-            onEvent: (event) => {
-              const text = typeof event.payload.text === 'string' ? event.payload.text : '';
-              switch (event.type) {
-                case 'message.delta':
-                  if (text) handlers.onDelta?.(text);
-                  break;
-                case 'message.complete':
-                  sawCompletion = true;
-                  handlers.onFinal?.(text, event.payload);
-                  break;
-                case 'tool.start':
-                  handlers.onTool?.({
-                    phase: 'start',
-                    id: String(event.payload.tool_call_id ?? event.payload.id ?? ''),
-                    name: String(event.payload.name ?? ''),
-                    args: typeof event.payload.arguments === 'string' ? event.payload.arguments : JSON.stringify(event.payload.arguments ?? ''),
-                    result: null,
-                    ok: true,
-                  });
-                  break;
-                case 'tool.complete':
-                  handlers.onTool?.({
-                    phase: 'complete',
-                    id: String(event.payload.tool_call_id ?? event.payload.id ?? ''),
-                    name: String(event.payload.name ?? ''),
-                    args: '',
-                    result: typeof event.payload.result === 'string' ? event.payload.result : JSON.stringify(event.payload.result ?? ''),
-                    ok: event.payload.ok !== false,
-                  });
-                  break;
-                case 'turn.error':
-                  handlers.onError(
-                    new ApiError(t.errors.server(500, String(event.payload.message ?? t.errors.turnFailed)), {
-                      kind: 'http',
-                      detail: String(event.payload.message ?? ''),
-                    }),
-                  );
-                  break;
-                default:
-                  break;
-              }
-            },
-          });
+          live = await shared();
+          offs.push(
+            live.on('message.complete', (event) => {
+              if (event.sessionId && event.sessionId !== sessionId) return;
+              sawCompletion = true;
+              finish(false);
+            }),
+            live.on('turn.error', (event) => {
+              if (event.sessionId && event.sessionId !== sessionId) return;
+              routeEvent(event, handlers); // handlers.onError for this frame
+            }),
+          );
           handlers.onOpen?.();
           await live.rpc('prompt.submit', { session_id: sessionId, text, ...(profile ? { profile } : {}) });
         } catch (error) {
           handlers.onError(normalizeError(error));
           finish(false);
-          return;
         }
-        // A turn ends with message.complete; if the socket closes without one the reply is partial,
-        // which the caller is told about through onClose (aborted: false) — never silently.
-        void sawCompletion;
       })();
 
       return {
@@ -516,6 +674,228 @@ function createDashboardBackend(settings: Settings): Backend {
           finish(true);
         },
       };
+    },
+
+    /**
+     * 0.11.0 R7 — attach this device to a session's live frames, and CATCH UP when the connection
+     * comes back.
+     *
+     * Three defects, one symptom ("your responses and reasoning should show up on the conversation in
+     * real time, it should not need a refresh — exit session and come back in"):
+     *
+     *   a. nothing was subscribed. The gateway routes events to the SESSION's transport, and a socket
+     *      receives a session's frames only after attaching to it. Attach is ADDITIVE by construction
+     *      (`_rebind_live_transport`: "Attach a live peer without displacing existing subscribers"), so
+     *      this never steals the desktop's view — see §R7.d, which is the server's own policy, untouched.
+     *   b. `reasoning.delta` was emitted by the gateway and dropped by the client's five-case switch.
+     *   c. a dropped socket was reported as a finished turn.
+     *
+     * ONE SOCKET: listeners first, THEN `session.activate` — a frame must never arrive before something
+     * is listening. `omit_messages: true` because this device already read the history over REST.
+     */
+    async watchSession(sessionId, handlers, profile = '') {
+      let offs: (() => void)[] = [];
+      let closed = false;
+      /** The highest `seq` seen — the watermark a reconnect replays from. */
+      let lastSeen = 0;
+      /** The server process's seq numbering (`gateway.ready`'s `replay_epoch`). */
+      let epoch = '';
+      let offDeath: (() => void) | null = null;
+
+      const catchUp = async (live: DashboardSocket) => {
+        // Nothing was seen yet: this is a fresh attach, and the history came from the REST read.
+        if (lastSeen <= 0) return;
+        try {
+          const answer = await live.rpc<{
+            events?: unknown;
+            latest_seq?: unknown;
+            truncated?: unknown;
+            epoch?: unknown;
+          }>('session.events.since', { session_id: sessionId, last_seen: lastSeen });
+          if (answer.truncated === true) {
+            // Past the ring window: a REFETCH, never a stitched replay with a hole in it.
+            lastSeen = Number(answer.latest_seq ?? 0) || lastSeen;
+            handlers.onRefetch?.('truncated');
+            return;
+          }
+          if (epoch && String(answer.epoch ?? '') && String(answer.epoch) !== epoch) {
+            epoch = String(answer.epoch);
+            lastSeen = 0;
+            handlers.onRefetch?.('epoch');
+            return;
+          }
+          const frames = Array.isArray(answer.events) ? answer.events : [];
+          for (const frame of frames) {
+            const event = frame as { type?: unknown; payload?: unknown; session_id?: unknown; seq?: unknown };
+            route(event as never);
+          }
+          const latest = Number(answer.latest_seq ?? 0);
+          if (Number.isFinite(latest)) lastSeen = Math.max(lastSeen, latest);
+        } catch {
+          /* a catch-up that cannot answer must not break the watcher */
+        }
+      };
+
+      const route = (event: { type: string; payload: Record<string, unknown>; sessionId?: string; seq?: number }) => {
+        if (closed) return;
+        if (event.type === 'gateway.ready') {
+          // The FIRST frame of every connection (ws.py:367) — the reconnect signal. A changed epoch
+          // means the gateway restarted and this device's seq watermark means nothing any more.
+          const next = String(event.payload.replay_epoch ?? '');
+          if (epoch && next && next !== epoch) {
+            epoch = next;
+            lastSeen = 0;
+            handlers.onRefetch?.('epoch');
+            return;
+          }
+          if (next) epoch = next;
+          void catchUp(liveRef);
+          return;
+        }
+        // FILTER BY SESSION: this socket also carries whatever else the app does, and another
+        // session's frames must change nothing here.
+        if (event.sessionId && event.sessionId !== sessionId) return;
+        if (typeof event.seq === 'number') lastSeen = Math.max(lastSeen, event.seq);
+        routeEvent(event, handlers);
+      };
+
+      let liveRef: DashboardSocket;
+      const listen = (live: DashboardSocket) => {
+        liveRef = live;
+        offs = [
+          live.on('message.delta', route),
+          live.on('message.complete', route),
+          live.on('tool.start', route),
+          live.on('tool.complete', route),
+          live.on('reasoning.delta', route),
+          live.on('turn.error', route),
+          live.on('gateway.ready', route),
+        ];
+      };
+
+      /**
+       * `session.activate` can fail TRANSIENTLY, and that is not an error card: `_reattach_refusal`
+       * answers `4007 "session no longer live; retry resume"` and `4009 "session disconnect interrupt
+       * settling"` (`session_lifecycle.py:819-827`). On 4007 fall back to `session.resume`; on 4009
+       * retry once after a short delay; on anything else the thread simply stays readable without a
+       * subscription. A watcher that cannot attach must not look broken.
+       */
+      const activate = async (live: DashboardSocket) => {
+        const params = { session_id: sessionId, omit_messages: true, ...(profile ? { profile } : {}) };
+        try {
+          await live.rpc('session.activate', params);
+          return;
+        } catch (error) {
+          const normalized = normalizeError(error);
+          if (normalized.status === 4007) {
+            try {
+              await live.rpc('session.resume', { session_id: sessionId, ...(profile ? { profile } : {}) });
+              return;
+            } catch {
+              handlers.onUnavailable?.();
+              return;
+            }
+          }
+          if (normalized.status === 4009) {
+            await new Promise((resolve) => setTimeout(resolve, 400));
+            try {
+              await live.rpc('session.activate', params);
+              return;
+            } catch {
+              handlers.onUnavailable?.();
+              return;
+            }
+          }
+          handlers.onUnavailable?.();
+        }
+      };
+
+      const live = await shared();
+      listen(live);
+      await activate(live);
+      // A dead socket is re-attached on a FRESH one: `shared()` sees `socket.closed` and opens again,
+      // and its `gateway.ready` frame drives the epoch check and the replay-watermark catch-up.
+      offDeath = onSocketDeath(() => {
+        if (closed) return;
+        void (async () => {
+          try {
+            for (const off of offs.splice(0)) off();
+            const next = await shared();
+            listen(next);
+            await activate(next);
+          } catch {
+            handlers.onUnavailable?.();
+          }
+        })();
+      });
+
+      return {
+        close() {
+          if (closed) return;
+          closed = true;
+          for (const off of offs.splice(0)) off();
+          offDeath?.();
+          offDeath = null;
+        },
+      };
+    },
+
+    /**
+     * 0.11.0 R5 — the server's own completer, over the shared socket. No new connection (§10.10) and
+     * no new dependency: `complete.*` is a WS method with no HTTP route.
+     */
+    async completeSlash(sessionId, text, profile = '') {
+      const live = await shared();
+      const result = await live.rpc<{ items?: unknown; replace_from?: unknown }>('complete.slash', {
+        text,
+        session_id: sessionId,
+        ...(profile ? { profile } : {}),
+      });
+      const raw = Array.isArray(result.items) ? result.items : [];
+      return {
+        items: raw.map(toSlashItem).filter((item): item is SlashItem => item !== null),
+        replaceFrom: Number(result.replace_from),
+      } satisfies SlashCompletion;
+    },
+
+    /**
+     * 0.11.0 R6 (approach A) — run one command.
+     *
+     * `prompt.submit` has NO slash handling at all: the word "slash" does not occur once in
+     * `tui_gateway/methods_prompt.py`, and nothing downstream of it parses a leading `/`. Slash
+     * commands are dispatched by separate, CLIENT-CALLED RPCs — `slash.exec`
+     * (`methods_tools.py:1113`) and `command.dispatch` (`:1093`) — and that file states the contract in
+     * as many words: *"Recognized skills keep the 4018 gate so clients command.dispatch."*
+     *
+     * So: `slash.exec` FIRST, and `command.dispatch` exactly once on that documented 4018. The retry
+     * exists only for the skill path — `slash.exec` already routes pending-input commands and bundles
+     * to `command.dispatch` itself (`:1132-1137`).
+     */
+    async runSlashCommand(sessionId, command, profile = '') {
+      const live = await shared();
+      const cleaned = String(command ?? '').trim();
+      const body = cleaned.replace(/^\//, '');
+      const [name = '', ...rest] = body.split(/\s+/);
+      const arg = rest.join(' ');
+      const scope = profile ? { profile } : {};
+      try {
+        const result = await live.rpc<Record<string, unknown>>('slash.exec', {
+          command: cleaned,
+          session_id: sessionId,
+          ...scope,
+        });
+        return { output: commandText(result) };
+      } catch (error) {
+        const normalized = normalizeError(error);
+        if (normalized.status !== 4018) throw normalized;
+        const dispatched = await live.rpc<Record<string, unknown>>('command.dispatch', {
+          name,
+          arg,
+          session_id: sessionId,
+          ...scope,
+        });
+        return { output: commandText(dispatched) };
+      }
     },
 
     async avatar(profile) {
@@ -549,6 +929,8 @@ function createDashboardBackend(settings: Settings): Backend {
       }
       socket = null;
       socketPromise = null;
+      // Nobody can hear a death that happens after the screen is gone.
+      deathHandlers.clear();
     },
   };
 }
@@ -697,6 +1079,23 @@ function createGatewayBackend(settings: Settings, transport: typeof xhrTransport
     },
 
     chatStream: (sessionId, text, handlers, profile = '') => api.chatStream(sessionId, text, handlers, profile),
+
+    /**
+     * 0.11.0 R7 — no WS event channel on this surface, so there is nothing to subscribe TO. It
+     * resolves to a watcher that does nothing rather than throwing: the thread stays readable, which is
+     * the same rule the dashboard path follows when an attach is refused.
+     */
+    watchSession: () => Promise.resolve({ close: () => undefined }),
+
+    /** 0.11.0 R5 — `complete.*` is a WS method; this surface answers "no items", never an error. */
+    completeSlash: () => Promise.resolve({ items: [], replaceFrom: 1 }),
+
+    /** 0.11.0 R6 — same: the dispatch RPCs are WS-only, and the refusal is said out loud. */
+    runSlashCommand() {
+      return Promise.reject(
+        new ApiError(t.errors.server(501, t.errors.attachUnsupported), { kind: 'http', status: 501 }),
+      );
+    },
 
     avatar: () => Promise.resolve(null),
 

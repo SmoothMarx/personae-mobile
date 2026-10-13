@@ -2,7 +2,7 @@
   "expo": {
     "name": "Personae",
     "slug": "personae-mobile",
-    "version": "0.10.0",
+    "version": "0.11.0",
     "orientation": "default",
     "scheme": "personae",
     "icon": "./assets/icon.png",
@@ -13,12 +13,13 @@
         "NSAppTransportSecurity": {
           "NSAllowsLocalNetworking": true
         },
-        "NSLocalNetworkUsageDescription": "Personae connects to the Hermes gateway on your own network, so it needs permission to reach devices on your local network."
+        "NSLocalNetworkUsageDescription": "Personae connects to the Hermes gateway on your own network, so it needs permission to reach devices on your local network.",
+        "NSPhotoLibraryUsageDescription": "Personae opens your photo library only when you choose a picture to send."
       }
     },
     "android": {
       "package": "com.personae.mobile",
-      "versionCode": 12,
+      "versionCode": 14,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0b0f14"
@@ -64,7 +65,14 @@
           "recordAudioAndroid": false,
           "microphonePermission": false
         }
-      ]
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Personae opens your photo library only when you choose a picture to send."
+        }
+      ],
+      "expo-document-picker"
     ],
     "experiments": {
       "typedRoutes": false

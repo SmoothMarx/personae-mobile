@@ -20,6 +20,9 @@
  * parsing behind all of that; the screen is a thin shell over it.
  */
 
+import { t } from '../i18n';
+import { isVoiceNote } from './voice';
+
 export type AttachmentKind = 'image' | 'file';
 
 export type StagedAttachment = {
@@ -112,6 +115,92 @@ export function unstage(current: readonly StagedAttachment[], id: string): Stage
  */
 export function captionFor(draft: string): string {
   return draft.trim();
+}
+
+/**
+ * 0.11.0 R1 — **what the TURN carries**: the caption, then one `@file:` ref per line.
+ *
+ * This is the bug behind BOTH "the voice message … is not being sent through" and, once a picker
+ * exists, "sending a file does not work" — one bug, not two. `file.attach` stages the bytes and hands
+ * back an `@file:<ref>` in its reply (`tui_gateway/methods_prompt.py:1030-1050`) and it **queues
+ * nothing**: unlike `image.attach_bytes`, whose queue the next submit consumes automatically
+ * (`prompt_attachments.py:137-159`, `compute_host_bridge.py:57/:304`), a file's `ref_text` has no
+ * consumer anywhere on the server. The TUI has always put the ref into the message TEXT, and the
+ * client is the side that was wrong: it threw the reply away and submitted its caption — an empty
+ * string for a voice note.
+ *
+ * So the wire text is the caption PLUS the refs, and an empty caption simply drops out; an empty ref
+ * (a reply that carried none) does too, which is what makes this safe for the image path.
+ *
+ * `captionFor` is deliberately LEFT ALONE: it answers "what did the user type", and this function
+ * answers "what does the model read". Two questions, two functions.
+ */
+export function wireTextFor(caption: string, refs: readonly string[]): string {
+  return [captionFor(caption), ...refs.map((ref) => String(ref ?? '').trim())]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
+ * 0.11.0 R1 — **what the USER sees** on their own bubble while the turn is in flight.
+ *
+ * The wire text is not the display text: nobody should read `@file:/home/…` in their own message. But
+ * the live bubble must never be BLANK either — a voice note has no caption, and an empty bubble reads
+ * as a lost message. So an empty caption falls back to a label: `t.thread.voice.sending` for a voice
+ * note (the string 0.9.0 Phase H declared and never referenced — this is its consumer), and the file's
+ * own name for anything else.
+ */
+export function liveLabelFor(
+  caption: string,
+  attachments: readonly { name: string; kind: string }[],
+): string {
+  const typed = captionFor(caption);
+  if (typed) return typed;
+  const first = attachments[0];
+  if (!first) return '';
+  return isVoiceNote(first.name) ? t.thread.voice.sending : first.name;
+}
+
+// ─────────────────────────────────────── 0.11.0 R2: the paperclip's own rows ──
+
+/**
+ * The rows the paperclip offers, as DATA.
+ *
+ * the user chose the sources himself (2026-10-13): *"Any file + the photo library"*. Re-enabling the
+ * `document` row and adding the photo-library row were therefore one-line changes here — but the
+ * LABEL was not: `app/thread/[id].tsx` resolved a row's label through a ternary chain whose final
+ * `else` was `document`, so every row added without extending that chain would have been labelled
+ * "Send a file". Each row now names the key its own label lives under, and nothing is positional.
+ */
+export type AttachRowId = 'camera' | 'photo' | 'document' | 'clipboard';
+
+export type AttachRow = {
+  id: AttachRowId;
+  icon: string;
+  /** The key this row's label lives under in `t.thread.attach`. */
+  labelKey: AttachRowId;
+};
+
+export const ATTACH_ROWS: readonly AttachRow[] = [
+  { id: 'camera', icon: 'camera-outline', labelKey: 'camera' },
+  { id: 'photo', icon: 'images-outline', labelKey: 'photo' },
+  { id: 'document', icon: 'document-outline', labelKey: 'document' },
+  { id: 'clipboard', icon: 'clipboard-outline', labelKey: 'clipboard' },
+];
+
+export function attachRowIds(): AttachRowId[] {
+  return ATTACH_ROWS.map((row) => row.id);
+}
+
+/**
+ * The string-table key a row's label resolves through, or `null` for a key that is not a row.
+ *
+ * `null` — never a fallback to some other row's label — is the whole point: the old chain's
+ * positional `document` default is what mislabels a new row, and a caller that gets `null` shows the
+ * raw key instead of the WRONG words.
+ */
+export function attachLabelKey(id: string): AttachRowId | null {
+  return ATTACH_ROWS.find((row) => row.id === id)?.labelKey ?? null;
 }
 
 // ─────────────────────────────────────────── reading what came back ──

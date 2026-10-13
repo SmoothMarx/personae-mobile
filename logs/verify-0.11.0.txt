@@ -1,0 +1,234 @@
+=== 0.11.0 release check — 2026-10-13T14:38:09Z ===
+
+--- app ---
+PASS  app tests: 294/294 passed, 0 failed (floor 294 — the 0.9.1 count of 250 plus the eleven 0.10.0 tests plus this batch 34)
+PASS  typecheck: tsc --noEmit rc 0
+
+
+--- 0.10.1 (Half A) items: each one has a test that NAMES it ---
+PASS  item S6: test present — "0.10.1 S6: the gateway page is a plan — status on top, connections below, pills, wizard, Advanced last"
+PASS  item S1: test present — "0.10.1 S1: the peer-list cap is ONE plan value, bounded, and both lists read it"
+PASS  item S1: test present — "0.10.1 S1: the Choose-device sheet scrolls its rows, with the title and actions pinned"
+PASS  item S1: test present — "0.10.1 S1: the peer list inside the wizard is bounded and nested — the manual field stays reachable"
+PASS  item S2: test present — "0.10.1 S2: the scheme is a visible prefix on BOTH address fields, and the sentence is gone"
+PASS  item S3: test present — "0.10.1 S3: step 1 probes ONCE, by itself — a re-render does not, a changed address does"
+PASS  item S3: test present — "0.10.1 S3: the editable address is a CORRECTION behind a disclosure, and the diagnosis stays"
+PASS  item S4: test present — "0.10.1 S4: the two sentences of chrome are gone, and the decoy "saved" survives"
+PASS  item S5: test present — "0.10.1 S5: the DRAWN index is what a delete acts on — a raw index deletes another row"
+PASS  item S5: test present — "0.10.1 S5: the selection after a delete is RE-DERIVED, never `selectedIndex - 1`"
+PASS  item S5: test present — "0.10.1 S5: the Gateway page hosts the verb, reusing the existing strings and the drawn index"
+PASS  item S7: test present — "0.10.1 S7: the session-types help sits directly under its heading, and the warning stays LAST"
+PASS  item S8: test present — "0.10.1 S8: the index stops explaining itself, and the ROWS keep their sentences"
+
+--- 0.11.0 (Half B + C) items: each one has a test that NAMES it ---
+PASS  item R1: test present — "0.11.0 R1: the ref travels with the turn — the WIRE text carries it, the screen does not"
+PASS  item R1: test present — "0.11.0 R1: the dead string is alive — the voice note says so in both tables"
+PASS  item R2: test present — "0.11.0 R2: the two pickers exist, the disabled row is gone, and a pick goes through stage()"
+PASS  item R2: test present — "0.11.0 R2: labelOf cannot mislabel — every row resolves its OWN label"
+PASS  item R3: test present — "0.11.0 R3: the mic mode is a DEVICE-LOCAL setting, and the default is the requested one"
+PASS  item R3: test present — "0.11.0 R3: the icon follows the GESTURE, cancel is reachable, and stopping SENDS"
+PASS  item R3: test present — "0.11.0 R3: a slide past the cancel point CANCELS instead of sending"
+PASS  item R4: test present — "0.11.0 R4: expo-file-system is DECLARED, and there is ONE read implementation"
+PASS  item R5: test present — "0.11.0 R5: the menu is the gateway list itself, served over the socket the app already holds"
+PASS  item R5: test present — "0.11.0 R5: insert-does-not-send, last-write-wins, and the caret rule — the rails"
+PASS  item R6: test present — "0.11.0 R6: a leading `/` RUNS a command, and opens NO stream"
+PASS  item R6: test present — "0.11.0 R6: the documented 4018 refusal is retried ONCE through command.dispatch"
+PASS  item R6: test present — "0.11.0 R6: any OTHER failure is reported, never retried"
+PASS  item R6: test present — "0.11.0 R6: the outcome lands in the card that already exists, and a mid-sentence / is text"
+PASS  item R7: test present — "0.11.0 R7: the thread subscribes to its OWN session, on the socket it sends on"
+PASS  item R7: test present — "0.11.0 R7: catch-up replays from the watermark — and a HOLEY replay is never stitched"
+PASS  item R7: test present — "0.11.0 R7: a changed replay EPOCH resets the watermark and refetches"
+PASS  item R7: test present — "0.11.0 R7: a refused attach is not an error card"
+PASS  item R7: test present — "0.11.0 R7: an incomplete turn is NOT a success, and the turn rides the shared socket"
+PASS  item R7: test present — "0.11.0 R7: the subscription is FOCUS-SCOPED, and always dropped"
+PASS  item R8: test present — "0.11.0 R8: Android is off KAV height, and the lift comes from the keyboard itself"
+--- 0.10.0 §2 items: each one has a test that NAMES it (`0.10.0 S<n>: …`) ---
+PASS  item S0: test present — "0.10.0 S0: the dropdown lists the routes — each route IS a connection"
+PASS  item S1: test present — "0.10.1 S6: the gateway page is a plan — status on top, connections below, pills, wizard, Advanced last"
+PASS  item S2: test present — "0.10.0 S2: the status dots — one probe per row, in parallel, with no repeating timer"
+PASS  item S3: test present — "0.10.0 S3: the wizard asks LAN or Remote, and either branch keeps the three 0.7.0 steps"
+PASS  item S3: test present — "0.10.0 S3: the LAN fields — IPv4 strict, a separate port, and a pasted address splits"
+PASS  item S3: test present — "0.10.0 S3: the LAN login opens the dashboard at next=/pair, THEN polls, THEN redeems"
+PASS  item S3: test present — "0.10.0 S3: remote — a MagicDNS name is legal, the tunnel row is Android-only, a 100.x timeout blames Tailscale"
+PASS  item S3: test present — "0.10.0 S3: the test is three staged calls, and a 401 means sign in"
+PASS  item S3: test present — "0.10.0 S3: the support bundle is masked and redacted, and the wizard remembers a skip"
+PASS  item S4: test present — "0.10.0 S4: iOS gets local networking and a usage description, and Android keeps ONE mechanism"
+PASS  item S5: test present — "0.10.0 S5: rename, delete and add a connection — and the credential survives all of it"
+PASS  0.10.0 S1's order was superseded IN PLACE by 0.10.1 S6 (renamed, not deleted — the marker is in the test)
+
+--- the 0.9.0 items are STILL asserted (the second regression gate) ---
+PASS  item 1: test present — "0.9.0 F: the search bar is 25% taller and rounded at the side, both DERIVED"
+PASS  item 2: test present — "0.9.0 F: the routine connection strip is gone; the FAILURE disclosure stays"
+PASS  item 3: test present — "0.9.0 F: the trailing "51 automatic…" line is gone and the honesty line is not"
+PASS  item 4: test present — "0.9.0 G: the staging strip stages, sizes, and removes ONE item at a time"
+PASS  item 4: test present — "0.9.0 G: the phone SENDS the bytes to the session before it submits the turn"
+PASS  item 4: test present — "0.9.0 G: a message that CARRIED something reads back as attachments plus a caption"
+PASS  item 4: test present — "0.9.0 G: what the RPC carries is the base64 PAYLOAD, never the whole data URL"
+PASS  item 4: test present — "0.9.0 G: the legacy surface refuses the attach verbs WITH a reason, as it does for the rest"
+PASS  item 5: test present — "0.9.0 H: hold to record, slide left to cancel, release to stage"
+PASS  item 5: test present — "0.9.0 H: a note too short to be a message is refused, WITH the reason"
+PASS  item 5: test present — "0.9.0 H: a voice note LEAVES the phone as a file the agent on the box can read"
+PASS  item 5: test present — "0.9.0 H: "receive" covers BOTH meanings — the agent sending one, and the phone playing it"
+PASS  item 5: test present — "0.9.0 H: the ONE new dependency is expo-audio, from the SDK, and the mic is declared"
+PASS  item 6: test present — "0.9.0 D: the session menu is the desktop shape — flat verbs plus one-noun submenus"
+PASS  item 6: test present — "0.9.0 D: every verb the phone cannot run carries a REASON, and none is silently absent"
+PASS  item 6: test present — "0.9.0 D: the sheet DRILLS INTO a submenu and back, and a submenu opener is not a verb"
+PASS  item 7: test present — "0.9.0 E: holding a row ticks it IMMEDIATELY and opens the mode (the WhatsApp model)"
+PASS  item 7: test present — "0.9.0 E: emptying the set leaves the mode (the user, 2026-10-10)"
+PASS  item 7: test present — "0.9.0 E: the batch resolves against what is ON SCREEN, not the raw roster"
+PASS  item 7: test present — "0.9.0 E: ONE delete path, and the confirm carries the COUNT"
+PASS  item 7: test present — "0.9.0 E: batch verbs once more than one row is ticked; single-object when exactly one"
+PASS  item 8: test present — "0.9.0 F: the Expand/collapse-all button is gone from the top bar, the ability is not"
+PASS  item 9: test present — "0.9.0 F: the "+" and Settings are bigger and their background is transparent"
+PASS  item 10: test present — "0.9.0 F: the routine connection strip is gone; the FAILURE disclosure stays"
+PASS  item 11: test present — "0.9.0 F (landscape): the app rotates, and every screen honours the SIDE insets"
+PASS  item 11: test present — "0.9.0 F (landscape): the sheets use MORE of a short viewport, not less"
+PASS  item 11: test present — "0.9.0 F (landscape): the roster geometry is dp-based, so a wide short canvas does not break it"
+PASS  item A: test present — "0.9.0 A: archive and delete ride the state verbs when the host mounts the plugin"
+PASS  item A: test present — "0.9.0 A: a PINNED session is refused with a machine-readable code, never silently archived"
+PASS  item A: test present — "0.9.0 A: without the plugin the same verbs FALL BACK to the dashboard verbs"
+PASS  item A: test present — "0.9.0 A: the legacy surface ATTEMPTS the verb and reports it; the 501 stub is gone"
+PASS  item A: test present — "0.9.0 A: the portable-preference document round-trips; a device-local key is refused"
+PASS  item A: test present — "0.9.0 A: the state surface has exactly ONE prefix, written in exactly one file"
+PASS  item B: test present — "0.9.0 B: Settings is a page of rows, and Notifications is a SIBLING of Agent Preferences"
+PASS  item B: test present — "0.9.0 B: the portable/device-local split is visible, and matches the SERVER key list"
+PASS  item B: test present — "0.9.0 B: promoting Settings to a page deleted nothing"
+PASS  item C: test present — "0.9.0 C: the model is the desktop document, shape for shape"
+PASS  item C: test present — "0.9.0 C: create, rename, file, unfile, collapse, move — and delete NEVER deletes a session"
+PASS  item C: test present — "0.9.0 C: no groups at all renders exactly the flat list it always was"
+PASS  item C: test present — "0.9.0 C: the phone syncs the same key the desktop writes, through the same merge"
+PASS  item C: test present — "0.9.0 C: the heading is its own row kind, and GROUP is not SECTION"
+PASS  item C: test present — "0.9.0 C: a 0.8.0 install has no groups key and loads as "no groups""
+PASS  item I: test present — "0.9.0 I: what syncs is an ALLOWLIST, and a gateway address can never be in it"
+PASS  item I: test present — "0.9.0 I: the server is the source of truth, and a stale revision is never a clobber"
+PASS  item I: test present — "0.9.0 I: only a GENUINE difference is pushed, so an applied value cannot echo back"
+
+--- the 0.9.1 corrections are STILL asserted (regression gate, no test was deleted) ---
+PASS  item S1: test present — "0.9.1 S1: every index row is geometrically identical — the Notifications indent cannot come back"
+PASS  item S2: test present — "0.9.1 S2: ONE back control in the header — it walks the plan, never straight to the index"
+PASS  item S3: test present — "0.9.1 S3: Advanced moved INSIDE Gateway Settings — it did not vanish"
+PASS  item S4.1: test present — "0.9.1 S4.1: the Agent Preferences page offers no control that changes the language — English, always"
+PASS  item S4.1: test present — "0.9.1 S4.1: a stored {language: "pt"} still renders English"
+PASS  item S4.2: test present — "0.9.1 S4.2: "Display session types" — four checkboxes, one per kind, each filtering on its own"
+PASS  item S4.2: test present — "0.9.1 S4.2: a legacy two-boolean blob loads as the three run types it meant"
+PASS  item S4.2: test present — "0.9.1 S4.2: the portable round-trip carries four booleans (and no server change was needed)"
+PASS  item S4.2: test present — "0.9.1 S4.2: the list and the checkpoint watcher still consult ONE classifier"
+
+--- §1.8 (push): still PARKED, and recorded as parked ---
+PASS  PROGRESS.md records the push deferral and its reason (the Firebase project is the user's to create)
+PASS  no google-services.json / GoogleService-Info.plist in the repo (nothing to leak)
+
+--- server plugins ---
+PASS  server tests: 77 passed in 2.06s (floor 77)
+      literal '~/.hermes/hermes-agent/venv/bin/python -m pytest server/tests -q' fails on this host
+        (ImportError while importing test module '~/Projects/personae-mobile/server/); server/run-tests.sh is the runner of record
+PASS  hermes-serve.service active (never restarted by this run)
+
+--- the state plugin is really deployed, not merely documented (measured, not asserted) ---
+      server/install.sh --check reports drift somewhere on this host:
+      drift: messenger/__init__.py
+      drift: messenger/plugin.yaml
+      drift: messenger/dashboard/manifest.json
+      drift: messenger/dashboard/plugin_api.py
+      missing: messenger/dashboard/ui_state.py
+PASS  personae-mobile-state itself is un-drifted — the drift above is another plugin, reported not hidden
+      UNRELATED TO THIS RELEASE: 5 messenger/other entry(ies) — PASS at 0.10.0's own run, so this is a
+      host-side change between then and now. 0.11.0 touches no file under server/ and no deployed plugin;
+      flagged to the user rather than fixed here (the server tree is read-only for this batch).
+PASS  deployed: personae-mobile-state/__init__.py
+PASS  deployed: personae-mobile-state/plugin.yaml
+PASS  deployed: personae-mobile-state/dashboard/manifest.json
+PASS  deployed: personae-mobile-state/dashboard/plugin_api.py
+PASS  deployed: personae-mobile-state/dashboard/preferences.py
+PASS  config.yaml enables personae-mobile-state
+
+--- the live dashboard answers what 0.10.0's wizard depends on ---
+      credential read from ~/.hermes/.env (the value is never printed; only the file name is)
+PASS  GET /api/status answers with a version — the S1 status panel's server row and S3.3's stage 2 have a real body to read
+PASS  /api/status carries gateway_state too (the second half of that row)
+PASS  GET /api/health is PUBLIC (no bearer) — the S2 dots need no credential, as designed
+PASS  the peer route answers its documented shape — the wizard's remote fast path has a real endpoint
+PASS  GET /api/profiles/sessions/sidebar → the batched slices the roster still rides
+PASS  /pair still renders (the S3.1 login flow lands on it)
+
+--- app.json declares the release (§2 S4 included) ---
+PASS  app.json: 0.11.0 / versionCode 14
+PASS  iOS: NSAllowsLocalNetworking is on and NSAllowsArbitraryLoads is NOT (S4)
+PASS  iOS: NSLocalNetworkUsageDescription is present and says why (S4)
+PASS  Android: cleartext is the ONE mechanism that was already there (S4 / §1.11)
+PASS  app.json allows BOTH orientations (0.9.0 item 11: the app rotates)
+PASS  app.json declares RECORD_AUDIO (0.9.0 item 5: voice notes)
+PASS  app.json still declares POST_NOTIFICATIONS (0.8.0's device-side checkpoints)
+PASS  no gesture/reanimated dependency (0.8.0's swipe still rides PanResponder)
+PASS  the recorder is expo-audio, NOT expo-av (0.9.0 item 5's one new dependency)
+PASS  S3's whole surface rides dependencies that were ALREADY installed (no new dependency, §1.6)
+
+
+--- 0.11.0 dependencies, config and the two ABSENCES (§10.3, §15) ---
+PASS  the two pickers are DECLARED, at this SDK's own pin (R2)
+PASS  expo-file-system is DECLARED at the version installed (R4 — the voice path no longer rests on a transitive dep)
+PASS  no third-party picker entered the dependency list (R2)
+PASS  NO keyboard library — R8's lift is a listener and a padding (\u00a715 declines the library)
+PASS  both pickers are REGISTERED as config plugins (R2 — iOS config correct for a later EAS build)
+PASS  the photo picker asks for NO microphone — it opens photos only, and the mic belongs to expo-audio (R2)
+PASS  iOS: NSPhotoLibraryUsageDescription is present and says what the app does with it (R2)
+PASS  expo-camera is STILL narrow — the mic belongs to expo-audio, and R2 did not widen it
+PASS  no storage permission was added speculatively (the storage access framework needs none)
+PASS  every permission the earlier releases declared is STILL declared (nothing was traded away)
+PASS  R3's mic gesture is declared DEVICE-LOCAL in the page plan (a phone gesture has no server meaning)
+logs/verify-0.11.0.sh: line 455: mixed: command not found
+PASS  the Agent Preferences row says  and names the exception (R3 — the codebase's own split, applied)
+--- the artifact ---
+      path: dist/personae-0.11.0.apk
+      bytes: 130737973
+      sha256: e98bbbfc1b778480acd16fb93d57144a70a62479b968921053516b7ce5947ea8
+      0.10.0 was: 116979706 bytes / sha256 3b231c830f154c5c3af64f9043297aa804430a343be23afe9e4e30286c464c2f
+      measure: +11 native .so entries vs 0.10.0 (reanimated/worklets/gesture-handler) — see the header
+PASS  the artifact carries the reanimated/worklets native libs (present in 0.11.0, absent from 0.10.0)
+summary: com.personae.mobile	14	0.11.0
+min-sdk: 24  target-sdk: 36
+camera permission: 1
+post-notifications permission: 1
+record-audio permission: 1
+deep-link scheme personae: 14
+markers: personae://connect=1 api/profiles=1 api/health=1 api/status=1 api/plugins/messenger/state=1 api/plugins/personae-mobile-state=1 personae.wizard.v1=1 expo-camera=1 expo-audio=1 expo-sharing=0 checkpoints=2 session.activate=1 session.events.since=1 complete.slash=1 slash.exec=1 command.dispatch=1 reasoning.delta=1 expo-document-picker=1 expo-image-picker=1 keyboardDidShow=1 
+gone-markers (want 0): [Choosing a file from this phone]=0 [Pictures work today]=0 
+gone-markers positive control (want >=1): [Send a file]=1 [Photo library]=1 
+dex native modules (want >=1 each): expo.modules.documentpicker.DocumentPickerModule=33 expo.modules.imagepicker.ImagePickerModule=209 expo.modules.filesystem=3334 
+application-id: com.personae.mobile
+0.10.0 feature strings (want >=1 each): [Connection Wizard]=1 [Connections]=2 [Preferred connection kind]=1 [Set up a connection]=1 [Local network]=1 [Remote]=5 [Test connection]=1 [Share support log]=1 [Skip for now]=1 [Name this connection]=1 [Nothing answered at that address. Check the address and the port]=1 [already one of your connections]=1 [Tap to start and stop]=1 [Hold to record]=1 [Send a file]=1 [Photo library]=1 [The command produced no output.]=1 
+older feature strings (want >=1 each): [Display session types]=1 [Advanced lives inside this page]=1 [session-groups-v1]=1 [image.attach_bytes]=1 [Hold to record a voice note]=1 
+env facts (want 0): 100.64.0.11=0 personae=0 10.0.0.15=0 100.64.0.2=0 API_SERVER_KEY==0 
+positive control personae://connect: 1
+live bearer occurrences (want 0): 0
+Signer #1 certificate DN: CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT
+Signer #1 certificate SHA-256 digest: bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26
+PASS  APK is 0.11.0 / versionCode 14 (matches app.json)
+PASS  signed with the SAME Personae release key as 0.1.0-0.9.1 (installs straight over 0.9.1)
+PASS  the APK carries RECORD_AUDIO (0.9.0 item 5 is in the ARTIFACT, not merely in app.json)
+PASS  the bundle carries the wizard state key (S3 entry (b)/(c) ship in the app)
+PASS  the bundle knows /api/status (S1's server row and S3.3's stage 2)
+PASS  positive control: personae://connect IS in the bundle (an empty grep is not a proof)
+PASS  zero live-bearer occurrences in the shipped bundle
+PASS  zero host/credential literals in the shipped bundle
+PASS  every 0.10.0 feature string is inside the shipped bundle
+PASS  the bundle carries session.activate
+PASS  the bundle carries session.events.since
+PASS  the bundle carries complete.slash
+PASS  the bundle carries slash.exec
+PASS  the bundle carries command.dispatch
+PASS  the bundle carries reasoning.delta
+PASS  the bundle carries expo-document-picker
+PASS  the bundle carries expo-image-picker
+PASS  the bundle carries keyboardDidShow
+PASS  every 0.11.0 string is inside the shipped bundle (the re-enabled row, the mic mode, the command card)
+PASS  the old document-row apology is GONE from the bundle (R2 re-enabled the row)
+PASS  positive control: the two picker-row labels ARE in the bundle (so the absence above means something)
+PASS  the dex carries expo.modules.documentpicker.DocumentPickerModule
+PASS  the dex carries expo.modules.imagepicker.ImagePickerModule
+PASS  the dex carries expo.modules.filesystem
+
+MANUAL  R8 keyboard lift — awaiting device confirmation
+
+RESULT: PASS — 0.11.0 verified (R8's keyboard lift is MANUAL, not verified)
+VERIFY_EXIT=0

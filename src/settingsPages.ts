@@ -71,7 +71,16 @@ export const SETTINGS_PAGE_ROWS: readonly SettingsPageRow[] = [
     title: 'agentTitle',
     help: 'agentHelp',
     sibling: false,
-    scope: 'portable',
+    /**
+     * 0.11.0 R3 — `portable` was a LIE once the microphone gesture moved in here.
+     *
+     * The row holds the session-types checkboxes (portable: they go through the preference document)
+     * AND the mic mode (device-local: a phone gesture means nothing to the desktop). A field on screen
+     * that belongs to neither list is a bug by this module's own definition, so the field is declared
+     * device-local and this row says `mixed` — the honest word, and the shape Notifications already
+     * uses ("the switches sync, the OS permission cannot"). The row's help text names the exception.
+     */
+    scope: 'mixed',
     always: true,
   },
   {
@@ -165,6 +174,9 @@ export const DEVICE_LOCAL_SETTING_IDS = [
   'diagnostics', // a record of what this device did
   'testConnection',
   'log',
+  // 0.11.0 R3: the microphone's GESTURE is the phone's own — a tap-versus-hold choice says nothing to a
+  // desktop, and portable would mean writing a new key into the server's preference document for it.
+  'micMode',
   // 0.9.1 S4.1: `language` was listed here ("kept local so a phone in one language cannot switch a
   // desktop"). The setting no longer EXISTS — English is what the app speaks and nothing can change it
   // — and a device-local setting that can no longer be set is a lie on a page whose whole job is saying

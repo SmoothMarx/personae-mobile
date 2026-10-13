@@ -69,6 +69,47 @@ export type NotifySettings = {
 
 export const DEFAULT_NOTIFY: NotifySettings = { enabled: false, waiting: true, finished: true };
 
+/**
+ * 0.11.0 R3 — how the mic button works on THIS phone.
+ *
+ * the user, 2026-10-13: *"When the user clicks on the microphone and starts recording, change the
+ * microphone button into a stop icon."* — and, asked what should happen, *"Add as an option in settings
+ * for the user to choose."*
+ *
+ *   'tap'  — tap the mic to start, the button becomes a STOP square, tap stop to send (default)
+ *   'hold' — press and keep holding, slide left to cancel, release to send (what 0.9.0 shipped)
+ *
+ * A phone gesture means nothing to the desktop, so this is DEVICE-LOCAL: it is declared in
+ * `DEVICE_LOCAL_SETTING_IDS` (`src/settingsPages.ts`), and the Agent Preferences row it lives on says
+ * so in its own help text. It is NOT a `VoicePhase` — a mode is not a phase.
+ */
+export type MicMode = 'hold' | 'tap';
+
+/** The requested behaviour is the default. In 'hold', a plain TAP is a sub-second refusal. */
+export const DEFAULT_MIC_MODE: MicMode = 'tap';
+
+export function normalizeMicMode(value: unknown): MicMode {
+  return value === 'hold' ? 'hold' : DEFAULT_MIC_MODE;
+}
+
+/**
+ * The two choices, as data — the DEFAULT first, so the screen draws the recommended one where the
+ * thumb already is. Each option names the help sentence that explains ITSELF, which is what keeps a
+ * single help line from describing the mode the user did not pick.
+ */
+export const MIC_MODES: readonly {
+  id: MicMode;
+  labelKey: 'micHold' | 'micTap';
+  helpKey: 'micHoldHelp' | 'micTapHelp';
+}[] = [
+  { id: 'tap', labelKey: 'micTap', helpKey: 'micTapHelp' },
+  { id: 'hold', labelKey: 'micHold', helpKey: 'micHoldHelp' },
+];
+
+export function micModeEntry(mode: MicMode) {
+  return MIC_MODES.find((entry) => entry.id === mode) ?? MIC_MODES[0];
+}
+
 export type Settings = {
   /** Origin of the chosen surface, e.g. http://10.0.0.15:9119 . Empty = not configured. */
   baseUrl: string;
@@ -118,6 +159,10 @@ export type Settings = {
   // ── checkpoint notifications (0.8.0 H) ──────────────────────────────────────
   notifications: NotifySettings;
 
+  // ── the microphone's gesture (0.11.0 R3) ────────────────────────────────────
+  /** How the mic button works on this phone: tap to start/stop, or hold to record. Device-local. */
+  micMode: MicMode;
+
   // ── diagnostics (persisted; read-only on screen) ─────────────────────────────
   /** Has the whole chain (tunnel + route + gateway) ever worked on this phone? */
   everReachedGateway: boolean;
@@ -161,6 +206,8 @@ export const DEFAULT_SETTINGS: Settings = {
   sessionTypes: DEFAULT_SESSION_TYPES,
   // 0.8.0 H: off until the user asks — nothing polls and no permission is requested until then.
   notifications: DEFAULT_NOTIFY,
+  // 0.11.0 R3: the behaviour the user asked for is the default (a tap in 'hold' mode is a refusal).
+  micMode: DEFAULT_MIC_MODE,
   everReachedGateway: false,
   lastTriggerResult: '',
   lastErrorKind: '',

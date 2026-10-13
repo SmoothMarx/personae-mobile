@@ -52,6 +52,8 @@ import {
   DEFAULT_NOTIFY,
   DEFAULT_SESSION_TYPES,
   DEFAULT_SETTINGS,
+  MIC_MODES,
+  micModeEntry,
   redactKey,
   splitProfiles,
   type Settings,
@@ -1088,6 +1090,36 @@ export default function SettingsScreen() {
           );
         })}
         {anySessionType(form.sessionTypes) ? null : <Text style={styles.warning}>{t.settings.typeNoneWarning}</Text>}
+      </View>
+
+      {/* 0.11.0 R3 — "add as an option in settings for the user to choose". TWO options, saving on tap
+          like every other single-field setting on this page (no Save button). Device-local: the Agent
+          Preferences row it lives on now says `mixed`, and its help text names this exception.
+          The mode is NOT a new VoicePhase — the recorder's state machine is untouched (R3.c). */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{t.settings.micMode}</Text>
+        <View style={styles.pillRow}>
+          {MIC_MODES.map((mode) => {
+            const active = form.micMode === mode.id;
+            return (
+              <Pressable
+                key={mode.id}
+                onPress={() => {
+                  setForm((prev) => ({ ...prev, micMode: mode.id }));
+                  update({ micMode: mode.id });
+                }}
+                accessibilityRole="radio"
+                accessibilityState={{ selected: active }}
+                accessibilityLabel={t.settings[mode.labelKey]}
+                style={({ pressed }) => [styles.pill, active && styles.pillActive, pressed && styles.pressed]}
+              >
+                <Text style={[styles.pillText, active && styles.pillTextActive]}>{t.settings[mode.labelKey]}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+        <Text style={styles.help}>{t.settings.micModeHelp}</Text>
+        <Text style={styles.help}>{t.settings[micModeEntry(form.micMode).helpKey]}</Text>
       </View>
 
         </>

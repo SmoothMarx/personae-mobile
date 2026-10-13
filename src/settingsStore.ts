@@ -13,6 +13,7 @@ import {
   DEFAULT_SETTINGS,
   healSurface,
   LAST_SEEN_STORE_KEY,
+  normalizeMicMode,
   normalizeNotify,
   normalizeSessionTypes,
   SECRET_STORE_KEY,
@@ -85,6 +86,8 @@ export async function loadSettings(): Promise<Settings> {
     sessionTypes: normalizeSessionTypes(parsed.sessionTypes),
     // 0.8.0 H: same ADDITIVE rule — a blob without `notifications` loads with the master switch OFF.
     notifications: normalizeNotify(parsed.notifications),
+    // 0.11.0 R3: same rule again — a blob with no `micMode` loads on the default ('tap').
+    micMode: normalizeMicMode(parsed.micMode),
     everReachedGateway: asBoolean(parsed.everReachedGateway, false),
     lastTriggerResult: asString(parsed.lastTriggerResult, ''),
     lastErrorKind: asString(parsed.lastErrorKind, ''),
@@ -126,6 +129,7 @@ export async function saveSettings(settings: Settings): Promise<void> {
     insecureRouteAck: settings.insecureRouteAck,
     sessionTypes: settings.sessionTypes,
     notifications: settings.notifications,
+    micMode: settings.micMode,
     everReachedGateway: settings.everReachedGateway,
     lastTriggerResult: settings.lastTriggerResult,
     lastErrorKind: settings.lastErrorKind,

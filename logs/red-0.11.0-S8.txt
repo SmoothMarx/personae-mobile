@@ -1,0 +1,621 @@
+# RED proof for 0.11.0 S8
+# base: c8b2641 — c8b2641 0.10.0 S6: version 0.10.0 / versionCode 12, the verifier (103 PASS / 0 FAIL), the APK and the record
+# tree: git archive c8b2641 (src/app/app.json as they were BEFORE the item) + the current tests/run.ts
+# carried in so the suite can load (files the item ADDS, or the test instrument it extends): src/logic/slash.ts,mock/dashboard.mjs
+# everything else — the string table, the screen wiring, the plan data — is the OLD state
+# command: npx tsx tests/run.ts   in the archived tree
+
+ok 1 - sse: parses a named frame
+ok 2 - sse: holds a frame split across chunks
+ok 3 - sse: ignores keepalive comments and blank lines
+ok 4 - sse: handles CRLF and multiple frames in one chunk
+ok 5 - sse: joins multi-line data and defaults an unnamed frame to "message"
+ok 6 - sse: parseFrame rejects a frame with no data and drops unknown fields
+ok 7 - f3: a tool run joins each call to its result by tool_call_id
+ok 8 - f3: reasoning-only produces a Pensamento item and no tools item
+ok 9 - f3: reasoning_content is read too (the second field the gateway sends)
+ok 10 - f3: an orphan tool result still renders instead of vanishing
+ok 11 - f3: hidden scaffolding never renders — not as a bubble, not as a tool result
+ok 12 - f3: two runs get distinct item keys — the screen keys its per-run expansion on them
+ok 13 - f3: long arguments and results are truncated with a visible marker
+ok 14 - f3: a failed result is marked, a normal one is not
+ok 15 - f3: prettyArgs survives a non-JSON argument string
+ok 16 - f1: the cache key is profile + size, and the monogram is the fallback
+ok 17 - 0.7.0 A: the row is 54 / 16 / 70, the divider clears the avatar, and a long name fits
+ok 18 - 0.7.0 A: the row is built from geometry.ts — no pre-0.7.0 magic numbers survive
+ok 19 - 0.8.0 A: the profile cell is 76 dp — "a little bit more space between rows" is the height
+ok 20 - 0.8.0 B: the face is 62 dp and every knock-on is DERIVED from it
+ok 21 - 0.8.0 B: cached art cannot survive the resize — avatarKey() carries the size
+ok 22 - 0.8.0 B: the longest real profile label on this box still renders in full at 62 dp
+ok 23 - 0.8.0 C: a session row is padded to the DOT column (x 30, centre 37), not the text column
+ok 24 - 0.8.0 C: the dot sits under the picture, offset to the left of its centre
+ok 25 - 0.8.0 C: the wiring is the geometry — both row species share the column
+ok 26 - 0.8.0 D: the defaults are conversations ON, job runs OFF
+ok 27 - 0.8.0 D: a 0.7.0 stored blob with no sessionTypes key loads with the defaults
+ok 28 - 0.8.0 D: an UNKNOWN source counts as a conversation — fail-open, with its own test
+ok 29 - 0.8.0 D: ONE classifier — the classification exists in exactly one file
+ok 30 - 0.8.0 D: the list draws the checked types and explains the ones it hides
+ok 31 - 0.8.0 D: all four types off is a legal state that names itself
+ok 32 - 0.8.0 D: search still reaches a session the type filter hides
+ok 33 - 0.8.0 E: the claim predicate — a tap never opens a row, a scroll is never eaten
+ok 34 - 0.8.0 E: the drag is clamped to the reveal, and the release settles by distance or flick
+ok 35 - 0.8.0 E: exactly one row is open, and a fresh one is never armed
+ok 36 - 0.8.0 E: delete is TWO steps — arm, then confirm — and arming keeps the row open
+ok 37 - 0.8.0 E: the gateway surface renders BOTH verbs disabled, with the real reason
+ok 38 - 0.8.0 E: the buttons are red and blue from the palette, not from literals
+ok 39 - 0.8.0 E: the row is a thin shell — PanResponder + Animated, and no new native dependency
+ok 40 - 0.8.0 F: sheetPadding() adds the device bottom inset to the padding it already had
+ok 41 - 0.8.0 F: BOTH sheets share the fix, and only the entries scroll
+ok 42 - 0.8.0 G: the three header glyphs scale from ONE constant (1.25 since 0.9.0 F; was 1.1)
+ok 43 - 0.8.0 G: the pressable box scales too, and the REAL touch target stays >= 44 x 44
+ok 44 - 0.8.0 H: the surface says which checkpoints it can actually report
+ok 45 - 0.8.0 H: a first poll baseline fires nothing, and then each transition fires once
+ok 46 - 0.8.0 H: "still running" and "no change" are not checkpoints
+ok 47 - 0.8.0 H: a waiting checkpoint fires, and only when the surface can see one
+ok 48 - 0.8.0 H: the fallback basis is used, and named, when is_active is not served
+ok 49 - 0.8.0 H: the thread on screen is suppressed, and so is a hidden session type
+ok 50 - 0.8.0 H: the watermark is capped, pruned by age, and survives as data alone
+ok 51 - 0.8.0 H: the watcher is single-flight, foreground-only, and resumes at once
+ok 52 - 0.8.0 H: the permission is three states, and only the master switch asks
+ok 53 - 0.8.0 H: the app wires it — channel, handler, tap-to-open, and no "push" anywhere
+ok 54 - f1: only `false` suppresses the probe (the live flag is null, not false)
+ok 55 - f1: a data URL is validated before it reaches <Image>
+ok 56 - f1: one fetch per profile per size per session, memory + store behind it
+ok 57 - f1: warm() serves a previous session from the store without touching the network
+ok 58 - f1: a broken fetcher or junk payload degrades to the monogram, never to an error
+ok 59 - f4: the title chain is param -> loaded -> id, and a raw id is flagged
+ok 60 - p7: a known secret cannot appear in an exported log
+ok 61 - p7: headers, tickets and tokens are redacted by pattern, not only by value
+ok 62 - p7: the ring buffer is capped and the document carries the context
+ok 63 - client: GET /v1/health returns version (no key needed)
+ok 64 - client: GET /api/sessions maps the list envelope
+ok 65 - client: GET messages returns rows and pagination
+ok 66 - client: messages sends order=latest with an explicit limit
+ok 67 - client: POST /api/sessions creates and returns a session
+ok 68 - client: a 400 from the server surfaces the server message
+ok 69 - client: a wrong key is a specific 401, not a silent failure
+ok 70 - client: an unconfigured base URL is refused before any request
+ok 71 - client: a malformed base URL names the value and the fix
+ok 72 - client: an unreachable gateway is a network error with the detail
+ok 73 - client: a missing session is a 404 with the id in the message
+ok 74 - client: an unknown profile is a 404 from the prefix middleware, never a silent default
+ok 75 - client: the profile prefix routes to /p/<profile>/…
+ok 76 - client: a profile with no scoped key gets the profile-specific 401
+ok 77 - stream: assembles deltas into the final reply and closes on done
+ok 78 - stream: stop aborts mid-flight and reports it
+ok 79 - stream: a 500 surfaces an ApiError, and the blocking fallback still answers
+ok 80 - xhr: a completed stream raises NO error on its own abort
+ok 81 - xhr: a non-200 response still raises a real HTTP error
+ok 82 - xhr: the Stop button closes without raising an error
+ok 83 - roster: contacts are the gateway profile plus the ones from Settings
+ok 84 - roster: a session without a title shows its id, never an invented name
+ok 85 - roster: rows carry a DD-MM-YYYY date and a new flag against last-seen
+ok 86 - roster: grouping puts the newest day first and repeats its own header
+ok 87 - roster: pagination labels the page the way the desktop list does
+ok 88 - roster: new-session count only counts what moved since last visit
+ok 89 - roster: status dot maps health, auth and failure to distinct colours
+ok 90 - thread: sorts by timestamp and collapses a run of tool messages
+ok 91 - thread: hidden scaffolding rows are not rendered, undated rows keep their order
+ok 92 - thread: an assistant row that narrates AND calls a tool keeps its text, and the call collapses
+ok 93 - format: dates are DD-MM-YYYY and times HH:MM
+ok 94 - format: age is relative and hours use a decimal comma
+ok 95 - format: multimodal content renders as text, unknown parts as their raw type
+ok 96 - settings: profile names are cleaned, deduped and validated
+ok 97 - settings: base URL validation accepts a real origin and names the failures
+ok 98 - settings: round-trips through storage with the key in its own slot
+ok 99 - settings: a corrupt settings blob degrades to defaults instead of crashing
+ok 100 - i18n: a fresh install defaults to English
+ok 101 - i18n: a stored language is IGNORED — and its other stored values still survive
+ok 102 - i18n: setLanguage switches t.* live through the same import
+ok 103 - i18n: pt never leads en, and en leads only by the named 0.9.1 keys
+ok 104 - i18n: the swept Portuguese strings are no longer hardcoded outside the table
+ok 105 - tailscale: auto-connect and open-on-failure are OFF by default
+ok 106 - tailscale: a direct LAN route still connects with both Tailscale flags off
+ok 107 - routes: role inference covers tailnet (incl. 100.64.0.0/10), LAN and public
+ok 108 - routes: orderRoutes is a stable sort by strict priority
+ok 109 - routes: reachability breaks ties but NEVER promotes a lower priority over a higher one
+ok 110 - routes: a manual pin is honoured, and bypassing it is reported out loud
+ok 111 - routes: security policy — public http is refused, private http needs the ack
+ok 112 - routes: a tailnet http route is WireGuard-encrypted, never "public plaintext"
+ok 113 - routes: migration derives candidates from a legacy baseUrl, and renumbering re-packs order
+ok 114 - failures: the taxonomy maps each condition to its documented class
+ok 115 - failures: a rejected key is permanent and is NEVER retried
+ok 116 - failures: timeouts back off with jitter, and the delay stays under the cap
+ok 117 - failures: nothing is retried once the app is backgrounded
+ok 118 - connect: re-evaluates on a network change and hops LAN -> Tailscale
+ok 119 - connect: a 401 stops the whole run and never probes another route
+ok 120 - connect: a 404 kills only that route, and the next candidate is still tried
+ok 121 - connect: polling never happens while backgrounded, and stops mid-run
+ok 122 - connect: gives up at the deadline instead of polling forever
+ok 123 - connect: the probe cache is per candidate, so one dead route cannot poison a healthy one
+ok 124 - dashboard: /api/profiles lists profiles and flags the ones that have an avatar
+ok 125 - dashboard: a wrong bearer is a 401 through the shared error ladder
+ok 126 - dashboard: settings with no bearer fail before any request is made
+ok 127 - dashboard: a registered token route answers the seam body; an unregistered one the gate body
+ok 128 - dashboard: the rail returns every profile's sessions with profile_totals in one call
+ok 129 - dashboard: the sidebar slices wrap their sessions (the live shape, not bare arrays)
+ok 130 - dashboard: GET /api/sessions/{id}/messages returns `messages`, not the api_server's `data`
+ok 131 - dashboard: PATCH returns the title the server stored
+ok 132 - dashboard: a 404 for an unknown session keeps its HTTP identity
+ok 133 - dashboard: the WS authenticates with a minted ticket and reports gateway.ready
+ok 134 - dashboard: profiles.get_asset returns a data URL, and null when there is no asset
+ok 135 - dashboard: prompt.submit streams deltas and live tool activity over the same socket
+ok 136 - dashboard: an unknown RPC method comes back as an ApiError, not a hang
+ok 137 - dashboard: a spent ticket cannot open a second socket (single use)
+ok 138 - sections: a deleted group drops no session — its members fall back to ungrouped
+ok 139 - sections: the shape round-trips exactly (sections/members/collapsed/order/sort)
+ok 140 - sections: an orphan member and an unknown sort mode are dropped, never trusted
+ok 141 - sections: an empty declared group is kept; the empty implicit one is not drawn
+ok 142 - feed: cron and webhook runs are NOT in the roster feed, and stay reachable as automatic runs
+ok 143 - feed: a cron run never becomes a profile row's preview (it is not the latest conversation)
+ok 144 - contacts: a profile list that fails yields the REAL error and no fabricated contact
+ok 145 - contacts: a surface with no profile route falls back to the DECLARED list
+ok 146 - contacts: server rows are preferred, with their own labels and avatar flags
+ok 147 - expansion: several profiles may be open at once, and the set round-trips
+ok 148 - expansion: opening a profile reveals ITS sessions, newest first, in place
+ok 149 - search: the metadata sweep matches profiles and sessions, and auto-expands the hit's profile
+ok 150 - search: a hit inside a profile is rendered UNDER it — the profile opens and shows it
+ok 151 - search: a body hit reveals a session the local sweep could not see
+ok 152 - search: one settled query is ONE body request, whatever the profile count
+ok 153 - search: a body hit is attributed to its profile from the feed, and an unplaceable one is counted
+ok 154 - lights: amber beats emerald, the badge shows at 2+, and "working" never colours a profile
+ok 155 - lights: a missing read watermark stays quiet — honest about what it knows
+ok 156 - lights: the app's own lastSeen watermark still counts "new since my last visit"
+ok 157 - colours: a session colour beats its profile's, and an absent model yields null
+ok 158 - colours: only a known swatch is ever stored, and clearing really clears
+ok 159 - rosterPrefs: hiding a profile hides the row and never its sessions
+ok 160 - roster: a search reveals a profile the local roster was hiding
+ok 161 - dashboard: the sidebar separates recents from cron, and tags every row with its profile
+ok 162 - dashboard: the roster built from the live SHAPE never shows a cron run in the feed
+ok 163 - dashboard: message-body search hits the FTS route and returns session_id + snippet
+ok 164 - dashboard: the cross-profile FTS plan is ONE call, and it never sends profile=all
+ok 165 - dashboard: a body hit lands under the profile that owns the session
+ok 166 - dashboard: a failing /api/profiles raises a real error, so the banner can name it
+ok 167 - menus: the profile menu carries the R8 verbs, and archive-all is its only destructive one
+ok 168 - menus: the session menu offers open/rename/colour/archive/delete, delete being the one irreversible verb
+ok 169 - menus: the group menu offers rename and delete, and its delete cannot name a session
+ok 170 - pairing: the deep link (and the QR payload, which is the same string) parses
+ok 171 - pairing: the in-app browser starts at login with next=/pair?app=1
+ok 172 - pairing: redeem sends the code as the bearer and returns the device token
+ok 173 - pairing: reused / expired / unknown / rate-limited / old server / offline are each named
+ok 174 - pairing: a redeemed token becomes the credential, the used address the first route
+ok 175 - wizard probe: :9119 is the dashboard, :9222 is the gateway (the correction sentence), refused is named
+ok 176 - heal: a dashboard surface pointed at :9222 (the user's 0.5.0 phone) moves to :9119, with a visible note
+ok 177 - 0.7.0 B: Advanced is CLOSED by default, and nothing 0.6.1 had was deleted
+ok 178 - 0.7.0 B: the wizard has exactly three steps, every one drawn in place
+ok 179 - 0.7.0 B: ONE wizard, TWO hosts — the step logic exists in exactly one file
+ok 180 - 0.7.0 B: the Settings screen is wired to the plan (not to ad-hoc conditionals)
+ok 181 - 0.7.0 B: the peers payload is read in BOTH shapes; junk is unavailable, never a guess
+ok 182 - 0.7.0 B: a picked device becomes a tailscale ROUTE, and a duplicate is refused
+ok 183 - 0.7.0 B: the peer list rides the app credential, and the legacy surface never calls it
+ok 184 - 0.7.0 B: an unavailable host answers the unavailable SHAPE, not an error
+ok 185 - 0.7.0 C: the "+" offers exactly three verbs
+ok 186 - 0.7.0 C: the profile picker lists EVERY profile from /api/profiles
+ok 187 - 0.7.0 C: a refused POST /api/profiles disables the entry WITH the reason
+ok 188 - 0.7.0 C: a typed profile name becomes the dashboard's own name shape
+ok 189 - 0.7.0 C: the roster header is wired to the "+" — one control, three verbs, no leftovers
+ok 190 - 0.7.0 C: New profile posts to /api/profiles and the roster refreshes from it
+ok 191 - sync: seed — an empty server receives the phone's groups, once, with rev 1
+ok 192 - sync: seed never overwrites a server value — the desktop's groups are ADOPTED
+ok 193 - sync: a local change pushes once after the debounce, rev above the server's; removals are tombstones
+ok 194 - sync: offline queues (local edit kept), retries with backoff, flushes on reconnect
+ok 195 - sync: a 404 (older messenger plugin) is silent local-only, no retries
+ok 196 - sync: revs only increase across failures and restarts
+ok 197 - 0.9.0 I: what syncs is an ALLOWLIST, and a gateway address can never be in it
+ok 198 - 0.9.0 I: the server is the source of truth, and a stale revision is never a clobber
+ok 199 - 0.9.0 I: only a GENUINE difference is pushed, so an applied value cannot echo back
+ok 200 - 0.9.0 I: the phone writes through the document the desktop pane reads
+ok 201 - 0.9.0 H: hold to record, slide left to cancel, release to stage
+ok 202 - 0.9.0 H: a note too short to be a message is refused, WITH the reason
+ok 203 - 0.9.0 H: a voice note LEAVES the phone as a file the agent on the box can read
+ok 204 - 0.9.0 H: "receive" covers BOTH meanings — the agent sending one, and the phone playing it
+ok 205 - 0.9.0 H: the ONE new dependency is expo-audio, from the SDK, and the mic is declared
+ok 206 - 0.9.0 G: the staging strip stages, sizes, and removes ONE item at a time
+ok 207 - 0.9.0 G: what the RPC carries is the base64 PAYLOAD, never the whole data URL
+ok 208 - 0.9.0 G: a message that CARRIED something reads back as attachments plus a caption
+ok 209 - 0.9.0 G: the phone SENDS the bytes to the session before it submits the turn
+ok 210 - 0.9.0 G: the legacy surface refuses the attach verbs WITH a reason, as it does for the rest
+ok 211 - 0.9.0 D: the session menu is the desktop shape — flat verbs plus one-noun submenus
+ok 212 - 0.9.0 D: every verb the phone cannot run carries a REASON, and none is silently absent
+ok 213 - 0.9.0 D: the sheet DRILLS INTO a submenu and back, and a submenu opener is not a verb
+ok 214 - 0.9.0 E: holding a row ticks it IMMEDIATELY and opens the mode (the WhatsApp model)
+ok 215 - 0.9.0 E: emptying the set leaves the mode (the user, 2026-10-10)
+ok 216 - 0.9.0 E: the batch resolves against what is ON SCREEN, not the raw roster
+ok 217 - 0.9.0 E: ONE delete path, and the confirm carries the COUNT
+ok 218 - 0.9.0 E: batch verbs once more than one row is ticked; single-object when exactly one
+ok 219 - 0.9.0 C: the model is the desktop document, shape for shape
+ok 220 - 0.9.0 C: create, rename, file, unfile, collapse, move — and delete NEVER deletes a session
+ok 221 - 0.9.0 C: no groups at all renders exactly the flat list it always was
+ok 222 - 0.9.0 C: the phone syncs the same key the desktop writes, through the same merge
+ok 223 - 0.9.0 C: a 0.8.0 install has no groups key and loads as "no groups"
+ok 224 - 0.9.0 C: the heading is its own row kind, and GROUP is not SECTION
+ok 225 - 0.9.0 F: the search bar is 25% taller and rounded at the side, both DERIVED
+ok 226 - 0.9.0 F: the routine connection strip is gone; the FAILURE disclosure stays
+ok 227 - 0.9.0 F: the trailing "51 automatic…" line is gone and the honesty line is not
+ok 228 - 0.9.0 F: the Expand/collapse-all button is gone from the top bar, the ability is not
+ok 229 - 0.9.0 F: the "+" and Settings are bigger and their background is transparent
+not ok 230 - 0.9.0 F (landscape): the app rotates, and every screen honours the SIDE insets
+  Android still has an explicit mechanism
+ok 231 - 0.9.0 F (landscape): the sheets use MORE of a short viewport, not less
+ok 232 - 0.9.0 F (landscape): the roster geometry is dp-based, so a wide short canvas does not break it
+ok 233 - 0.9.0 B: Settings is a page of rows, and Notifications is a SIBLING of Agent Preferences
+not ok 234 - 0.9.0 B: the portable/device-local split is visible, and matches the SERVER key list
+  the session types sync; the mic gesture cannot
+  + actual - expected
+  
+  + 'portable'
+  - 'mixed'
+  
+ok 235 - 0.9.0 B: promoting Settings to a page deleted nothing
+ok 236 - 0.9.0 A: archive and delete ride the state verbs when the host mounts the plugin
+ok 237 - 0.9.0 A: a PINNED session is refused with a machine-readable code, never silently archived
+ok 238 - 0.9.0 A: without the plugin the same verbs FALL BACK to the dashboard verbs
+ok 239 - 0.9.0 A: the legacy surface ATTEMPTS the verb and reports it; the 501 stub is gone
+ok 240 - 0.9.0 A: the portable-preference document round-trips; a device-local key is refused
+ok 241 - 0.9.0 A: the state surface has exactly ONE prefix, written in exactly one file
+ok 242 - 0.9.1 S1: every index row is geometrically identical — the Notifications indent cannot come back
+ok 243 - 0.9.1 S2: ONE back control in the header — it walks the plan, never straight to the index
+ok 244 - 0.9.1 S3: Advanced moved INSIDE Gateway Settings — it did not vanish
+ok 245 - 0.9.1 S4.1: the Agent Preferences page offers no control that changes the language — English, always
+ok 246 - 0.9.1 S4.1: a stored {language: "pt"} still renders English
+ok 247 - 0.9.1 S4.2: "Display session types" — four checkboxes, one per kind, each filtering on its own
+ok 248 - 0.9.1 S4.2: a legacy two-boolean blob loads as the three run types it meant
+ok 249 - 0.9.1 S4.2: the portable round-trip carries four booleans (and no server change was needed)
+ok 250 - 0.9.1 S4.2: the list and the checkpoint watcher still consult ONE classifier
+ok 251 - 0.10.0 S0: the dropdown lists the routes — each route IS a connection
+not ok 252 - 0.10.1 S6: the gateway page is a plan — status on top, connections below, pills, wizard, Advanced last
+  Expected values to be strictly deep-equal:
+  + actual - expected
+  
+    [
+  +   'connections',
+      'status',
+  -   'connections',
+      'pills',
+      'wizard',
+      'link',
+      'advanced'
+    ]
+  
+ok 253 - 0.10.0 S2: the status dots — one probe per row, in parallel, with no repeating timer
+ok 254 - 0.10.0 S3: the wizard asks LAN or Remote, and either branch keeps the three 0.7.0 steps
+ok 255 - 0.10.0 S3: the LAN fields — IPv4 strict, a separate port, and a pasted address splits
+ok 256 - 0.10.0 S3: the LAN login opens the dashboard at next=/pair, THEN polls, THEN redeems
+ok 257 - 0.10.0 S3: remote — a MagicDNS name is legal, the tunnel row is Android-only, a 100.x timeout blames Tailscale
+ok 258 - 0.10.0 S3: the test is three staged calls, and a 401 means sign in
+ok 259 - 0.10.0 S3: the support bundle is masked and redacted, and the wizard remembers a skip
+ok 260 - 0.10.0 S4: iOS gets local networking and a usage description, and Android keeps ONE mechanism
+ok 261 - 0.10.0 S5: rename, delete and add a connection — and the credential survives all of it
+not ok 262 - 0.10.1 S1: the peer-list cap is ONE plan value, bounded, and both lists read it
+  The expression evaluated to a falsy value:
+  
+    assert.ok(Number.isFinite(PEER_LIST_MAX_HEIGHT) && PEER_LIST_MAX_HEIGHT > 0)
+  
+not ok 263 - 0.10.1 S1: the Choose-device sheet scrolls its rows, with the title and actions pinned
+  the scroller opens AFTER the title — the title stays pinned
+not ok 264 - 0.10.1 S1: the peer list inside the wizard is bounded and nested — the manual field stays reachable
+  the list itself is wrapped in the scroller
+not ok 265 - 0.10.1 S2: the scheme is a visible prefix on BOTH address fields, and the sentence is gone
+  value={ip} sits inside the compound row
+not ok 266 - 0.10.1 S3: step 1 probes ONCE, by itself — a re-render does not, a changed address does
+  (0 , import_wizard2.autoProbeTarget) is not a function
+not ok 267 - 0.10.1 S3: the editable address is a CORRECTION behind a disclosure, and the diagnosis stays
+  (0 , import_wizard2.addressFieldOpen) is not a function
+not ok 268 - 0.10.1 S4: the two sentences of chrome are gone, and the decoy "saved" survives
+  the Saved key is gone
+ok 269 - 0.10.1 S5: the DRAWN index is what a delete acts on — a raw index deletes another row
+not ok 270 - 0.10.1 S5: the selection after a delete is RE-DERIVED, never `selectedIndex - 1`
+  (0 , import_connections.selectionAfterDelete) is not a function
+not ok 271 - 0.10.1 S5: the Gateway page hosts the verb, reusing the existing strings and the drawn index
+  the selection is re-derived by the pure helper
+not ok 272 - 0.10.1 S7: the session-types help sits directly under its heading, and the warning stays LAST
+  …and BEFORE the four checkboxes — "underneath Display Session Types"
+not ok 273 - 0.10.1 S8: the index stops explaining itself, and the ROWS keep their sentences
+  the deleted key is gone
+not ok 274 - 0.11.0 R1: the ref travels with the turn — the WIRE text carries it, the screen does not
+  (0 , import_attachments.wireTextFor) is not a function
+not ok 275 - 0.11.0 R1: the dead string is alive — the voice note says so in both tables
+  chosen for a voice note
+not ok 276 - 0.11.0 R2: the two pickers exist, the disabled row is gone, and a pick goes through stage()
+  expo-document-picker is declared
+not ok 277 - 0.11.0 R2: labelOf cannot mislabel — every row resolves its OWN label
+  import_attachments.ATTACH_ROWS is not iterable
+not ok 278 - 0.11.0 R3: the mic mode is a DEVICE-LOCAL setting, and the default is the requested one
+  the behaviour he asked for
+  
+  undefined !== 'tap'
+  
+not ok 279 - 0.11.0 R3: the icon follows the GESTURE, cancel is reachable, and stopping SENDS
+  The input did not match the regular expression /micMode === 'tap' && voice\.phase !== 'idle' \? 'stop' : 'mic-outline'/. Input:
+  
+  '/**\n' +
+    " * Thread — history, the composer, a live turn, and *real* details (F3), under the session's name\n" +
+    ' * (F4).\n' +
+    ' *\n' +
+    ' * What changed for 0.4.0:\n' +
+    ' *\n' +
+    ' *  * **F3** — "Ver detalhes" used to toggle a boolean that only changed the label\n' +
+    ' *    (`app/thread/[id].tsx:175-184` in 0.3.0): there was no expanded body, `showTools` was ONE\n' +
+    ' *    global boolean, and reasoning was dropped before rendering. Now every run of tool/reasoning\n' +
+    ' *    rows is its own item with real payloads, the expansion state is a `Set` keyed by item key, a\n' +
+    ' *    tool result is joined to its call by `tool_call_id`, hidden scaffolding never renders, and\n' +
+    ' *    reasoning gets its own "Pensamento" block. Tool activity *during* a turn arrives on the WS\n' +
+    ' *    event channel and is shown as it happens.\n' +
+    ' *  * **F4** — the title comes from the route param first (instant paint, no blank bar) and then\n' +
+    ' *    from the session row once loaded, which is also how a rename lands while the screen is open.\n' +
+    ' *    A raw id is only ever shown when no title exists anywhere.\n' +
+    " *  * **F2** — the composer's buttons are Ionicons with PT-PT accessibility labels.\n" +
+    ' */\n' +
+    '\n' +
+    "import { Ionicons } from '@expo/vector-icons';\n" +
+    "import { Stack, useLocalSearchParams } from 'expo-router';\n" +
+    "import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';\n" +
+    "import { useSafeAreaInsets } from 'react-native-safe-area-context';\n" +
+    'import {\n' +
+    '  ActivityIndicator,\n' +
+    '  FlatList,\n' +
+    '  Image,\n' +
+    '  KeyboardAvoidingView,\n' +
+    '  Modal,\n' +
+    '  Platform,\n' +
+    '  Pressable,\n' +
+    '  RefreshControl,\n' +
+    '  ScrollView,\n' +
+    '  StyleSheet,\n' +
+    '  Text,\n' +
+    '  TextInput,\n' +
+    '  View,\n' +
+    "} from 'react-native';\n" +
+    "import * as Clipboard from 'expo-clipboard';\n" +
+    "import { CameraView, useCameraPermissions } from 'expo-camera';\n" +
+    '\n' +
+    "import type { HermesMessage } from '../../src/api/client';\n" +
+    "import type { LiveTool } from '../../src/api/backend';\n" +
+    "import { ApiError, normalizeError } from '../../src/api/errors';\n" +
+    "import type { StreamHandle } from '../../src/api/transport';\n" +
+    "import { formatTime } from '../../src/format';\n" +
+    "import { t, useLanguage } from '../../src/i18n';\n" +
+    'import {\n' +
+    '  ATTACHMENT_MAX_BYTES,\n' +
+    '  base64Of,\n' +
+    '  fileCardLine,\n' +
+    '  humanSize,\n' +
+    '  stage,\n' +
+    '  unstage,\n' +
+    '  type StagedAttachment,\n' +
+    "} from '../../src/logic/attachments';\n" +
+    "import { useAudioPlayer, useAudioPlayerStatus, useAudioRecorder } from 'expo-audio';\n" +
+    "import { AudioModule, RecordingPresets } from 'expo-audio';\n" +
+    "import { ActionSheet } from '../../src/roster/components';\n" +
+    'import {\n' +
+    '  IDLE_RECORDING,\n' +
+    '  VOICE_MIME,\n' +
+    '  beginRecording,\n' +
+    '  elapsedMs,\n' +
+    '  formatDuration,\n' +
+    '  releaseRecording,\n' +
+    '  slideLabel,\n' +
+    '  updateSlide,\n' +
+    '  voiceAttachment,\n' +
+    '  voiceNoteOf,\n' +
+    '  type VoiceRecording,\n' +
+    "} from '../../src/logic/voice';\n" +
+    "import { buildItems, type ThreadItem } from '../../src/logic/thread';\n" +
+    "import { horizontalInset } from '../../src/insets';\n" +
+    "import { threadTitle } from '../../src/logic/roster';\n" +
+    "import { useBackend } from '../../src/useBackend';\n" +
+    "import { colors, font, radius, space } from '../../src/theme';\n" +
+    '\n' +
+    'type Live = { user: string | null; text: string } | null;\n' +
+    '\n' +
+    '/**\n' +
+    ' * 0.9.0 H — an inbound voice note: a play button, the duration when the wire carries one, and a\n' +
+    ' * progress-ish label. Playback goes through `expo-audio` and the media route the desktop already\n' +
+    ' * uses as its player source (`GET /api/files/stream`, inline disposition, HTTP Range).\n' +
+    ' */\n' +
+    'function VoiceBubble(props: { source: string; label: string }) {\n' +
+    '  const player = useAudioPlayer({ uri: props.source });\n' +
+    '  const status = useAudioPlayerStatus(player);\n' +
+    '  const playing = Boolean(status?.playing);\n' +
+    '  return (\n' +
+    '    <Pressable\n' +
+    '      onPress={() => {\n' +
+    '        if (playing) player.pause();\n' +
+    '        else player.play();\n' +
+    '      }}\n' +
+    '      accessibilityRole="button"\n' +
+    '      accessibilityLabel={props.label}\n' +
+    '      style={({ pressed }) => [styles.voiceBubble, pressed && styles.pressed]}\n' +
+    '    >\n' +
+    "      <Ionicons name={playing ? 'pause' : 'play'} size={18} color={colors.accentText} />\n" +
+    '      <View style={styles.voiceTrack}>\n' +
+    '        <View style={[styles.voiceProgress, { width: `${Math.min(100, Math.round((status?.currentTime ? status.currentTime / Math.max(1, status.duration || 1) : 0) * 100))}%` }]} />\n' +
+    '      </View>\n' +
+    '      <Text style={styles.voiceTime}>{props.label}</Text>\n' +
+    '    </Pressable>\n' +
+    '  );\n' +
+    '}\n' +
+    '\n' +
+    'export default function ThreadScreen() {\n' +
+    '  const params = useLocalSearchParams<{ id: string; profile?: string; title?: string }>();\n' +
+    "  const sessionId = String(params.id || '');\n" +
+    "  const profile = String(params.profile || '');\n" +
+    "  const paramTitle = String(params.title || '');\n" +
+    '  const { backend, ready } = useBackend();\n' +
+    '\n' +
+    '  const [messages, setMessages] = useState<HermesMessage[]>([]);\n' +
+    '  // Re-render (and refresh the list cells) when the interface language changes.\n' +
+    '  const language = useLanguage();\n' +
+    "  const [loadedTitle, setLoadedTitle] = useState('');\n" +
+    "  const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading');\n" +
+    '  const [loadError, setLoadError] = useState<ApiError | null>(null);\n' +
+    "  const [draft, setDraft] = useState('');\n" +
+    '  const [streaming, setStreaming] = useState(false);\n' +
+    '  const [live, setLive] = useState<Live>(null);\n' +
+    '  const [liveTools, setLiveTools] = useState<LiveTool[]>([]);\n' +
+    '  const [notice, setNotice] = useState<string | null>(null);\n' +
+    '  const [refreshing, setRefreshing] = useState(false);\n' +
+    '  /** Per-run expansion: a Set of item keys, never one global boolean (F3, cause 2). */\n' +
+    '  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());\n' +
+    '  /**\n' +
+    '   * 0.9.0 F (landscape) — this screen read NO safe-area insets at all through 0.8.0. In landscape the\n' +
+    '   * cutout is on a SIDE, so the bubble list and the composer both need the horizontal inset, or the\n' +
+    '   * first characters of every message sit under it.\n' +
+    '   */\n' +
+    '  const insets = useSafeAreaInsets();\n' +
+    '  const sideInset = horizontalInset(insets);\n' +
+    '  const sidePad = { paddingLeft: space.md + sideInset, paddingRight: space.md + sideInset };\n' +
+    '\n' +
+    '  /**\n' +
+    "   * 0.9.0 G — the staging strip. WhatsApp's shape: pick, see what you picked, remove one, send.\n" +
+    '   * Nothing leaves the phone until Send, and the bytes are held as data URLs in memory only.\n' +
+    '   */\n' +
+    '  const [staged, setStaged] = useState<StagedAttachment[]>([]);\n' +
+    '  const [pickerOpen, setPickerOpen] = useState(false);\n' +
+    '  const [cameraOpen, setCameraOpen] = useState(false);\n' +
+    '  const [attachNote, setAttachNote] = useState<string | null>(null);\n' +
+    '  const [cameraPermission, requestCameraPermission] = useCameraPermissions();\n' +
+    '  const cameraRef = useRef<{ takePictureAsync?: (options?: { base64?: boolean; quality?: number }) => Promise<{ base64?: string } | undefined> } | null>(null);\n' +
+    '  const stageSeq = useRef(0);\n' +
+    '  /**\n' +
+    '   * 0.9.0 H — the recorder. Hold the mic; slide left to cancel; release to stage. The recording is\n' +
+    '   * STAGED, not sent: it joins the same strip an attachment does, so "send" is still one gesture.\n' +
+    '   */\n' +
+    '  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);\n' +
+    '  const [voice, setVoice] = useState<VoiceRecording>(IDLE_RECORDING);\n' +
+    '  const [voiceNow, setVoiceNow] = useState(0);\n' +
+    '\n' +
+    '  const handleRef = useRef<StreamHandle | null>(null);\n' +
+    "  const liveTextRef = useRef('');\n" +
+    "  const pendingRef = useRef('');\n" +
+    '  const errorRef = useRef<ApiError | null>(null);\n' +
+    '  const listRef = useRef<FlatList<ThreadItem>>(null);\n' +
+    '\n' +
+    '  const header = threadTitle({ param: paramTitle, loaded: loadedTitle, id: sessionId });\n' +
+    '\n' +
+    '  const toggle = useCallback((key: string) => {\n' +
+    '    setExpanded((prev) => {\n' +
+    '      const next = new Set(prev);\n' +
+    '      if (next.has(key)) next.delete(key);\n' +
+    '      else next.add(key);\n' +
+    '      return next;\n' +
+    '    });\n' +
+    '  }, []);\n' +
+    '\n' +
+    '  const loadThread = useCallback(\n' +
+    '    async (options?: { silent?: boolean }) => {\n' +
+    '      if (!sessionId) return;\n' +
+    "      if (!options?.silent) setStatus('loading');\n" +
+    '      try {\n' +
+    '        const [rows, title] = await Promise.all([\n' +
+    '          backend.messages(sessionId, profile),\n' +
+    '          backend.sessionTitle(sessionId, profile).catch(() => null),\n' +
+    '        ]);\n' +
+    '        setMessages(Array.isArray(rows) ? rows : []);\n' +
+    '        if (title) setLoadedTitle(title);\n' +
+    '        setLoadError(null);\n' +
+    "        setStatus('ready');\n" +
+    '      } catch (error) {\n' +
+    '        setLoadError(normalizeError(error));\n' +
+    "        setStatus('error');\n" +
+    '      }\n' +
+    '    },\n' +
+    '    [backend, profile, sessionId],\n' +
+    '  );\n' +
+    '\n' +
+    '  useEffect(() => {\n' +
+    '    if (!ready) return;\n' +
+    '    void loadThread();\n' +
+    '  }, [ready, loadThread]);\n' +
+    '\n' +
+    '  useEffect(\n' +
+    '    () => () => {\n' +
+    '      handleRef.current?.close();\n' +
+    '      backend.dispose();\n' +
+    '    },\n' +
+    '    [backend],\n' +
+    '  );\n' +
+    '\n' +
+    '  const finishTurn = useCallback(\n' +
+    '    async (aborted: boolean, error: ApiError | null) => {\n' +
+    '      const text = liveTextRef.current;\n' +
+    '      const asked = pendingRef.current;\n' +
+    '      setStreaming(false);\n' +
+    '      handleRef.current = null;\n' +
+    '      setLive(null);\n' +
+    "      liveTextRef.current = '';\n" +
+    '      setLiveTools([]);\n' +
+    '\n' +
+    '      if (error) {\n' +
+    '        setNotice(error.message);\n' +
+    '        if (text) {\n' +
+    "          setMessages((prev) => [...prev, { id: `local_${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now() / 1000 }]);\n" +
+    '        }\n' +
+    '        return;\n' +
+    '      }\n' +
+    '      if (aborted) {\n' +
+    '        setNotice(t.thread.stopped);\n' +
+    '        if (text) {\n' +
+    "          setMessages((prev) => [...prev, { id: `local_${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now() / 1000 }]);\n" +
+    '        }\n' +
+    '        return;\n' +
+    '      }\n' +
+    '      void asked;\n' +
+    '      // Success: re-read the canonical rows so what is on screen is what the server stored.\n' +
+    '      await loadThread({ silent: true });\n' +
+    '    },\n' +
+    '    [loadThread],\n' +
+    '  );\n' +
+    '\n' +
+    "  /** The recording bar's clock: one tick a second, and only while a recording exists. */\n" +
+    '  useEffect(() => {\n' +
+    "    if (voice.phase === 'idle') return;\n" +
+    '    const timer = setInterval(() => setVoiceNow(Date.now()), 250);\n' +
+    '    return () => clearInterval(timer);\n' +
+    '  }, [voice.phase]);\n' +
+    '\n' +
+    '  const beginVoice = useCallback(async () => {\n' +
+    "    if (voice.phase !== 'idle' || streaming) return;\n" +
+    '    try {\n' +
+    '      const permission = await AudioModule.requestRecordingPermissionsAsync();\n' +
+    '      if (!permission.granted) {\n' +
+    '        setAttachNote(t.thread.voice.permissionDenied);\n' +
+    '        return;\n' +
+    '      }\n' +
+    '      await recorder.prepareToRecordAsync();\n' +
+    '      recorder.record();\n' +
+    '      setVoiceNow(Date.now());\n' +
+    '      setVoice'... 29420 more characters
+  
+ok 280 - 0.11.0 R3: a slide past the cancel point CANCELS instead of sending
+not ok 281 - 0.11.0 R4: expo-file-system is DECLARED, and there is ONE read implementation
+  the voice path rests on a DECLARED package, not a transitive one
+not ok 282 - 0.11.0 R5: the menu is the gateway list itself, served over the socket the app already holds
+  backend.completeSlash is not a function
+not ok 283 - 0.11.0 R5: insert-does-not-send, last-write-wins, and the caret rule — the rails
+  the then-branch drops stale answers
+not ok 284 - 0.11.0 R6: a leading `/` RUNS a command, and opens NO stream
+  backend.runSlashCommand is not a function
+not ok 285 - 0.11.0 R6: the documented 4018 refusal is retried ONCE through command.dispatch
+  backend.runSlashCommand is not a function
+not ok 286 - 0.11.0 R6: any OTHER failure is reported, never retried
+  expected ApiError, got TypeError: backend.runSlashCommand is not a function
+not ok 287 - 0.11.0 R6: the outcome lands in the card that already exists, and a mid-sentence / is text
+  the block marker was found — an unfound marker must never widen the window
+not ok 288 - 0.11.0 R7: the thread subscribes to its OWN session, on the socket it sends on
+  backend.watchSession is not a function
+not ok 289 - 0.11.0 R7: catch-up replays from the watermark — and a HOLEY replay is never stitched
+  backend.watchSession is not a function
+not ok 290 - 0.11.0 R7: a changed replay EPOCH resets the watermark and refetches
+  backend.watchSession is not a function
+not ok 291 - 0.11.0 R7: a refused attach is not an error card
+  first.watchSession is not a function
+not ok 292 - 0.11.0 R7: an incomplete turn is NOT a success, and the turn rides the shared socket
+  the value is no longer discarded
+not ok 293 - 0.11.0 R7: the subscription is FOCUS-SCOPED, and always dropped
+  attach on focus
+not ok 294 - 0.11.0 R8: Android is off KAV height, and the lift comes from the keyboard itself
+  Android gets no KAV behaviour
+
+260/294 passed, 34 failed
+EXIT=1

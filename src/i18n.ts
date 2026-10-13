@@ -211,8 +211,12 @@ const en = {
       camera: 'Take a photo',
       clipboard: 'Paste an image',
       document: 'Send a file',
-      documentReason:
-        'Choosing a file from this phone needs a file picker that is not built yet. Pictures work today.',
+      // ── 0.11.0 R2: the two new sources the user chose ("Any file + the photo library") ──
+      photo: 'Photo library',
+      photoDenied: 'The photo library permission was refused, so a photo cannot be chosen.',
+      photoFailed: (detail: string) => `The photo library could not be read: ${detail}`,
+      fileFailed: (detail: string) => `That file could not be read: ${detail}`,
+      tooLarge: 'That file is larger than 25 MB.',
       capture: 'Take the photo',
       captureFailed: 'The camera did not return a picture.',
       cameraDenied: 'The camera permission was refused, so a photo cannot be taken.',
@@ -222,9 +226,24 @@ const en = {
       remove: 'Remove',
       imageLabel: 'Attached picture',
     },
+    // ── 0.11.0 R6: running a slash command, shown in the notice card that already exists ──
+    slash: {
+      title: 'Commands',
+      loading: 'Looking for commands…',
+      empty: 'No command matches what you typed.',
+      commands: 'Commands',
+      skills: 'Skills',
+      noOutput: 'The command produced no output.',
+      failed: (detail: string) => `The command could not be run: ${detail}`,
+    },
     // ── 0.9.0 H: voice notes ──
     voice: {
       hold: 'Hold to record a voice note',
+      // 0.11.0 R3 — the tap mode's own words. Same recorder, a different gesture.
+      start: 'Record a voice note',
+      stop: 'Stop and send the voice note',
+      cancel: 'Cancel the recording',
+      tapHint: 'Tap the square to send, or cancel.',
       slideToCancel: 'Slide left to cancel, release to keep',
       releaseToCancel: 'Release to cancel',
       cancelled: 'The voice note was cancelled.',
@@ -309,6 +328,14 @@ const en = {
     typeAutomatic: 'Automatic runs (cron, webhooks)',
     typeAutomaticHelp: 'Scheduled jobs that ran on their own. They are not conversations.',
     typeNoneWarning: 'No type is checked, so the session list is empty. Check one to see sessions.',
+    // ── 0.11.0 R3: how the microphone works, on THIS phone ──
+    micMode: 'Microphone',
+    micModeHelp:
+      'How the mic button works. A phone gesture means nothing to the desktop, so this stays on this phone.',
+    micHold: 'Hold to record',
+    micHoldHelp: 'Press and keep holding, slide left to cancel, release to send.',
+    micTap: 'Tap to start and stop',
+    micTapHelp: 'Tap the mic to start recording; tap the red square to send, or cancel the recording.',
     profilesFound: 'profiles found',
     logTitle: 'Support log',
     logHelp:
@@ -362,7 +389,8 @@ const en = {
     pagesTitle: 'Settings',
     pages: {
       agentTitle: 'Agent Preferences',
-      agentHelp: 'Which session types the list shows, and how the list is displayed.',
+      agentHelp:
+        'Which session types the list shows and how the list is displayed — those sync with the desktop. The microphone gesture is this phone only.',
       notificationsTitle: 'Notifications',
       notificationsHelp: 'Which checkpoints warn you, and the phone permission they need.',
       gatewayTitle: 'Gateway Settings',
@@ -1025,8 +1053,12 @@ const pt: PtStrings = {
       camera: 'Tirar fotografia',
       clipboard: 'Colar uma imagem',
       document: 'Enviar ficheiro',
-      documentReason:
-        'Escolher um ficheiro deste telefone precisa de um seletor de ficheiros que ainda não existe. As imagens já funcionam.',
+      // ── 0.11.0 R2: as duas fontes novas que o the user escolheu ──
+      photo: 'Galeria de fotografias',
+      photoDenied: 'A permissão da galeria foi recusada, por isso não é possível escolher fotografia.',
+      photoFailed: (detail: string) => `Não foi possível ler a galeria: ${detail}`,
+      fileFailed: (detail: string) => `Não foi possível ler esse ficheiro: ${detail}`,
+      tooLarge: 'Esse ficheiro tem mais de 25 MB.',
       capture: 'Tirar a fotografia',
       captureFailed: 'A câmara não devolveu nenhuma imagem.',
       cameraDenied: 'A permissão da câmara foi recusada, por isso não é possível tirar fotografia.',
@@ -1036,9 +1068,24 @@ const pt: PtStrings = {
       remove: 'Remover',
       imageLabel: 'Imagem anexada',
     },
+    // ── 0.11.0 R6: executar um comando, mostrado no cartão de aviso que já existe ──
+    slash: {
+      title: 'Comandos',
+      loading: 'A procurar comandos…',
+      empty: 'Nenhum comando corresponde ao que escreveste.',
+      commands: 'Comandos',
+      skills: 'Competências',
+      noOutput: 'O comando não produziu resultado.',
+      failed: (detail: string) => `Não foi possível executar o comando: ${detail}`,
+    },
     // ── 0.9.0 H: mensagens de voz ──
     voice: {
       hold: 'Manter premido para gravar uma mensagem de voz',
+      // 0.11.0 R3 — as palavras do modo de toque. O mesmo gravador, um gesto diferente.
+      start: 'Gravar uma mensagem de voz',
+      stop: 'Parar e enviar a mensagem de voz',
+      cancel: 'Cancelar a gravação',
+      tapHint: 'Toca no quadrado para enviar, ou cancela.',
       slideToCancel: 'Desliza para a esquerda para cancelar, larga para guardar',
       releaseToCancel: 'Larga para cancelar',
       cancelled: 'A mensagem de voz foi cancelada.',
@@ -1110,6 +1157,14 @@ const pt: PtStrings = {
     typeAutomatic: 'Execuções automáticas (cron, webhooks)',
     typeAutomaticHelp: 'Tarefas agendadas que correram sozinhas. Não são conversas.',
     typeNoneWarning: 'Nenhum tipo está assinalado, por isso a lista de sessões fica vazia. Assinala um para ver sessões.',
+    // ── 0.11.0 R3: como funciona o microfone, NESTE telefone ──
+    micMode: 'Microfone',
+    micModeHelp:
+      'Como funciona o botão do microfone. Um gesto do telefone não diz nada ao computador, por isso fica neste telefone.',
+    micHold: 'Manter premido para gravar',
+    micHoldHelp: 'Prime e mantém, desliza para a esquerda para cancelar, larga para enviar.',
+    micTap: 'Tocar para começar e parar',
+    micTapHelp: 'Toca no microfone para gravar; toca no quadrado vermelho para enviar, ou cancela a gravação.',
     profilesFound: 'perfis encontrados',
     logTitle: 'Registo de diagnóstico',
     logHelp:
@@ -1163,7 +1218,8 @@ const pt: PtStrings = {
     pagesTitle: 'Definições',
     pages: {
       agentTitle: 'Preferências do Agente',
-      agentHelp: 'A língua desta app e que tipos de sessão aparecem na lista.',
+      agentHelp:
+        'Que tipos de sessão aparecem na lista e como a lista é apresentada — isso sincroniza com o computador. O gesto do microfone é só deste telefone.',
       notificationsTitle: 'Notificações',
       notificationsHelp: 'Que pontos de controlo avisam, e a permissão do telefone que precisam.',
       gatewayTitle: 'Definições do Gateway',

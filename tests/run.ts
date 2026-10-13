@@ -43,7 +43,7 @@ import {
   transportSecurityNote,
   type RouteCandidate,
 } from '../src/routes';
-import { checkBaseUrl, DEFAULT_NOTIFY, DEFAULT_SESSION_TYPES, DEFAULT_SETTINGS, healSurface, normalizeNotify, normalizeSessionTypes, splitProfiles, surfaceLabel, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
+import { checkBaseUrl, DEFAULT_MIC_MODE, DEFAULT_NOTIFY, DEFAULT_SESSION_TYPES, DEFAULT_SETTINGS, MIC_MODES, healSurface, micModeEntry, normalizeMicMode, normalizeNotify, normalizeSessionTypes, splitProfiles, surfaceLabel, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
 import { loadSettings, saveSettings, loadLastSeen, saveLastSeen } from '../src/settingsStore';
 import { __resetStoreProbe } from '../src/storage';
 import { candidateAddresses, dashboardAddressFor, pairPageUrl, parseConnectLink, settingsAfterPairing, PairingError, probeService, redeemPairing, REDEEM_PATH } from '../src/pairing';
@@ -228,16 +228,27 @@ import {
 } from '../src/logic/voice';
 import {
   ATTACHMENT_MAX_BYTES,
+  ATTACH_ROWS,
+  attachLabelKey,
+  attachRowIds,
   attachmentKind,
   base64Of,
   bytesOfDataUrl,
   fileCardLine,
   humanSize,
+  liveLabelFor,
   mimeOf,
   parseMessageContent,
   stage,
   unstage,
+  wireTextFor,
 } from '../src/logic/attachments';
+import {
+  isStaleAnswer,
+  slashQueryOf,
+  spliceCompletion,
+  spliceIndexFor,
+} from '../src/logic/slash';
 import {
   NO_SELECTION,
   barVerbs,
@@ -4738,7 +4749,18 @@ async function main(): Promise<void> {
     assert.match(readFileSync(join(process.cwd(), 'app', 'thread', '[id].tsx'), 'utf8'), /horizontalInset\(insets\)/);
     // the composer cannot be swallowed by the keyboard on Android
     const thread = readFileSync(join(process.cwd(), 'app', 'thread', '[id].tsx'), 'utf8');
-    assert.match(thread, /behavior=\{Platform\.OS === 'ios' \? 'padding' : 'height'\}/);
+    // 0.11.0 R8 SUPERSEDES this assertion. 0.9.0 gave Android KAV `height` on the reading that
+    // "with no behaviour the raised keyboard covers the composer"; on RN 0.86 / Expo 57 the Android
+    // window no longer resizes under the keyboard, so `height` subtracted from nothing and the
+    // composer stayed hidden — the user's own report. The lift is now the keyboard's own report applied
+    // as padding (`composerLift`), with NO KAV behaviour on Android. The invariant this line exists
+    // for (Android gets an explicit mechanism, iOS is not the only platform considered) is unchanged;
+    // only the mechanism moved, and the test's own wording was updated with it.
+    assert.match(thread, /keyboardDidShow/, 'Android still has an explicit mechanism');
+    assert.ok(
+      !/Platform\.OS === 'ios' \? 'padding' : 'height'/.test(thread),
+      'and it is no longer KAV `height` — see the R8 test below for the whole shape',
+    );
   });
 
   test('0.9.0 F (landscape): the sheets use MORE of a short viewport, not less', () => {
@@ -4829,7 +4851,10 @@ async function main(): Promise<void> {
     assert.equal(scopeOfSetting('made-up'), 'unknown', 'an unclassified setting says so');
     // the rows carry the scope the user sees
     assert.equal(scopeOfRow('gateway'), 'device-local');
-    assert.equal(scopeOfRow('agent'), 'portable');
+    // 0.11.0 R3 SUPERSEDES this: the row was `portable` while it held only the session-type
+    // checkboxes, and the microphone GESTURE (device-local) moved in with R3 — so `mixed` is the
+    // honest word now, and the row's help text names the exception (the shape Notifications uses).
+    assert.equal(scopeOfRow('agent'), 'mixed', 'the session types sync; the mic gesture cannot');
     assert.equal(scopeOfRow('notifications'), 'mixed', 'the switches sync; the OS permission cannot');
     // …and the app's portable keys are EXACTLY the document's accepted keys (read out of the plugin)
     const plugin = readFileSync(
@@ -6146,7 +6171,7 @@ async function main(): Promise<void> {
     assert.match(code, /peerList:\s*\{[^}]*gap:[^}]*\}/, 'and that container carries the gap back');
   });
 
-  test('0.10.1 S1: the wizard\'s peer list is bounded and nested — the manual field stays reachable', () => {
+  test('0.10.1 S1: the peer list inside the wizard is bounded and nested — the manual field stays reachable', () => {
     const code = wizardCode();
     const cardAt = code.indexOf("branch === 'remote'");
     const listAt = code.indexOf('peers.peers.map(', cardAt);
@@ -6444,6 +6469,650 @@ async function main(): Promise<void> {
     // source assertion: the index still renders each ROW's own help sentence
     assert.match(settingsSource(), /\{t\.settings\.pages\[row\.help\]\}/, 'the rows were not collateral');
     assert.match(settingsSource(), /\{t\.settings\.pagesTitle\}/, 'and the screen keeps its title');
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.11.0 Half B — R1 to R4. the user, 2026-10-13, on the shipped 0.10.0: "Sending a file does not
+  // work yet, let's implement that" / "The voice message is not working. The recording is happening,
+  // but it's not being sent through." / "When the user clicks on the microphone and starts recording,
+  // change the microphone button into a stop icon."
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  const threadSource = () => readFileSync(join(process.cwd(), 'app', 'thread', '[id].tsx'), 'utf8');
+
+  test('0.11.0 R1: the ref travels with the turn — the WIRE text carries it, the screen does not', async () => {
+    // The suite's ambient language is PT; the labels below are the EN ones, read in EN.
+    await inLanguage('en', () => {
+    // (a) the composition, executable. `file.attach` stages the bytes and queues NOTHING (unlike
+    //     `image.attach_bytes`, whose queue the next submit consumes), so the reply's `@file:` ref has
+    //     to ride the message text. An empty caption drops out; the ref survives.
+    assert.equal(
+      wireTextFor('look at this', ['@file:/home/x/report.pdf']),
+      'look at this\n@file:/home/x/report.pdf',
+    );
+    assert.equal(
+      wireTextFor('', ['@file:/home/x/voice-1.m4a']),
+      '@file:/home/x/voice-1.m4a',
+      'a voice note has NO caption — the ref is the whole message',
+    );
+    assert.equal(wireTextFor('hi', []), 'hi', 'and a plain message is untouched');
+    assert.equal(wireTextFor('  ', []), '', 'whitespace is not a message');
+    assert.equal(wireTextFor('caption', ['', '  ']), 'caption', 'an empty ref cannot blank the wire text');
+    assert.equal(wireTextFor('c', ['@file:a', '@file:b']), 'c\n@file:a\n@file:b', 'one ref per line');
+    // (b) the DISPLAY text is not the wire text, and is never blank
+    const voice = [{ name: 'voice-1.m4a', kind: 'file' }];
+    assert.equal(liveLabelFor('', voice), 'Voice note', 'the bubble says what it is');
+    assert.equal(liveLabelFor('  ', voice), 'Voice note');
+    assert.equal(liveLabelFor('have a listen', voice), 'have a listen', 'a caption wins');
+    assert.equal(liveLabelFor('', [{ name: 'report.pdf', kind: 'file' }]), 'report.pdf');
+    for (const label of [liveLabelFor('', voice), liveLabelFor('', [{ name: 'a.pdf', kind: 'file' }])]) {
+      assert.ok(!label.includes('@file:'), 'no user ever reads a ref in their own bubble');
+    }
+    // (c) the SCREEN collects the reply's refText and streams the COMPOSED text
+    const src = threadSource();
+    assert.match(src, /const attached = await backend\.attachFile\(sessionId, item\.dataUrl, item\.name, profile\);/);
+    assert.match(src, /if \(attached\.refText\) refs\.push\(attached\.refText\)/);
+    assert.match(src, /wireTextFor\(input\.text, refs\)/, 'the wire text is what chatStream receives');
+    assert.match(src, /setLive\(\{ user: liveLabelFor\(input\.text, input\.attachments\), text: '' \}\)/);
+    assert.ok(
+      !/else await backend\.attachFile\(/.test(src),
+      'the call that threw the reply away is gone',
+    );
+    // R1.a — the guard stays a guard: with an empty wire text the turn would still carry nothing
+    assert.match(src, /if \(\(!text && !staged\.length\) \|\| streaming \|\| !sessionId\) return;/);
+      // R1.b — no server change: the client is the side that was wrong
+      assert.ok(!/methods_prompt|tui_gateway/.test(src), 'nothing here reaches into the server');
+    });
+  });
+
+  test('0.11.0 R1: the dead string is alive — the voice note says so in both tables', () => {
+    // `t.thread.voice.sending` was declared in 0.9.0 Phase H and referenced NOWHERE. It is what keeps
+    // the live bubble from being blank for a note that has no caption.
+    assert.ok(stringsFor('en').thread.voice.sending.trim().length > 0);
+    assert.ok(stringsFor('pt').thread.voice.sending.trim().length > 0);
+    const src = readFileSync(join(process.cwd(), 'src', 'logic', 'attachments.ts'), 'utf8');
+    assert.match(src, /isVoiceNote\(first\.name\) \? t\.thread\.voice\.sending/, 'chosen for a voice note');
+    assert.match(threadSource(), /liveLabelFor\(/, 'and the composer consumes it through that label');
+  });
+
+  test('0.11.0 R2: the two pickers exist, the disabled row is gone, and a pick goes through stage()', () => {
+    // The dependency LIST is the load-bearing evidence — a declared module that is imported lazily
+    // shows zero bundle matches (`expo-clipboard` does exactly that), so a grep proves nothing.
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>;
+    };
+    for (const name of ['expo-document-picker', 'expo-image-picker']) {
+      assert.ok(pkg.dependencies[name], `${name} is declared`);
+      assert.match(pkg.dependencies[name], /^~57\./, 'from this SDK, never a floating version');
+    }
+    assert.ok(!pkg.dependencies['react-native-document-picker'], 'and no third-party picker');
+    const app = JSON.parse(readFileSync(join(process.cwd(), 'app.json'), 'utf8')) as {
+      expo: { plugins: unknown[]; ios: { infoPlist: Record<string, string> } };
+    };
+    assert.ok(app.expo.plugins.includes('expo-document-picker'), 'the document picker is registered');
+    assert.ok(
+      app.expo.plugins.some((plugin) => Array.isArray(plugin) && plugin[0] === 'expo-image-picker'),
+      'the photo-library picker is registered',
+    );
+    assert.match(app.expo.ios.infoPlist.NSPhotoLibraryUsageDescription ?? '', /photo library/i);
+    // the rows: document RE-ENABLED, photo-library ADDED
+    assert.deepEqual(attachRowIds(), ['camera', 'photo', 'document', 'clipboard']);
+    const src = threadSource();
+    assert.ok(!/disabled: true/.test(src), 'the document row is no longer disabled');
+    assert.ok(!/documentReason/.test(src), 'and its "not built yet" apology is gone with it');
+    // a picked file/photo becomes a stage() input — through the ONE existing door
+    assert.match(src, /const dataUrl = await dataUrlFromUri\(asset\.uri, mime\);/);
+    assert.match(src, /addStaged\(\{ name: asset\.name \|\| 'file', dataUrl, mime \}\)/);
+    assert.match(src, /addStaged\(\{ name, dataUrl, mime \}\)/);
+    assert.match(src, /const result = stage\(staged, input, /, 'and `stage()` is still the one door with the one cap');
+    // THE SIZE IS CHECKED BEFORE THE BYTES ARE READ (reading first and refusing after is an OOM)
+    for (const [open, label] of [['const pickDocument', 'file'], ['const pickPhoto', 'photo']] as const) {
+      const at = src.indexOf(open);
+      assert.ok(at > 0, `${label} picker exists`);
+      const sizeAt = src.indexOf('ATTACHMENT_MAX_BYTES', at);
+      const readAt = src.indexOf('dataUrlFromUri(asset.uri, mime)', at);
+      assert.ok(sizeAt > at, `${label}: the reported size is checked`);
+      assert.ok(readAt > at && sizeAt < readAt, `${label}: …BEFORE the bytes are read`);
+    }
+    // a refused permission is a SENTENCE, never a crash
+    assert.match(src, /setAttachNote\(t\.thread\.attach\.photoDenied\)/);
+    // ONE staging path: neither picker touches the strip state directly
+    const picksAt = src.indexOf('const pickDocument');
+    const picksEnd = src.indexOf('/** The menu closes', picksAt);
+    assert.ok(picksEnd > picksAt, 'the marker was found — an unfound marker must never widen the window');
+    const picks = src.slice(picksAt, picksEnd);
+    assert.ok(!/setStaged\(/.test(picks), 'no direct setStaged — the strip, unstage and the send loop still work');
+  });
+
+  test('0.11.0 R2: labelOf cannot mislabel — every row resolves its OWN label', () => {
+    const en = stringsFor('en');
+    const labels = new Set<string>();
+    for (const row of ATTACH_ROWS) {
+      const key = attachLabelKey(row.id);
+      assert.equal(key, row.id, `${row.id} is labelled through its own key, not a positional fallback`);
+      const words = en.thread.attach[key as keyof typeof en.thread.attach];
+      assert.ok(typeof words === 'string' && words.trim().length > 0, `${row.id} has words`);
+      labels.add(words as string);
+    }
+    assert.equal(labels.size, ATTACH_ROWS.length, 'no two rows share a label');
+    assert.equal(attachLabelKey('nope'), null, 'an unknown key gets NULL, never another row\'s words');
+    const src = threadSource();
+    assert.ok(!/else t\.thread\.attach\.document/.test(src), 'the chain ending in `document` is gone');
+    assert.match(src, /const labelKey = attachLabelKey\(key\);/);
+    assert.match(src, /entries=\{ATTACH_ROWS\.map\(/);
+    assert.match(src, /labelOf=\{attachLabelOf\}/);
+  });
+
+  test('0.11.0 R3: the mic mode is a DEVICE-LOCAL setting, and the default is the requested one', () => {
+    assert.equal(DEFAULT_MIC_MODE, 'tap', 'the behaviour he asked for');
+    assert.equal(DEFAULT_SETTINGS.micMode, 'tap');
+    assert.equal(normalizeMicMode('hold'), 'hold');
+    assert.equal(normalizeMicMode(undefined), 'tap', 'an older blob loads on the default');
+    assert.equal(normalizeMicMode('nonsense'), 'tap');
+    const hold = micModeEntry('hold');
+    assert.equal(hold.labelKey, 'micHold');
+    assert.equal(hold.helpKey, 'micHoldHelp', 'each option explains ITSELF, not the other one');
+    assert.equal(MIC_MODES[0].id, 'tap', 'the default is drawn first');
+    // the SPLIT the page promises: a phone gesture cannot be portable
+    assert.ok((DEVICE_LOCAL_SETTING_IDS as readonly string[]).includes('micMode'));
+    assert.equal(scopeOfSetting('micMode'), 'device-local');
+    // and the row it lives on stops claiming to be purely portable, naming the exception instead
+    assert.equal(scopeOfRow('agent'), 'mixed');
+    assert.match(stringsFor('en').settings.pages.agentHelp, /microphone/i);
+    assert.match(stringsFor('en').settings.pages.agentHelp, /this phone/i);
+    assert.ok(stringsFor('pt').settings.micMode.trim().length > 0, 'both tables');
+    // the control: two options, saving on tap (pedro-app-defaults: no Save button for one field)
+    const code = settingsCode();
+    assert.match(code, /MIC_MODES\.map\(/);
+    assert.match(code, /update\(\{ micMode: mode\.id \}\)/);
+    assert.match(code, /t\.settings\[micModeEntry\(form\.micMode\)\.helpKey\]/);
+  });
+
+  test('0.11.0 R3: the icon follows the GESTURE, cancel is reachable, and stopping SENDS', () => {
+    const src = threadSource();
+    // the glyph is a function of (mode, phase) — never of the mode alone
+    assert.match(src, /micMode === 'tap' && voice\.phase !== 'idle' \? 'stop' : 'mic-outline'/);
+    assert.match(src, /micMode === 'tap' && voice\.phase !== 'idle' && styles\.micButtonStop/);
+    // tap: one tap starts, the next stops
+    assert.match(
+      src,
+      /onPress=\{micMode === 'tap' \? \(\) => \(voice\.phase === 'idle' \? void beginVoice\(\) : void endVoice\(\)\) : \(\) => undefined\}/,
+    );
+    // hold: the gesture is unchanged, and the SLIDE is now wired (R3.a)
+    assert.match(src, /\.\.\.\(micMode === 'hold' \? slidePan\.panHandlers : \{\}\)/);
+    assert.match(src, /setVoice\(\(current\) => updateSlide\(current, gesture\.dx\)\)/);
+    // tap mode needs an explicit cancel — there is no drag to cancel with
+    assert.match(src, /onPress=\{cancelVoice\}/);
+    assert.match(src, /void endVoice\(\{ cancel: true \}\)/);
+    // STOPPING SENDS: the note goes to submitTurn, never into the strip
+    const endAt = src.indexOf('const endVoice');
+    const endBlock = src.slice(endAt, src.indexOf('0.11.0 R3 — tap mode', endAt));
+    assert.match(endBlock, /await submitTurn\(\{/, 'a completed recording reaches the send path');
+    assert.ok(!/setStaged\(/.test(endBlock), 'a recorded note is never staged in the strip again');
+    // R3.c — the recorder's lifecycle is untouched: a mode is not a phase
+    assert.ok(!/VoicePhase/.test(src), 'no new phase was added');
+    assert.match(readFileSync(join(process.cwd(), 'src', 'logic', 'voice.ts'), 'utf8'), /export type VoicePhase = 'idle' \| 'recording' \| 'cancelling';/);
+  });
+
+  test('0.11.0 R3: a slide past the cancel point CANCELS instead of sending', () => {
+    // The arithmetic was finished in 0.9.0 and unreachable: `updateSlide` had no caller. This pins the
+    // outcome the wiring now produces.
+    const t0 = 1_700_000_000_000;
+    const held = beginRecording(IDLE_RECORDING, t0);
+    assert.equal(updateSlide(held, CANCEL_DX).phase, 'cancelling', 'the cancel point arms the phase');
+    const slid = updateSlide(held, CANCEL_DX - 1);
+    assert.equal(slideLabel(slid), 'cancelling', 'and the bar flips its label — the whole affordance');
+    assert.deepEqual(releaseRecording(slid, t0 + 4_000), { kind: 'cancel', reason: 'slid' });
+    // a release without a slide still sends
+    assert.equal(releaseRecording(updateSlide(held, -10), t0 + 4_000).kind, 'send');
+  });
+
+  test('0.11.0 R4: expo-file-system is DECLARED, and there is ONE read implementation', () => {
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>;
+    };
+    const declared = pkg.dependencies['expo-file-system'];
+    assert.ok(declared, 'the voice path rests on a DECLARED package, not a transitive one');
+    assert.match(declared, /^~57\./);
+    const installed = JSON.parse(
+      readFileSync(join(process.cwd(), 'node_modules', 'expo-file-system', 'package.json'), 'utf8'),
+    ) as { version: string };
+    assert.equal(declared.replace(/^[~^]/, ''), installed.version, 'declared at the version installed');
+    // ONE read implementation, shared by the voice note and by both pickers
+    const src = threadSource();
+    assert.equal((src.match(/await import\('expo-file-system'\)/g) ?? []).length, 1, 'one dynamic import');
+    assert.equal((src.match(/new File\(uri\)\.base64\(\)/g) ?? []).length, 1, 'one read');
+    assert.match(src, /const dataUrlFromUri = useCallback/);
+    assert.match(src, /dataUrlFromUri\(uri, VOICE_MIME\)/, 'the voice note goes through it too');
+  });
+
+  /** Wait for the socket's frames to be parsed and handled (the client parses on its own turn). */
+  const settle = (ms = 80) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  test('0.11.0 R5: the menu is the gateway list itself, served over the socket the app already holds', async () => {
+    const mock = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-slash', { title: 'Slash', profile: 'default' })],
+      slashItems: [
+        { text: '/help', display: '/help', meta: 'show help', kind: 'command' },
+        { text: '/model', display: '/model', meta: 'choose a model', kind: 'command' },
+        { text: '/skills', display: '/skills', meta: 'list skills', kind: 'skill' },
+      ],
+    });
+    await mock.listen();
+    const backend = createBackend(settingsFor(mock.url, { apiKey: DASH_BEARER }));
+    // (a) the server's OWN gate: a draft that does not start with `/` is answered with nothing
+    assert.deepEqual((await backend.completeSlash('sess-slash', 'hello /help', 'default')).items, []);
+    // (b) a `/` query comes back as rows plus the splice index — and the response IS the server's shape
+    const answer = await backend.completeSlash('sess-slash', '/he', 'default');
+    assert.deepEqual(answer.items.map((item) => item.text), ['/help']);
+    assert.equal(answer.items[0].kind, 'command');
+    assert.equal(answer.items[0].display, '/help');
+    assert.equal(answer.replaceFrom, 1, 'the splice index is the server\'s, not recomputed here');
+    // …over the SHARED socket: one connection for the completer (§10.10)
+    assert.equal(mock.connections, 1, 'ONE socket for the completer');
+    assert.deepEqual(
+      mock.rpcCalls.filter((call) => call.method === 'complete.slash').map((call) => call.params),
+      [
+        { text: 'hello /help', session_id: 'sess-slash', profile: 'default' },
+        { text: '/he', session_id: 'sess-slash', profile: 'default' },
+      ],
+    );
+    // (c) the argument stage: the token after the space is completed, and the index follows the space
+    const args = await backend.completeSlash('sess-slash', '/model g', 'default');
+    assert.equal(args.replaceFrom, '/model '.length, 'the index moves to the argument');
+    // (d) a skill is offered by the SAME call, with its own kind — no second request path
+    const skills = await backend.completeSlash('sess-slash', '/sk', 'default');
+    assert.deepEqual(skills.items.map((item) => item.kind), ['skill']);
+    backend.dispose();
+    await mock.close();
+  });
+
+  test('0.11.0 R5: insert-does-not-send, last-write-wins, and the caret rule — the rails', () => {
+    // the query rule, executable
+    assert.equal(slashQueryOf('/he', true), '/he');
+    assert.equal(slashQueryOf('/he', false), null, 'the caret must be at the END — replace_from is computed from there');
+    assert.equal(slashQueryOf('hello /help', true), null, 'a mid-sentence slash produces NO request at all');
+    assert.equal(slashQueryOf('  /he', true), null, 'and neither does a draft that only looks like one');
+    assert.equal(slashQueryOf('', true), null);
+    // the splice, at the server's index — the cases are the gateway's OWN client's cases
+    // (`ui-tui/src/__tests__/completionApply.test.ts`), because both clients must insert identically
+    assert.equal(spliceCompletion('/he', 1, '/help'), '/help', 'a bare token is replaced, not doubled up');
+    assert.equal(spliceCompletion('/ex', 1, 'exit'), '/exit', 'a BARE row keeps the typed slash');
+    assert.equal(spliceCompletion('ex', 0, '/exit'), '/exit', 'and a slash row keeps it for a slashless input');
+    assert.equal(spliceCompletion('/model g', 7, 'gpt-4'), '/model gpt-4', 'an argument is completed in place');
+    assert.equal(spliceCompletion('/he', 99, 'X'), '/heX', 'an index past the end is clamped, never a hole');
+    assert.equal(spliceCompletion('/he', -5, 'X'), 'X', 'and a negative one replaces the whole draft, never eats the start');
+    assert.equal(spliceIndexFor('/he', 'nonsense'), 1, 'junk falls back to the documented token rule');
+    // last-write-wins, executable: a slower EARLIER answer is dropped
+    assert.equal(isStaleAnswer(1, 2), true);
+    assert.equal(isStaleAnswer(2, 2), false);
+    assert.equal(isStaleAnswer(3, 2), false);
+    const src = threadSource();
+    assert.match(src, /if \(isStaleAnswer\(seq, slashSeq\.current\)\) return;/, 'the then-branch drops stale answers');
+    assert.match(src, /if \(!isStaleAnswer\(seq, slashSeq\.current\)\) setSlash\(null\)/, 'and so does the catch');
+    assert.match(src, /SLASH_DEBOUNCE_MS/, 'debounced — a keystroke is not a request');
+    assert.match(src, /setTimeout\(/, 'and the timer is what debounces it');
+    // tapping INSERTS and re-queries; it never sends
+    const applyAt = src.indexOf('const applySlashItem');
+    const applyEnd = src.indexOf('0.11.0 R6 (approach A', applyAt);
+    assert.ok(applyEnd > applyAt, 'the block marker was found — an unfound marker must never widen the window');
+    const applyBlock = src.slice(applyAt, applyEnd);
+    assert.ok(applyBlock.length < 1200, 'the window is the one function, not the rest of the file');
+    assert.match(applyBlock, /spliceCompletion\(draft,/);
+    assert.match(applyBlock, /setDraft\(next\)/);
+    assert.match(applyBlock, /querySlash\(next\)/, 'the re-query is what surfaces an argument stage');
+    assert.ok(!/send\(/.test(applyBlock), 'a tap does not send');
+    // dismissal: on blur, and whenever the draft stops being a `/` query
+    assert.match(src, /onBlur=\{dismissSlash\}/);
+    assert.match(src, /caretAtEnd\.current = event\.nativeEvent\.selection\.end >= draftRef\.current\.length/);
+    // a backend that cannot answer CLOSES the menu silently — never an error card
+    assert.match(src, /\.catch\(\(\) => \{/);
+    assert.ok(!/setAttachNote/.test(src.slice(src.indexOf('const querySlash'), src.indexOf('const applySlashItem'))));
+    // the rows draw the server's own words, grouped by the server's own `kind`
+    assert.match(src, /item\.kind === 'skill' \? t\.thread\.slash\.skills : t\.thread\.slash\.commands/);
+  });
+
+  test('0.11.0 R6: a leading `/` RUNS a command, and opens NO stream', async () => {
+    const mock = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-cmd', { title: 'Cmd', profile: 'default' })],
+      slashExec: { output: 'the help text' },
+    });
+    await mock.listen();
+    const backend = createBackend(settingsFor(mock.url, { apiKey: DASH_BEARER }));
+    const result = await backend.runSlashCommand('sess-cmd', '/help', 'default');
+    assert.equal(result.output, 'the help text');
+    const methods = mock.rpcCalls.map((call) => call.method);
+    assert.deepEqual(methods, ['slash.exec'], 'slash.exec FIRST');
+    assert.ok(!methods.includes('prompt.submit'), '§R6.b — a command turn never submits a prompt');
+    assert.ok(!methods.includes('chatStream'), 'and it opens no stream');
+    assert.equal(mock.rpcCalls[0].params.command, '/help', 'the command travels whole, slash included');
+    assert.equal(mock.rpcCalls[0].params.session_id, 'sess-cmd');
+    backend.dispose();
+    await mock.close();
+  });
+
+  test('0.11.0 R6: the documented 4018 refusal is retried ONCE through command.dispatch', async () => {
+    const mock = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-cmd', { profile: 'default' })],
+      slashExec: { refuse4018: true, dispatch: { output: 'the skill ran' } },
+    });
+    await mock.listen();
+    const backend = createBackend(settingsFor(mock.url, { apiKey: DASH_BEARER }));
+    const result = await backend.runSlashCommand('sess-cmd', '/skills list', 'default');
+    assert.equal(result.output, 'the skill ran');
+    assert.deepEqual(
+      mock.rpcCalls.map((call) => call.method),
+      ['slash.exec', 'command.dispatch'],
+      'exactly one retry — the skill path only',
+    );
+    const dispatch = mock.rpcCalls[1].params;
+    assert.equal(dispatch.name, 'skills', 'the name, without the slash');
+    assert.equal(dispatch.arg, 'list', 'and the argument split off');
+    // the payload was NOT `{output}`… it was, here; the renderer accepts both (see `commandText`)
+    assert.ok(typeof dispatch.session_id === 'string');
+    backend.dispose();
+    await mock.close();
+  });
+
+  test('0.11.0 R6: any OTHER failure is reported, never retried', async () => {
+    const mock = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-cmd', { profile: 'default' })],
+      slashExec: { error: { code: 5030, message: 'the slash worker died' } },
+    });
+    await mock.listen();
+    const backend = createBackend(settingsFor(mock.url, { apiKey: DASH_BEARER }));
+    await expectApiError(
+      () => backend.runSlashCommand('sess-cmd', '/help', 'default'),
+      (error) => assert.equal(error.status, 5030),
+    );
+    assert.deepEqual(mock.rpcCalls.map((call) => call.method), ['slash.exec'], 'no retry for anything but 4018');
+    backend.dispose();
+    await mock.close();
+  });
+
+  test('0.11.0 R6: the outcome lands in the card that already exists, and a mid-sentence / is text', () => {
+    const src = threadSource();
+    const runAt = src.indexOf('const runCommand');
+    const runEnd = src.indexOf('0.11.0 R6.a/R7.e', runAt);
+    assert.ok(runEnd > runAt, 'the block marker was found — an unfound marker must never widen the window');
+    const runBlock = src.slice(runAt, runEnd);
+    assert.ok(runBlock.length < 1200, 'the window is the one function, not the rest of the file');
+    assert.match(runBlock, /await backend\.runSlashCommand\(sessionId, command, profile\)/);
+    assert.match(runBlock, /setAttachNote\(result\.output \|\| t\.thread\.slash\.noOutput\)/, 'the EXISTING notice slot');
+    assert.match(runBlock, /setAttachNote\(t\.thread\.slash\.failed\(normalizeError\(error\)\.message\)\)/, 'a failure is SAID');
+    assert.ok(!/setStreaming/.test(runBlock), '§R6.b — no stream, so the composer is never left disabled');
+    assert.ok(!/setLive/.test(runBlock), 'and no live bubble behind a stream that never started');
+    // §R6.d — only the FIRST token counts: a mid-sentence slash is an ordinary prompt
+    const sendAt = src.indexOf('const send = useCallback');
+    const sendBlock = src.slice(sendAt, src.indexOf('const stop = useCallback', sendAt));
+    assert.match(sendBlock, /if \(text\.startsWith\('\/'\)\) \{/, 'the interception is on the FIRST character');
+    assert.ok(
+      sendBlock.indexOf('(!text && !staged.length)') < sendBlock.indexOf("text.startsWith('/')"),
+      '§R6.a — the guard runs FIRST',
+    );
+    assert.ok(!/includes\('\/'\)/.test(sendBlock), 'never a substring test');
+    // and no fourth ThreadItem kind was invented (approach B was declined)
+    assert.match(readFileSync(join(process.cwd(), 'src', 'logic', 'thread.ts'), 'utf8'), /kind: 'tools'/);
+    assert.ok(!/kind: 'command'/.test(readFileSync(join(process.cwd(), 'src', 'logic', 'thread.ts'), 'utf8')));
+  });
+
+  test('0.11.0 R7: the thread subscribes to its OWN session, on the socket it sends on', async () => {
+    const mock = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-watch', { title: 'Live', profile: 'default' })],
+      replayEpoch: 'ep-1',
+    });
+    await mock.listen();
+    const backend = createBackend(settingsFor(mock.url, { apiKey: DASH_BEARER }));
+    const seen = { deltas: [] as string[], reasoning: [] as string[], finals: [] as string[], tools: 0 };
+    const handle = await backend.watchSession(
+      'sess-watch',
+      {
+        onDelta: (text) => seen.deltas.push(text),
+        onReasoning: (text) => seen.reasoning.push(text),
+        onFinal: (text) => seen.finals.push(text),
+        onTool: () => {
+          seen.tools += 1;
+        },
+      },
+      'default',
+    );
+    // (a) it ATTACHED, with `omit_messages` — this device already read the history over REST
+    const activate = mock.rpcCalls.find((call) => call.method === 'session.activate');
+    assert.ok(activate, 'the screen attached to its own session');
+    assert.deepEqual(activate.params, { session_id: 'sess-watch', omit_messages: true, profile: 'default' });
+    assert.equal(mock.connections, 1, 'ONE socket (§10.11)');
+    // (b) a frame for THIS session paints; a frame for ANOTHER session changes nothing
+    mock.push('message.delta', { text: 'olá' }, 'sess-watch');
+    mock.push('message.delta', { text: 'NÃO' }, 'outra-sessao');
+    // (c) reasoning paints live; `thinking.delta` does NOT (it is the status channel)
+    mock.push('reasoning.delta', { text: 'a pensar…' }, 'sess-watch');
+    mock.push('thinking.delta', { text: 'spinner' }, 'sess-watch');
+    mock.push('tool.start', { tool_call_id: 't1', name: 'read_file', arguments: '{}' }, 'sess-watch');
+    mock.push('message.complete', { text: 'olá!' }, 'sess-watch');
+    await settle();
+    assert.deepEqual(seen.deltas, ['olá'], 'only the watched session paints');
+    assert.deepEqual(seen.reasoning, ['a pensar…'], 'reasoning.delta paints; thinking.delta is dropped');
+    assert.deepEqual(seen.finals, ['olá!']);
+    assert.equal(seen.tools, 1);
+    // (d) the unsubscribe removes the listener: nothing more arrives
+    handle.close();
+    mock.push('message.delta', { text: 'já não' }, 'sess-watch');
+    await settle();
+    assert.deepEqual(seen.deltas, ['olá'], 'a dropped subscription is a dropped subscription');
+    backend.dispose();
+    await mock.close();
+  });
+
+  test('0.11.0 R7: catch-up replays from the watermark — and a HOLEY replay is never stitched', async () => {
+    const mock = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-watch', { profile: 'default' })],
+      replayEpoch: 'ep-1',
+      // The ring is past its window: the answer says so AND carries a frame that must NOT be applied.
+      eventsSince: {
+        truncated: true,
+        latest_seq: 999,
+        events: [{ type: 'message.delta', payload: { text: 'X' }, session_id: 'sess-watch', seq: 998 }],
+      },
+    });
+    await mock.listen();
+    const backend = createBackend(settingsFor(mock.url, { apiKey: DASH_BEARER }));
+    const seen = { deltas: [] as string[], refetch: [] as string[] };
+    await backend.watchSession(
+      'sess-watch',
+      {
+        onDelta: (text) => seen.deltas.push(text),
+        onRefetch: (reason) => seen.refetch.push(reason),
+      },
+      'default',
+    );
+    // the watermark advances with a frame the socket carried
+    mock.push('message.delta', { text: 'uma' }, 'sess-watch');
+    await settle();
+    assert.deepEqual(seen.deltas, ['uma']);
+    // a reconnect: the first frame of the new connection is `gateway.ready`, same epoch
+    mock.push('gateway.ready', { replay_epoch: 'ep-1' });
+    await settle();
+    const since = mock.rpcCalls.find((call) => call.method === 'session.events.since');
+    assert.ok(since, 'the reconnect asked for the replay');
+    assert.ok(Number(since.params.last_seen) > 0, 'from the highest seq it saw, not from zero');
+    assert.deepEqual(seen.refetch, ['truncated'], 'past the window → REFETCH');
+    assert.deepEqual(seen.deltas, ['uma'], 'and the holey replay was NOT applied');
+    backend.dispose();
+    await mock.close();
+  });
+
+  test('0.11.0 R7: a changed replay EPOCH resets the watermark and refetches', async () => {
+    const mock = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-watch', { profile: 'default' })],
+      replayEpoch: 'ep-1',
+    });
+    await mock.listen();
+    const backend = createBackend(settingsFor(mock.url, { apiKey: DASH_BEARER }));
+    const seen = { refetch: [] as string[] };
+    await backend.watchSession('sess-watch', { onRefetch: (reason) => seen.refetch.push(reason) }, 'default');
+    mock.push('message.delta', { text: 'uma' }, 'sess-watch');
+    await settle();
+    const before = mock.rpcCalls.filter((call) => call.method === 'session.events.since').length;
+    // the gateway RESTARTED: a new process, a new epoch — this device's seq means nothing any more
+    mock.push('gateway.ready', { replay_epoch: 'ep-2' });
+    await settle();
+    assert.deepEqual(seen.refetch, ['epoch']);
+    assert.equal(
+      mock.rpcCalls.filter((call) => call.method === 'session.events.since').length,
+      before,
+      'the watermark was reset, so there is nothing to replay from',
+    );
+    backend.dispose();
+    await mock.close();
+  });
+
+  test('0.11.0 R7: a refused attach is not an error card', async () => {
+    // 4007 → fall back to `session.resume`
+    const refreshed = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-watch', { profile: 'default' })],
+      replayEpoch: 'ep-1',
+      activateRefusal: 4007,
+    });
+    await refreshed.listen();
+    const first = createBackend(settingsFor(refreshed.url, { apiKey: DASH_BEARER }));
+    const unavailable: string[] = [];
+    await first.watchSession('sess-watch', { onUnavailable: () => unavailable.push('x') }, 'default');
+    assert.ok(
+      refreshed.rpcCalls.some((call) => call.method === 'session.resume'),
+      '4007 means "retry resume", and that is what it does',
+    );
+    assert.deepEqual(unavailable, [], 'and it is not reported as broken');
+    first.dispose();
+    await refreshed.close();
+
+    // 4009 → retry `session.activate` once, and only then give up — still without an error card
+    const settling = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      profiles: [profileFixture('default')],
+      sessions: [sessionFixture('sess-watch', { profile: 'default' })],
+      replayEpoch: 'ep-1',
+      activateRefusal: 4009,
+    });
+    await settling.listen();
+    const second = createBackend(settingsFor(settling.url, { apiKey: DASH_BEARER }));
+    const told: string[] = [];
+    await second.watchSession('sess-watch', { onUnavailable: () => told.push('x') }, 'default');
+    assert.equal(
+      settling.rpcCalls.filter((call) => call.method === 'session.activate').length,
+      2,
+      '4009 is retried exactly once',
+    );
+    assert.deepEqual(told, ['x'], 'and the caller is told to keep the thread readable, not shown an error');
+    second.dispose();
+    await settling.close();
+  });
+
+  test('0.11.0 R7: an incomplete turn is NOT a success, and the turn rides the shared socket', () => {
+    const backendSrc = readFileSync(join(process.cwd(), 'src', 'api', 'backend.ts'), 'utf8');
+    // §R7.c — `sawCompletion` was computed and thrown away. (Checked in CODE: the comment above the
+    // function quotes the old `void sawCompletion` on purpose, so a bare grep would report the fix as
+    // the bug.)
+    const codeLines = backendSrc
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('*') && !line.trim().startsWith('//'));
+    assert.ok(
+      !codeLines.some((line) => line.includes('void sawCompletion')),
+      'the value is no longer discarded',
+    );
+    assert.match(backendSrc, /sawCompletion = true;/);
+    assert.match(backendSrc, /if \(!settled && !sawCompletion\) finish\(true\)/, 'a dead socket mid-turn aborts');
+    // §10.11 — ONE connection for the whole screen
+    assert.equal((backendSrc.match(/client\.connect\(/g) ?? []).length, 1, 'exactly one connect() call');
+    const turn = backendSrc.slice(
+      backendSrc.indexOf("chatStream(sessionId, text, handlers, profile = '')"),
+      backendSrc.indexOf('async watchSession('),
+    );
+    assert.ok(turn.length > 500, 'the slice really is the implementation, not an interface declaration');
+    assert.match(turn, /live = await shared\(\)/, 'the turn submits on the shared socket');
+    assert.ok(!/client\.connect\(/.test(turn), 'and never opens its own');
+    assert.match(turn, /routeEvent\(event, handlers\)/, 'the frame vocabulary lives in ONE place');
+    // §15 — `thinking.delta` stays dropped; `reasoning.delta` is wired
+    assert.match(backendSrc, /case 'reasoning\.delta':/);
+    assert.ok(!/case 'thinking\.delta':/.test(backendSrc), 'the status channel is not reasoning');
+  });
+
+  test('0.11.0 R7: the subscription is FOCUS-SCOPED, and always dropped', () => {
+    const src = threadSource();
+    assert.match(src, /useFocusEffect\(/, 'attach on focus');
+    assert.match(src, /const handle = await backend\.watchSession|\.watchSession\(\s*sessionId,/, 'on the screen\'s own backend');
+    const effectAt = src.indexOf('useFocusEffect(');
+    const effect = src.slice(effectAt, src.indexOf('0.11.0 R8 — Android', effectAt));
+    assert.match(effect, /return \(\) => \{\s*dropped = true;/, 'detach on blur');
+    assert.match(effect, /watchRef\.current\?\.close\(\)/, 'and the subscription is closed');
+    // the paint handlers are the same ones the composer used to own
+    assert.match(effect, /onDelta:/);
+    assert.match(effect, /onFinal:/);
+    assert.match(effect, /onReasoning: \(text\) => \{/);
+    assert.match(effect, /setLiveReasoning\(\(prev\) => prev \+ text\)/, 'reasoning paints LIVE');
+    assert.match(effect, /onTool:/);
+    assert.match(effect, /onRefetch:/);
+    assert.match(effect, /onUnavailable:/);
+    // §10.13 — no polling anywhere: the gateway pushes, and the ONLY timer on this screen is the
+    // recording clock 0.9.0 hung off `beginVoice` (a 250 ms elapsed-time repaint, not a fetch)
+    const timers = src.match(/setInterval\([^;]*/g) ?? [];
+    assert.equal(timers.length, 1, `exactly one timer on this screen — the recording clock, found: ${timers.join(' | ')}`);
+    assert.match(timers[0] ?? '', /setVoiceNow/, 'and it repaints elapsed time, it does not refresh the thread');
+    assert.ok(!/setInterval[\s\S]{0,200}loadThread/.test(src), 'nothing refreshes a live thread on a timer');
+    // the live reasoning block is DRAWN
+    assert.match(src, /numberOfLines=\{10\}/);
+    assert.match(src, /styles\.reasoningCard/);
+    // and a foreign turn has no caption to echo, so the user bubble is not drawn blank
+    assert.match(src, /\{live && live\.user \? \(/);
+  });
+
+  test('0.11.0 R8: Android is off KAV height, and the lift comes from the keyboard itself', () => {
+    const src = threadSource();
+    assert.match(src, /behavior=\{Platform\.OS === 'ios' \? 'padding' : undefined\}/, 'Android gets no KAV behaviour');
+    assert.match(src, /keyboardVerticalOffset=\{Platform\.OS === 'ios' \? 90 : 0\}/, 'iOS is untouched');
+    assert.match(src, /Keyboard\.addListener\('keyboardDidShow'/);
+    assert.match(src, /Keyboard\.addListener\('keyboardDidHide'/);
+    assert.match(src, /show\.remove\(\);\s*hide\.remove\(\)/, 'and both are removed on unmount');
+    assert.match(src, /Math\.max\(keyboardLift, insets\.bottom\)/, 'floored at the safe-area inset');
+    assert.match(src, /composerLift\s*=\s*\n?\s*Platform\.OS === 'android' \? \(keyboardLift > 0 \? Math\.max\(keyboardLift, insets\.bottom\) : insets\.bottom\) : 0;/);
+    assert.match(src, /paddingBottom: space\.md \+ composerLift/, 'applied as padding on the composer row');
+    // the `/` menu rides the SAME lift — it must be inside the lifted box, not in the KAV that no longer moves
+    const wrapAt = src.indexOf('0.11.0 R8 — the ONE lifted container');
+    const menuAt = src.indexOf('{slash ? (');
+    const composerAt = src.indexOf('paddingBottom: space.md + composerLift');
+    assert.ok(wrapAt > 0 && menuAt > wrapAt && composerAt > menuAt, 'the menu is inside the lifted container');
+    // NO keyboard library entered the dependency budget (§15)
+    const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+      dependencies: Record<string, string>;
+    };
+    assert.ok(
+      !Object.keys(pkg.dependencies).some((name) => /keyboard-controller/.test(name)),
+      'react-native-keyboard-controller (or any other) is NOT here',
+    );
   });
 
   // ─────────────────────────────────────────────────────── report ──

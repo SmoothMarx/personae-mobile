@@ -2491,3 +2491,314 @@ was rejected by the verifier's own host-literal check**: the wizard's IPv4 place
 sentence both used the user's real LAN address as the example, which is exactly the class of leak the 0.5.0
 forensics rule counts. The example is now a generic `192.168.1.50` and the bundle measures 0 again — the
 check earned its place on the same day it was written.
+
+
+## 0.11.0 — files and voice go through, the mic becomes a choice, `/` completes, the thread watches itself (2026-10-13)
+
+**One build, one release, two batches.** Half A is `GOAL-0.10.1.md` §S1–S8 (the nine review points
+the user sent while reading the shipped 0.10.0 on a real screen), executed byte-for-byte as written there.
+Half B+C is `GOAL-0.11.0.md` §1–§8: R1 (the ref has to travel with the turn), R2 (a picker, so a file
+can be chosen at all), R3 (the mic becomes a setting, and the stop icon needs a gesture), R4 (declare
+`expo-file-system`), R5 (`/` completes against the gateway's own list), R6 (a command has to run),
+R7 (the thread has to watch its own session) and R8 (the keyboard has to lift the composer).
+Half A was specced at `versionCode 13`; **vc13 was skipped** — the single artifact is `0.11.0 / vc14`,
+and there is exactly ONE verifier for it, because there is one build.
+
+### Floors, measured
+
+| measure | value |
+|---|---|
+| app suite | **294/294 passed, 0 failed** (250 at 0.9.1 → 261 at 0.10.0 → 294 here: +13 Half A cases, +21 R cases) |
+| typecheck | `npx tsc --noEmit` rc 0 |
+| gradle | two full builds, both `605 actionable tasks: 577 executed`. The first: `BUILD SUCCESSFUL in 8m 15s`. The SECOND is the artifact of record: `BUILD SUCCESSFUL in 7m 1s` — see the artifact note for why the tree was built twice |
+| the build lane | docker `personae-android:1`, `--env-file ~/.personae-android/build.env`, `:app:assembleRelease --no-daemon --no-parallel --max-workers=1` |
+| verifier | `logs/verify-0.11.0.sh` → **166 PASS / 0 FAIL**, `RESULT: PASS — 0.11.0 verified` |
+
+`android/` is generated, so the version bump required a prebuild — and the container runs as root, so the
+0.4.0 lesson applied again: `sudo rm -rf android/{.kotlin,build,.gradle} android/app/{build,.cxx}`,
+`rm -rf android`, `npx expo prebuild -p android --no-install` (rc 0, `versionCode 14 / versionName
+"0.11.0"` in the regenerated project), then `bash scripts/patch-android-signing.sh` (which reports
+`patched` — prebuild restores the DEBUG signing config every time).
+
+### Every item's test FAILS before its change (the RED proofs)
+
+`logs/red-0.11.0.sh <item> [carry,...] [base-ref]` → `logs/red-0.11.0-<item>.txt`, one file per item. The
+harness takes `git archive <base>` (the source BEFORE the item) and drops the CURRENT `tests/run.ts`
+into it, so the new test runs against the old source. **Two bases, because this release has two
+histories**: the R items are this batch and it is uncommitted while these ran, so their base is `HEAD`;
+the S items are Half A, already committed, so theirs is `c8b2641` (the 0.10.0 tip — the state before
+Half A). `src/logic/slash.ts` is carried for every item (the suite imports it, and a module that does
+not exist aborts the run instead of failing the test), and the extended `mock/dashboard.mjs` is carried
+for the R items so the failure is about the feature and not about an unknown-method reply.
+
+**The lane runs SERIALLY, and that is measured rather than chosen:** the suite binds a hardcoded port
+(`tests/run.ts:1771`, `createMockGateway({ port: 8791 })`), so a four-wide attempt died with
+`EADDRINUSE` and produced four items with no tally at all. The serial run is uniform: **34 failures for
+every S item, 22 for every R item**, every one with a tally line.
+
+| item | named cases | caught by name | the tree it ran against |
+|---|---|---|---|
+| S1 | 3 | 3 | `c8b2641`
+| S2 | 1 | 1 | `c8b2641`
+| S3 | 2 | 2 | `c8b2641`
+| S4 | 1 | 1 | `c8b2641`
+| S5 | 3 | 2 + 1 pin | `c8b2641`
+| S6 | 1 | 1 | `c8b2641`
+| S7 | 1 | 1 | `c8b2641`
+| S8 | 1 | 1 | `c8b2641`
+| R1 | 2 | 2 | `HEAD`
+| R2 | 2 | 2 | `HEAD`
+| R3 | 3 | 2 + 1 pin | `HEAD`
+| R4 | 1 | 1 | `HEAD`
+| R5 | 2 | 2 | `HEAD`
+| R6 | 4 | 4 | `HEAD`
+| R7 | 6 | 6 | `HEAD`
+| R8 | 1 | 1 | `HEAD`
+
+**32 of the 34 named cases fail by name on the pre-change tree, and every one of the 16 items has at
+least one case that does.** The two that do not are recorded rather than quietly counted:
+
+* **S5 "the DRAWN index is what a delete acts on"** — it asserts a property of the PURE connection
+  model (`connectionRows`' row indices, `deleteRoute` at a drawn index), and 0.10.0 already behaved that
+  way: the item's change is the remove VERB on the Gateway page, which the other two S5 cases (the
+  re-derived selection, the page hosting the verb) assert and which both fail before it. This case is a
+  regression PIN for the silent mis-delete, and it is kept as one.
+* **R3 "a slide past the cancel point CANCELS instead of sending"** — the same shape, and worth stating
+  plainly because it is the item's own history: the arithmetic in `voice.ts` was FINISHED in 0.9.0 and
+  unreachable (`updateSlide` had no caller), so a test of that arithmetic passes before the change too.
+  What R3 fixes is the WIRING, and the falsifiable case for it is the other R3 case ("the icon follows
+  the GESTURE, cancel is reachable, and stopping SENDS"), which asserts `slidePan.panHandlers` and the
+  `updateSlide` call and does fail before it.
+
+### R1 — the reference has to travel with the turn
+
+The bug behind both of the user's reports, and it is ONE bug: `file.attach` stages the bytes and queues
+NOTHING (`methods_prompt.py:1030-1050` — it returns `@file:<ref>` and has no consumer), unlike
+`image.attach_bytes` whose queue the next submit consumes. So an image rides the turn by itself and a
+file does not; the ref has to be in the message TEXT, and 0.10.0 threw `attachFile`'s reply away and
+submitted the caption — which for a voice note is the empty string. That is exactly "the recording is
+happening, but it's not being sent through".
+
+`submitTurn` is now the ONE place a turn is submitted, and the order inside it is load-bearing: attach
+every staged item and collect each non-image's `refText` → `wireTextFor(caption, refs)` is what travels
+→ `liveLabelFor(caption, attachments)` is what the user reads (the ref never appears in a bubble, and
+the bubble is never blank) → submit. `captionFor` is untouched: it answers "what did the user type", the
+new function answers "what does the model read". **No server change** — the TUI has always carried the
+ref in the text, and the client was the side that was wrong.
+
+The one string that made the blank bubble possible was already declared and dead: `t.thread.voice.sending`
+(0.9.0 Phase H, referenced nowhere). It is consumed now, for a note with no caption; a file with no
+caption falls back to its name.
+
+### R2 — a picker, and both new rows go through the ONE door
+
+`expo-document-picker` and `expo-image-picker`, both at this SDK's pin, no third-party picker. The
+paperclip's rows become camera / photo library / file / clipboard; the `disabled: true` "not built yet"
+row is gone, and its apology string is gone from BOTH tables. `labelOf`'s ternary chain — whose final
+`else` was `document`, so every added row would have been mislabelled — resolves a row's label from the
+row itself. A picked file or photo becomes a `stage()` input (the 25 MB cap, the refusal sentence and
+`unstage` keep working untouched), and **the size is checked BEFORE the bytes are read**: a picker can
+hand over a multi-gigabyte URI and reading first is an OOM on a phone. One read implementation
+(`expo-file-system`'s `File(uri).base64()`) is shared by the voice note and both pickers.
+
+The verifier checks the pickers at BOTH levels, because a JS import is not a working picker:
+`expo.modules.documentpicker.DocumentPickerModule` and `expo.modules.imagepicker.ImagePickerModule` are
+**in the APK's dex**.
+
+### R3 — the mic becomes a setting, and the stop icon gets a gesture that means something
+
+Hold-to-record cannot show a stop square: while a thumb is held down there is nothing to tap. So the
+gesture became a SETTING (the user's own instruction), defaulting to **tap** — the behaviour he asked for,
+and in `hold` a mere tap is a press-and-release under `MIN_DURATION_MS` and therefore a refusal.
+
+* **scope: device-local.** A phone gesture has no server meaning, so it goes in
+  `DEVICE_LOCAL_SETTING_IDS`, which forces the Agent Preferences row's scope chip from `portable` to
+  **`mixed`** — the same shape Notifications already uses ("the switches sync, the OS permission
+  cannot"), named in the row's help text. A device-local field on a row claiming `portable` would make
+  that chip a lie.
+* **the dead slide is wired.** `updateSlide` was imported and called NOWHERE, so `slideLabel` never
+  returned `'cancelling'`, `CANCEL_DX` was unreachable, and the bar's "Slide left to cancel" promised a
+  gesture that did nothing. A `PanResponder` (created once, `useMemo`) claims the touch only after 4 px
+  of travel, so a plain hold is still a hold.
+* **stopping SENDS, in both modes** — a recorded note is not staged in the strip. A second gesture
+  between "I recorded it" and "it was sent" is the thing the user was complaining about. The strip keeps
+  its job for images and files, where choosing and sending are genuinely two acts.
+* **tap mode gets an explicit cancel** (there is no drag to cancel with), and the recorder's lifecycle
+  is untouched: a mode is not a `VoicePhase`, and none was added.
+
+### R4 — `expo-file-system` is declared
+
+The voice note's bytes are read through `await import('expo-file-system')`, and the package was NOT in
+`package.json`: it resolved only because `expo@57.0.27` depends on it. It is declared now, at the
+version installed — one line, and the next SDK bump cannot silently take the voice path with it.
+
+### R5 — `/` completes against the gateway's own list
+
+`complete.slash` is this feature already, so nothing was invented: it answers `{items, replace_from}`
+over the socket the app already holds (the `shared()` RPC socket — no second connection), gated by the
+server's own rule (only a text that starts with `/`). The rails are pure and tested: debounce,
+last-write-wins via a monotonic sequence (a slower earlier answer must never overwrite a later one), the
+menu offered only with the caret at the END of the draft (because `replace_from` is computed from the
+string's end, so a mid-text caret would splice into the wrong place), tap inserts and RE-QUERIES (which
+is what surfaces a command's argument stage for free), and a backend that cannot answer closes the menu
+silently — a completion must never hold, block or slow typing, and never surface an error the user did
+not ask for.
+
+**The insertion rule is the gateway's own, copied rather than invented**: `ui-tui/src/domain/slash.ts`
+is the other client that consumes `replace_from`, and it drops the row's leading slash when the
+character before the splice point is already one — which is what makes a bare row (`exit`) and a
+slash-carrying row (`/exit`) both land as `/exit` instead of `//exit`. The test carries that client's
+own cases, verbatim in spirit, so the two clients cannot drift.
+
+### R6 — a command has to run, or the menu hands out dead text
+
+`prompt.submit` has no slash handling at all, and slash commands are dispatched by separate
+client-called RPCs, so R5 without R6 would insert commands that do not execute. Approach A (the user's
+choice): a draft that starts with `/` calls `slash.exec` and **opens no stream** — the output goes into
+the notice card that already exists, `slash.exec`'s documented `4018` for a skill is retried exactly
+once through `command.dispatch`, and any other failure is reported rather than swallowed. The
+limitation is stated rather than papered over: the output is transient (a card, not a transcript row),
+and approach B (a fourth `ThreadItem` kind) is declined for this build. A `/` that is not the FIRST
+token is an ordinary prompt — the server's own gate says so, and no second rule was invented.
+A command turn never sets `streaming`, so the composer is never left disabled behind a stream that
+never started.
+
+### R7 — the thread watches its own session
+
+Three defects, one symptom ("it should not need a refresh from the user"):
+
+1. **nothing was subscribed.** The thread's only socket lived inside `chatStream` for the duration of a
+   turn; a turn started anywhere else had no listener on this device, and the only path to its content
+   was a fresh mount re-reading the database — literally "exit the session and come back in".
+2. **`reasoning.delta` was dropped.** It is emitted, gated server-side by `_session_show_reasoning`,
+   and `chatStream`'s five-case switch had a `default: break`. Reasoning therefore appeared only from
+   the stored transcript after re-entry.
+3. **a dropped socket was reported as a finished turn**: `onClose: () => finish(false)` plus a
+   `void sawCompletion` that computed the truth and threw it away, painting a truncated reply as a
+   normal end of turn.
+
+The fix is one subscription on the socket the app already opens: `session.activate {session_id,
+omit_messages: true}` (the screen already read the history over REST), typed listeners filtered on the
+frame's own `sessionId`, frames routed through the SAME handlers the composer used to own, the per-turn
+socket FOLDED IN rather than run alongside (so `prompt.submit` and `session.interrupt` ride it too), and
+the subscription **focus-scoped** — attach on focus, detach on blur, because while the phone is
+attached its transport counts as a live peer and a hidden thread must not keep a session pinned in the
+gateway. Catch-up is a watermark and no polling: `session.events.since` on (re)connect, `truncated:
+true` → refetch the thread (a holey replay is never stitched), a changed `replay_epoch` → reset the
+watermark and refetch. A refused attach is not an error card: `4007` falls back to `session.resume`,
+`4009` retries once, anything else leaves the thread readable on the REST history.
+
+### R8 — the keyboard has to lift the composer (a CANDIDATE, not a verified fix)
+
+`KeyboardAvoidingView` wrapped the screen with `behavior={ios ? 'padding' : 'height'}` on the 0.9.0
+reading that Android "needs `height`, not nothing". On RN 0.86 / Expo 57 the Android window no longer
+resizes under the keyboard, so `height` had nothing to subtract against — which is the user's report. iOS
+is untouched; Android now gets NO KAV behaviour (two spacers fighting is the classic double-gap bug) and
+takes the lift from the keyboard's own report (`keyboardDidShow`/`keyboardDidHide`, listeners removed on
+unmount), applied as `paddingBottom` on the composer row and floored at the safe-area inset. The `/`
+menu rides the SAME lifted container. No keyboard library was added.
+
+**This one cannot be verified on this host** (§14). The log carries `MANUAL  R8 keyboard lift — awaiting
+device confirmation` and that line is never written as PASS. What IS asserted is its shape, by the named
+test: the Android branch is off KAV `height`, the listener exists and is removed, the lift is floored at
+the inset, and `react-native-keyboard-controller` did not enter `package.json`.
+
+### Half A — the 0.10.1 review points, by reference
+
+`GOAL-0.10.1.md` §S1–S8 as written: the two tailnet lists bounded and scrollable from ONE plan value,
+`http://` as a visible prefix on both address fields, step 1 reporting rather than asking twice (an
+auto-probe behind a disclosure, the wrong-service diagnosis kept), the two chrome sentences gone, the
+remove-route verb on the Gateway page acting on the DRAWN index, the page order read from one list
+(`GATEWAY_SECTION_IDS`), the session-types help moved under its heading with the warning deliberately
+LEFT last, and the main Settings page no longer explaining itself. Two mechanical reconciliations only:
+the version identity (0.11.0 / vc14) and the merged verify/red pair for the single build.
+
+**One 0.10.0 named test was superseded IN PLACE by S6, and the verifier says so rather than quietly
+dropping the gate:** the 0.10.0 S1 case asserted connections-first; the user's later instruction put status
+first. The test was RENAMED to `0.10.1 S6` and carries the marker `SUPERSEDES 0.10.0 S1's`, which the
+verifier greps for — a gate that moved is not a gate that vanished.
+
+### What could not be verified, and why
+
+* **Nothing was verified on a phone.** No `adb` on this host, no renderer for `app/*.tsx`, so every R
+  item is a static proof plus a pure-module test: the pickers' native modules are proven to be in the
+  dex, but that a photo actually comes back from the library is not. The `/` menu's placement above the
+  keyboard and the keyboard lift itself are phone questions.
+* **R8 is a candidate** (above). Reported as MANUAL, never as PASS.
+* **A sentence rendered on a phone is still not verifiable**, and the 0.10.0 lesson still binds: the
+  bundle is Hermes bytecode, which stores anything needing UTF-16 as 2-byte characters, so every probe
+  is ASCII. The absence of R2's old row apology is asserted with a positive control from the same probe
+  (`[Send a file]=1 [Photo library]=1`), because "an empty grep is not a proof".
+* **The live deltas depend on the subscription.** If `watchSession` cannot attach, `onUnavailable`
+  re-reads the thread and the reply arrives when the turn CLOSES instead of streaming — the thread stays
+  readable, and that degradation is the designed one. It is not exercised against a real gateway here.
+* **The iOS half is config, not an exercised build** — no Mac, so R2's two plugins are asserted against
+  `app.json`'s keys.
+* **`GOAL-0.10.1.md` §15's open half stays open**: the composer's `onContentSizeChange` scroll is still
+  unconditional, so scrolling up during a live turn is still pulled down on the next delta. the user closed
+  the first half of that report as already-implemented and it is untouched here.
+* **Push stays parked**, no new socket anywhere but the one screen subscription (§10.11), and no polling
+  (§10.13): the only timer on the thread screen is 0.9.0's 250 ms recording clock, asserted by count.
+
+### One finding that is NOT this release's, and is flagged rather than fixed
+
+`server/install.sh --check` is a WHOLE-HOST gate, and on this run it reported five entries of drift and
+one missing file — **all of them in the `messenger` plugin, none in `personae-mobile-state`** (its five
+deployed files are present and un-drifted, and `config.yaml` still enables it). The attribution was
+measured, not argued:
+
+* the deployed `~/.hermes/plugins/messenger/__init__.py` is dated **2026-10-13T14:06:15** — inside this
+  session's window, while `server/messenger/__init__.py` is from 2026-10-11T15:10;
+* 0.11.0's working tree has **zero** changed files under `server/` (`git status --porcelain | grep -c
+  'server/'` = 0);
+* both 0.10.0's and 0.9.1's own verifier runs read `PASS server/install.sh --check: no drift`.
+
+So a third party modified the deployed messenger plugin during this session. The verifier now asserts
+the narrowed claim this release can answer for (its own plugin is un-drifted) and PRINTS the rest
+instead of swallowing it — a green gate that hid another plugin's drift would be the gate lying, and a
+red gate on a plugin this batch never touches would be a false alarm about the app. **the user should know
+something else rewrote `~/.hermes/plugins/messenger/` today.**
+
+### The artifact, and the verifier that judged it
+
+| thing | 0.10.0 | 0.11.0 |
+|---|---|---|
+| apk | `dist/personae-0.10.0.apk` | **`dist/personae-0.11.0.apk`** (on disk; `dist/` is git-ignored, so the numbers below are the record) |
+| bytes | 116979706 | **130737973** |
+| sha256 | `3b231c830f154c5c3af64f9043297aa804430a343be23afe9e4e30286c464c2f` | **`e98bbbfc1b778480acd16fb93d57144a70a62479b968921053516b7ce5947ea8`** |
+| apk summary | `com.personae.mobile / 12 / 0.10.0` | **`com.personae.mobile / 14 / 0.11.0`** |
+| min-sdk / target-sdk | 24 / 36 | 24 / 36 |
+| signer | `bd40e005…` (DN `CN=Personae Mobile`) | **the same `bd40e005…`** → it installs straight over 0.10.0 |
+| verifier | 103 PASS / 0 FAIL | **166 PASS / 0 FAIL** + 1 MANUAL |
+| host/credential literals | 0 | **0** (`100.64.0.11`, `personae`, `10.0.0.15`, `100.64.0.2`, `API_SERVER_KEY=`) |
+| live-bearer occurrences in the bundle | 0 | **0** |
+
+**Why the tree was built twice, and which build is the artifact.** The first build (8m 15s) ran against
+the `android/` project generated BEFORE a late narrowing of `app.json`: the `expo-image-picker` config
+first carried `cameraPermission` and `microphonePermission` for a path this app never uses (the picker
+opens `mediaTypes: ['images']` only), and they were dropped to `photosPermission` alone. A generated
+Android project is git-ignored but it is still the input to the artifact, so an APK built from the older
+config is an APK that does not match the committed tree. Measured before deciding: the generated
+`AndroidManifest.xml`'s permission list is **byte-identical with and without the trim** (RECORD_AUDIO is
+declared by `app.json` itself, not by the picker's plugin). The build was repeated anyway, because the JS
+bundle embeds the Expo config and "matches, for the field I happened to check" is not a claim worth
+making. The numbers above are the SECOND build's — the artifact on disk is the committed tree's own
+output, and the first build is kept only in `logs/gradle-v0110.log` as history.
+
+**The +13.8 MB over 0.10.0 is measured, not left as a shrug.** The entry-by-entry diff of the two APKs
+says 11 native libraries are in this artifact that 0.10.0's did not carry: `libreanimated.so`,
+`libworklets.so` and `libreact_codegen_rngesturehandler_codegen.so` (four ABIs each). It is a
+BUILD-HISTORY artifact, not a dependency change: 0.10.0's log shows `449 tasks: 30 executed, 419
+up-to-date` and **zero** mentions of reanimated or worklets (its `android/` was reused), while 0.11.0's
+project was regenerated for the version bump and re-derived autolinking in full (`605 tasks: 577
+executed`, 93 mentions). Adding native libraries that were ABSENT cannot break a working app — the JS
+shape is the one that shipped in 0.10.0 — and the flip side is worth saying out loud: **0.11.0 is the
+first fully clean assembly since those modules entered the tree, so it is the more trustworthy
+artifact.**
+
+Install: put `dist/personae-0.11.0.apk` on the phone and tap it. It is signed with the same release key
+as 0.1.0–0.10.0 and `versionCode` went up, so it upgrades 0.10.0 in place — no uninstall, and nothing to
+re-enter. What to look at first on the device: a voice note that arrives (R1/R3), a file chosen from the
+phone (R2), `/` in the message box (R5/R6), and a turn started on the desktop painting into the thread
+without leaving the screen (R7). R8 is the one to confirm by eye: tap the message box and watch whether
+the composer clears the keyboard.

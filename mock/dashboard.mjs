@@ -61,6 +61,16 @@ const DEFAULTS = {
   statePlugin: true,
   /** The portable-preference document the state plugin serves. */
   statePreferences: {},
+  /**
+   * 0.11.0 R5/R6/R7 — the live-turn RPCs. Each is answered ONLY when the option is supplied, so the
+   * default mock behaves exactly as it did before (an unknown method still gets `-32601`).
+   */
+  slashItems: null,
+  slashExec: null,
+  activateRefusal: null,
+  replayEpoch: '',
+  eventsSince: null,
+  resumeWorks: true,
 };
 
 /** 0.9.0 G — every `image.attach_bytes` the app sent (bytes counted, never the payload). */
@@ -198,6 +208,13 @@ export function createMockDashboard(options = {}) {
     sessionFixture('sess-2', { title: 'Outra conversa', profile: 'beta', is_default_profile: false, last_active: Math.floor(Date.now() / 1000) - 86400 }),
   ];
   const calls = [];
+  /**
+   * 0.11.0 R5/R6/R7 — every WS RPC the client made, `{method, params}`, so a test can prove WHICH call
+   * was made and with WHAT — including the calls that must never happen (`chatStream` for a command).
+   */
+  const rpcCalls = [];
+  /** How many WebSocket upgrades were accepted. Proves "one socket per mounted thread screen". */
+  let wsConnections = 0;
   /** Every FTS call, so a test can prove search is one batch per settled query, not per keystroke. */
   const searchCalls = [];
   /** Names POSTed to /api/profiles, so a test can prove what was asked for. */
@@ -236,6 +253,8 @@ export function createMockDashboard(options = {}) {
     const method = String(frame?.method ?? '');
     const params = frame?.params && typeof frame.params === 'object' ? frame.params : {};
     calls.push({ kind: 'rpc', method, params });
+    // 0.11.0 R5/R6/R7 — the same records, reachable as `dashboard.rpcCalls`.
+    rpcCalls.push({ method, params });
     if (method === 'profiles.get_asset') {
       // The live RPC reads `name` (methods_profiles.py:71); accept `profile` too so a caller
       // written against the plan's prose still works.
@@ -303,6 +322,96 @@ export function createMockDashboard(options = {}) {
 
     if (method === 'session.interrupt') {
       socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { ok: true, interrupted: true } })}\n`));
+      return;
+    }
+
+    // ── 0.11.0 R5: the completer. The server's own gate is mirrored: nothing is offered for a text
+    //    that does not start with `/`, and `replace_from` is computed from the END of the string.
+    if (method === 'complete.slash' && config.slashItems) {
+      const text = String(params.text ?? '');
+      if (!text.startsWith('/')) {
+        socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { items: [] } })}\n`));
+        return;
+      }
+      const items = (config.slashItems ?? []).filter((item) => String(item.text ?? '').startsWith(text.split(' ')[0]));
+      socket.write(
+        encodeFrame(
+          `${JSON.stringify({
+            jsonrpc: '2.0',
+            id,
+            result: { items, replace_from: text.includes(' ') ? text.lastIndexOf(' ') + 1 : 1 },
+          })}\n`,
+        ),
+      );
+      return;
+    }
+
+    // ── 0.11.0 R6: the dispatching RPCs. `slashExec` is a script the test writes, so a 4018 refusal
+    //    and a successful dispatch are both reachable.
+    if (method === 'slash.exec' && config.slashExec) {
+      const script = config.slashExec;
+      if (script.refuse4018) {
+        socket.write(
+          encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code: 4018, message: 'skill command: use command.dispatch' } })}\n`),
+        );
+        return;
+      }
+      if (script.error) {
+        socket.write(
+          encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code: script.error.code ?? 5030, message: script.error.message ?? 'boom' } })}\n`),
+        );
+        return;
+      }
+      socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { output: script.output ?? '(no output)' } })}\n`));
+      return;
+    }
+    if (method === 'command.dispatch' && config.slashExec) {
+      const script = config.slashExec.dispatch ?? {};
+      socket.write(
+        encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { output: script.output ?? '(dispatched)' } })}\n`),
+      );
+      return;
+    }
+
+    // ── 0.11.0 R7: attach, resume and the replay ring.
+    if (method === 'session.activate' && config.replayEpoch !== null) {
+      if (config.activateRefusal) {
+        socket.write(
+          encodeFrame(
+            `${JSON.stringify({ jsonrpc: '2.0', id, error: { code: config.activateRefusal, message: `refused ${config.activateRefusal}` } })}\n`,
+          ),
+        );
+        return;
+      }
+      socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { session_id: params.session_id, messages: [] } })}\n`));
+      return;
+    }
+    if (method === 'session.resume') {
+      if (config.resumeWorks) {
+        socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { session_id: params.session_id, messages: [] } })}\n`));
+        return;
+      }
+      socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code: 4007, message: 'session no longer live' } })}\n`));
+      return;
+    }
+    if (method === 'session.events.since' && config.eventsSince) {
+      const answer = config.eventsSince;
+      socket.write(
+        encodeFrame(
+          `${JSON.stringify({
+            jsonrpc: '2.0',
+            id,
+            result: {
+              events: answer.events ?? [],
+              latest_seq: answer.latest_seq ?? seq,
+              truncated: Boolean(answer.truncated),
+              count: (answer.events ?? []).length,
+              epoch: answer.epoch ?? config.replayEpoch ?? '',
+              open_requests: [],
+            },
+          })}\n`,
+        ),
+      );
       return;
     }
     socket.write(
@@ -600,7 +709,18 @@ export function createMockDashboard(options = {}) {
       ['HTTP/1.1 101 Switching Protocols', 'Upgrade: websocket', 'Connection: Upgrade', `Sec-WebSocket-Accept: ${acceptKey(req.headers['sec-websocket-key'])}`, '\r\n'].join('\r\n'),
     );
     sockets.add(socket);
-    const ready = { jsonrpc: '2.0', method: 'event', params: { type: 'gateway.ready', payload: { heartbeat: true } } };
+    wsConnections += 1;
+    // 0.11.0 R7 — the FIRST frame of every connection carries `replay_epoch`
+    // (`contracts/events.py:51-61`, `ws.py:367`), which is how a client tells "the gateway restarted"
+    // from "I reconnected to the same process".
+    const ready = {
+      jsonrpc: '2.0',
+      method: 'event',
+      params: {
+        type: 'gateway.ready',
+        payload: { heartbeat: true, replay_epoch: config.replayEpoch ?? '' },
+      },
+    };
     socket.write(encodeFrame(`${JSON.stringify(ready)}\n`));
 
     let buffer = Buffer.alloc(0);
@@ -635,6 +755,19 @@ export function createMockDashboard(options = {}) {
   return {
     config,
     calls,
+    /** 0.11.0 R5/R6/R7 — every WS RPC, in order: `{method, params}`. */
+    rpcCalls,
+    /** How many WS upgrades were accepted — the "one socket per mounted thread screen" witness. */
+    get connections() {
+      return wsConnections;
+    },
+    /**
+     * 0.11.0 R7 — push one event frame to EVERY open socket. The gateway pushes; the client listens.
+     * A test uses this to make a "turn started elsewhere" arrive with no submit behind it.
+     */
+    push(type, payload, sessionId) {
+      for (const socket of sockets) emit(socket, type, payload, sessionId);
+    },
     searchCalls,
     /** 0.9.0 G — `{session_id, filename, bytes}` per attach the app made. */
     attachCalls,
