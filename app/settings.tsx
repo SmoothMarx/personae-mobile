@@ -478,6 +478,19 @@ export default function SettingsScreen() {
     pageRowStyleKeys(row).map((key) => (styles as unknown as Record<string, StyleProp<ViewStyle>>)[key]);
 
   /**
+   * 0.9.1 S4.2 — one label and one help sentence per display-session-type checkbox, in the user's order
+   * (sessions, cron, webhooks, one-shots). Built per render so `t` stays live, and keyed by the
+   * classifier's own ids, so a bucket the classifier can produce but this map cannot name is a compile
+   * error rather than a blank row.
+   */
+  const TYPE_LABELS: Record<SessionType, { label: string; help: string }> = {
+    sessions: { label: t.settings.typeSessions, help: t.settings.typeSessionsHelp },
+    cron: { label: t.settings.typeCron, help: t.settings.typeCronHelp },
+    webhook: { label: t.settings.typeWebhook, help: t.settings.typeWebhookHelp },
+    oneshot: { label: t.settings.typeOneshot, help: t.settings.typeOneshotHelp },
+  };
+
+  /**
    * 0.9.1 S2 — THE back control. `backFrom` is the plan, so the header arrow, Android's hardware back
    * and the suite all read one fact and cannot disagree about where "back" goes.
    *
@@ -747,16 +760,17 @@ export default function SettingsScreen() {
           `language` field is gone from `Settings`, from the device-local list and from the field plan,
           so there is no longer anything a stored `{language: 'pt'}` could move. */}
 
-      {/* ── Session types (0.8.0 D) ─────────────────────────────────────────
+      {/* ── Display session types (0.8.0 D; renamed and widened in 0.9.1 S4.2) ─────
           CHECKBOXES, deliberately: that is the operator's own word ("check/uncheck the type of
-          sessions they want to see"), and a checkbox makes "both unchecked" visibly different from
-          "one on". Tapping anywhere on the row toggles it and saves at once — no Save button
-          (pedro-app-defaults: single-field settings save themselves). */}
+          sessions they want to see"), and an unchecked box makes "nothing selected" visibly different
+          from "one on". Tapping anywhere on the row toggles it and saves at once — no Save button
+          (pedro-app-defaults: single-field settings save themselves).
+          THE LABEL SAYS WHAT IT IS: what the list SHOWS. Four kinds, one box each, and the help text
+          under the title says plainly that nothing is switched off by any of this. */}
       <View style={styles.field}>
         <Text style={styles.label}>{t.settings.sessionTypes}</Text>
         {sessionTypeChoices(form.sessionTypes).map((choice) => {
-          const label = choice.id === 'sessions' ? t.settings.typeSessions : t.settings.typeAutomatic;
-          const help = choice.id === 'sessions' ? t.settings.typeSessionsHelp : t.settings.typeAutomaticHelp;
+          const { label, help } = TYPE_LABELS[choice.id];
           return (
             <Pressable
               key={choice.id}

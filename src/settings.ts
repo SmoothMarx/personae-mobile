@@ -23,24 +23,32 @@ import type { RouteCandidate } from './routes';
 export type Surface = 'dashboard' | 'gateway';
 
 /**
- * 0.8.0 D — which session types the default list shows.
+ * 0.8.0 D, widened in 0.9.1 S4.2 — which session types the default list SHOWS.
  *
- * Two buckets, decided by ONE classifier (`sessionTypeOf` in `src/logic/rosterFeed.ts`, which is the
- * only place that reads `NON_CONVERSATION_SOURCES`): a conversation, or a job run. The roster list
- * and the checkpoint notifications both ask that classifier, so they can never disagree about what
- * is hidden.
+ * Four buckets, decided by ONE classifier (`sessionTypeOf` in `src/logic/rosterFeed.ts`, which is the
+ * only place that reads the run-source table): conversations, cron runs, webhook runs, one-shots. The
+ * roster list and the checkpoint notifications both ask that classifier, so they can never disagree
+ * about what is hidden.
  *
- * BOTH OFF IS A LEGAL STATE. The list then shows an empty state that says why, rather than a blank
+ * THIS IS A DISPLAY FILTER, NOT A CAPABILITY. Nothing is switched off, nothing stops running, and no
+ * setting here changes what the box does — it changes what the list draws. the user, 2026-10-13: *"Rename
+ * 'Session Types' to 'Display Session Types', and add more checkboxes for more granular control."*
+ *
+ * ALL FOUR OFF IS A LEGAL STATE. The list then shows an empty state that says why, rather than a blank
  * screen or a silently-filtered list.
  */
 export type SessionTypes = {
-  /** Conversations: anything whose `source` is not a job-run source. Default ON. */
+  /** Conversations: anything whose `source` is not a run source. Default ON. */
   sessions: boolean;
-  /** Job runs (`cron`, `cron_output`, `webhook`). Default OFF. */
-  automatic: boolean;
+  /** Cron runs (`cron`, `cron_output`). Default OFF. */
+  cron: boolean;
+  /** Webhook runs (`webhook`). Default OFF. */
+  webhook: boolean;
+  /** One-shot runs (`oneshot`) — their own bucket since 0.9.1: they used to be folded into `automatic`. */
+  oneshot: boolean;
 };
 
-export const DEFAULT_SESSION_TYPES: SessionTypes = { sessions: true, automatic: false };
+export const DEFAULT_SESSION_TYPES: SessionTypes = { sessions: true, cron: false, webhook: false, oneshot: false };
 
 /**
  * 0.8.0 H — checkpoint notifications. DEVICE-SIDE local notifications, not push: they can only fire
@@ -99,11 +107,11 @@ export type Settings = {
   /** Explicit opt-in before using a plain-http non-loopback route. */
   insecureRouteAck: boolean;
 
-  // ── which session types the list shows (0.8.0 D) ─────────────────────────────
+  // ── which session types the list shows (0.8.0 D, widened in 0.9.1 S4.2) ──────
   /**
-   * The two checkboxes in Settings' "Session types" section. Defaults: conversations ON, job runs
-   * OFF — the operator's "make the default view only actual sessions show up in the session list,
-   * no cron jobs".
+   * The four checkboxes in Settings' "Display session types" section. Defaults: conversations ON and
+   * cron / webhooks / one-shots OFF — the operator's "make the default view only actual sessions show
+   * up in the session list, no cron jobs".
    */
   sessionTypes: SessionTypes;
 
@@ -164,15 +172,33 @@ export const DEFAULT_SETTINGS: Settings = {
 export type StoredSettings = Omit<Settings, 'apiKey'>;
 
 /**
- * Coerce a stored `sessionTypes` into the two-boolean shape. Anything missing or malformed falls
- * back to the DEFAULT for that bucket, which is what makes a 0.7.0 blob (no such key at all) load
- * as "conversations on, runs off" without a migration write.
+ * Coerce a stored `sessionTypes` into the FOUR-boolean shape.
+ *
+ * Two rules, and the first one is the migration the brief singles out:
+ *
+ *  1. **The legacy two-boolean shape is read HERE, and only here.** 0.8.0's value was
+ *     `{sessions, automatic}`, and `automatic` bundled cron, webhooks AND one-shots into one bucket. So
+ *     a legacy `automatic: true` means **cron, webhook and oneshot all on**, and a legacy
+ *     `automatic: false` (or an absent key) means all three off. Without this rule a desktop still
+ *     writing the two-boolean shape would silently switch the phone's runs OFF and the sync would look
+ *     broken in one direction only.
+ *  2. **An explicit new key always wins**, per field, so a half-migrated document cannot take the other
+ *     buckets down with it. Anything missing or malformed falls back to that bucket's DEFAULT — which
+ *     is what makes a 0.7.0 blob (no such key at all) load as "conversations on, all runs off".
  */
 export function normalizeSessionTypes(value: unknown): SessionTypes {
   const row = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const legacyAutomatic = typeof row.automatic === 'boolean' ? row.automatic : undefined;
+  const run = (key: 'cron' | 'webhook' | 'oneshot'): boolean => {
+    if (typeof row[key] === 'boolean') return row[key] as boolean;
+    if (legacyAutomatic !== undefined) return legacyAutomatic;
+    return DEFAULT_SESSION_TYPES[key];
+  };
   return {
     sessions: typeof row.sessions === 'boolean' ? row.sessions : DEFAULT_SESSION_TYPES.sessions,
-    automatic: typeof row.automatic === 'boolean' ? row.automatic : DEFAULT_SESSION_TYPES.automatic,
+    cron: run('cron'),
+    webhook: run('webhook'),
+    oneshot: run('oneshot'),
   };
 }
 

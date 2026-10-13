@@ -217,3 +217,47 @@ def test_9_0_A_the_surface_answers_after_the_change(client):
     # every route this backend publishes answers something, with or without a store
     assert client.get(f"{PREFIX}/preferences").status_code == 200
     assert client.get(f"{PREFIX}/preferences/keys").status_code == 200
+
+
+# ── 0.9.1 S4.2: the session-types value widened from two booleans to four, with NO server change ──
+
+
+def test_9_1_S42_a_four_boolean_session_types_round_trips_untouched(client):
+    """`session-types` carries four booleans now, and the document stores them as they are.
+
+    This is the assertion behind "no server change is needed": the document validates KEY NAMES and a
+    byte cap, never the value's shape, so the widened setting travels through it untouched. Asserted as
+    a round trip rather than trusted as a sentence — and the LEGACY two-boolean shape is asserted right
+    beside it, because a desktop that has not been updated yet may still be writing that one.
+    """
+    four = {"sessions": True, "cron": True, "webhook": False, "oneshot": True}
+    first = post_prefs(client, {"preferences": {"session-types": four}})
+    assert first.status_code == 200, first.text
+    assert first.json()["preferences"]["session-types"] == four, "keys and values both survive"
+
+    # …and read it back through a second request, not just the POST's own echo.
+    again = client.get(f"{PREFIX}/preferences").json()
+    assert again["preferences"]["session-types"] == four
+
+    legacy = {"sessions": True, "automatic": False}
+    second = post_prefs(
+        client,
+        {"revision": first.json()["revision"], "preferences": {"session-types": legacy}},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["preferences"]["session-types"] == legacy, (
+        "the old shape is stored verbatim, not rewritten — the APP is the only thing that migrates it"
+    )
+
+
+def test_9_1_S42_the_document_validates_key_names_and_bytes_not_the_value_shape(client):
+    """The other half of "no server change": a value the app would never write is still accepted.
+
+    The document knows which KEYS may sync and how big a value may be (8 KB). It deliberately does not
+    know what a session-type is, so widening that setting is a client-side change by construction.
+    """
+    assert post_prefs(client, {"preferences": {"session-types": "anything"}}).status_code == 200
+    assert post_prefs(client, {"preferences": {"session-types": [1, 2, 3]}}).status_code == 200
+    # the two things it DOES police are still policed
+    assert post_prefs(client, {"preferences": {"api-key": "never"}}).status_code == 400
+    assert post_prefs(client, {"preferences": {"session-types": "x" * 9000}}).status_code == 413

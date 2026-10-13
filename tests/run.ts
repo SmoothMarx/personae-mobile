@@ -126,7 +126,10 @@ import {
 } from '../src/logic/sections';
 import { dotStateFor, isUnread, profileRollup, showBadge } from '../src/logic/lights';
 import {
+  NON_CONVERSATION_SOURCES,
+  RUN_SOURCES,
   SESSION_TYPE_DEFAULT,
+  SESSION_TYPE_ORDER,
   anySessionType,
   attributeBodyHits,
   automaticRuns,
@@ -171,7 +174,7 @@ import {
 import { SYNC_KEYS as SYNC_KEY_LIST } from '../src/sync/uiSync';
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
-import { DEFAULT_LANGUAGE, getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
+import { DEFAULT_LANGUAGE, EN_ONLY_SETTINGS_KEYS, getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
 import { colors, radius, space } from '../src/theme';
 import { TYPICAL_BUTTON_INSET, TYPICAL_GESTURE_INSET, sheetPadding } from '../src/roster/sheet';
 import {
@@ -738,19 +741,23 @@ test('0.8.0 C: the wiring is the geometry — both row species share the column'
 // ─────────────────── 0.8.0 D: the list shows conversations, and Settings decides ──
 
 test('0.8.0 D: the defaults are conversations ON, job runs OFF', () => {
-  assert.deepEqual(DEFAULT_SESSION_TYPES, { sessions: true, automatic: false });
+  // SUPERSEDED IN 0.9.1 (S4.2): this read the two-boolean `{sessions, automatic}`. There are four
+  // buckets now — cron, webhook and one-shot runs each have their own — so the defaults name all four.
+  assert.deepEqual(DEFAULT_SESSION_TYPES, { sessions: true, cron: false, webhook: false, oneshot: false });
   assert.deepEqual(DEFAULT_SETTINGS.sessionTypes, DEFAULT_SESSION_TYPES, 'a fresh install gets them');
-  assert.deepEqual(SESSION_TYPE_DEFAULT, { sessions: true, automatic: false }, 'and so does a missing key');
+  assert.deepEqual(SESSION_TYPE_DEFAULT, { sessions: true, cron: false, webhook: false, oneshot: false }, 'and so does a missing key');
   // A missing key falls back to ITS bucket's default, never to a blanket `true`.
   assert.equal(sessionTypeEnabled('sessions', null), true);
-  assert.equal(sessionTypeEnabled('automatic', null), false);
-  assert.equal(sessionTypeEnabled('automatic', {} as never), false);
+  for (const type of ['cron', 'webhook', 'oneshot'] as const) {
+    assert.equal(sessionTypeEnabled(type, null), false, `${type} is off when nothing is stored`);
+    assert.equal(sessionTypeEnabled(type, {} as never), false);
+  }
   assert.equal(anySessionType(null), true, 'no settings object is not "everything off"');
-  // The filter itself — the one the feed and Phase H's watcher both call.
+  // The filter itself — the one the feed and Phase H's watcher both call. Both of these rows are RUNS.
   const rows: { id: string; source: string }[] = [{ id: 'a', source: 'cron' }, { id: 'b', source: 'oneshot' }];
-  assert.deepEqual(filterSessionTypes(rows, DEFAULT_SESSION_TYPES).map((row) => row.id), ['b']);
+  assert.deepEqual(filterSessionTypes(rows, DEFAULT_SESSION_TYPES).map((row) => row.id), [], 'no run type is on by default');
   assert.equal(filterSessionTypes(rows, null).length, 2, 'no opinion passes everything through');
-  assert.equal(filterSessionTypes(rows, { sessions: true, automatic: true }).length, 2);
+  assert.equal(filterSessionTypes(rows, { sessions: true, cron: true, webhook: true, oneshot: true }).length, 2);
 });
 
 test('0.8.0 D: a 0.7.0 stored blob with no sessionTypes key loads with the defaults', async () => {
@@ -770,41 +777,56 @@ test('0.8.0 D: a 0.7.0 stored blob with no sessionTypes key loads with the defau
     }),
   );
   const loaded = await loadSettings();
-  assert.deepEqual(loaded.sessionTypes, { sessions: true, automatic: false }, 'defaults, not undefined');
+  assert.deepEqual(loaded.sessionTypes, { sessions: true, cron: false, webhook: false, oneshot: false }, 'defaults, not undefined');
   assert.equal(loaded.autoConnect, true, 'and the stored values still survive');
   assert.deepEqual(loaded.profiles, ['cody']);
   // 0.9.1 S4.1: this read `assert.equal(loaded.language, 'pt')`. The blob above still carries a
   // `language` key on purpose — it is the shape 0.7.0 wrote — and nothing reads it any more.
   assert.equal('language' in (loaded as unknown as Record<string, unknown>), false);
   // It round-trips: the next save writes the key, and an explicit choice is preserved.
-  await saveSettings({ ...loaded, sessionTypes: { sessions: false, automatic: true } });
-  assert.deepEqual((await loadSettings()).sessionTypes, { sessions: false, automatic: true });
-  // A half-written key must not take the other bucket down with it.
+  await saveSettings({ ...loaded, sessionTypes: { sessions: false, cron: true, webhook: true, oneshot: true } });
+  assert.deepEqual((await loadSettings()).sessionTypes, { sessions: false, cron: true, webhook: true, oneshot: true });
+  // A half-written key must not take the other buckets down with it.
   await storeSet('personae.settings.v1', JSON.stringify({ sessionTypes: { sessions: false } }));
-  assert.deepEqual((await loadSettings()).sessionTypes, { sessions: false, automatic: false });
+  assert.deepEqual((await loadSettings()).sessionTypes, { sessions: false, cron: false, webhook: false, oneshot: false });
   await storeSet('personae.settings.v1', JSON.stringify({ sessionTypes: 'junk' }));
-  assert.deepEqual((await loadSettings()).sessionTypes, { sessions: true, automatic: false });
-  assert.deepEqual(normalizeSessionTypes({ automatic: true }), { sessions: true, automatic: true });
+  assert.deepEqual((await loadSettings()).sessionTypes, { sessions: true, cron: false, webhook: false, oneshot: false });
+  // 0.9.1 S4.2 — THE MIGRATION, in one line: 0.8.0's `automatic: true` bundled cron, webhooks AND
+  // one-shots, so it means all three ON (see the S4.2 test for the full both-directions proof).
+  assert.deepEqual(normalizeSessionTypes({ automatic: true }), { sessions: true, cron: true, webhook: true, oneshot: true });
   __resetStoreProbe();
 });
 
 test('0.8.0 D: an UNKNOWN source counts as a conversation — fail-open, with its own test', () => {
-  // The live box already carries `oneshot` (measured 2026-10-12): a real source this app's
-  // classification has never heard of. It must NOT vanish from the user's list.
-  assert.equal(sessionTypeOf({ source: 'oneshot' } as never), 'sessions');
+  // SUPERSEDED IN 0.9.1 (S4.2): `oneshot` used to be the example here — a source the app had never
+  // heard of, which had to be treated as a conversation. the user has since asked for it BY NAME, so it
+  // has its own bucket now (asserted below and in the S4.2 test). THE RULE IS UNCHANGED, and is pinned
+  // here against a source the app genuinely does not know.
   assert.equal(sessionTypeOf({ source: 'brand-new-source' } as never), 'sessions');
   assert.equal(sessionTypeOf({ source: '' } as never), 'sessions');
   assert.equal(sessionTypeOf({} as never), 'sessions');
   assert.equal(sessionTypeOf(null), 'sessions');
-  assert.equal(sessionVisible({ source: 'oneshot' } as never, DEFAULT_SESSION_TYPES), true, 'it shows by default');
-  // The job-run bucket is exact, and case-insensitive like `isAutomatic` already is.
-  for (const source of ['cron', 'cron_output', 'webhook', 'CRON', ' Webhook ']) {
-    assert.equal(sessionTypeOf({ source } as never), 'automatic', `${source} is a job run`);
+  assert.equal(sessionTypeOf(undefined), 'sessions');
+  assert.equal(sessionVisible({ source: 'brand-new-source' } as never, DEFAULT_SESSION_TYPES), true, 'it shows by default');
+  // A run source is exact, it maps to its OWN bucket, and it is case-insensitive like `isAutomatic` is.
+  const runBuckets: [string, string][] = [
+    ['cron', 'cron'],
+    ['cron_output', 'cron'],
+    ['webhook', 'webhook'],
+    ['oneshot', 'oneshot'],
+    ['CRON', 'cron'],
+    [' Webhook ', 'webhook'],
+  ];
+  for (const [source, bucket] of runBuckets) {
+    assert.equal(sessionTypeOf({ source } as never), bucket, `${source} is a ${bucket} run`);
     assert.equal(sessionVisible({ source } as never, DEFAULT_SESSION_TYPES), false, `${source} is hidden by default`);
   }
   // An unknown source is a conversation even when the user has hidden conversations — that is the
   // user's own choice about the conversation bucket, not the classifier failing open.
-  assert.equal(sessionVisible({ source: 'oneshot' } as never, { sessions: false, automatic: true }), false);
+  assert.equal(
+    sessionVisible({ source: 'brand-new-source' } as never, { sessions: false, cron: true, webhook: true, oneshot: true }),
+    false,
+  );
 });
 
 test('0.8.0 D: ONE classifier — the classification exists in exactly one file', () => {
@@ -847,8 +869,16 @@ test('0.8.0 D: ONE classifier — the classification exists in exactly one file'
         return !trimmed.startsWith('*') && !trimmed.startsWith('//') && !trimmed.startsWith('/*');
       })
       .join('\n');
-  // `settings.ts` may carry the TYPE and the default; it must never carry a second copy of the rule.
-  assert.ok(!/cron/i.test(codeOnly(readFileSync(join(root, 'settings.ts'), 'utf8'))), 'settings.ts: the type, never the rule');
+  // `settings.ts` may carry the TYPE and the defaults; it must never carry a second copy of the RULE.
+  // SUPERSEDED IN 0.9.1 (S4.2): this read `!/cron/i.test(...)`, which the four bucket NAMES now trip —
+  // `cron`/`webhook`/`oneshot` are type keys, and naming a bucket is not classifying a session. The
+  // rule is a mapping from a session's SOURCE to a bucket, so that is what must be absent here.
+  const settingsTypes = codeOnly(readFileSync(join(root, 'settings.ts'), 'utf8'));
+  assert.ok(
+    !/sessionTypeOf|isAutomatic|NON_CONVERSATION_SOURCES|RUN_SOURCES/.test(settingsTypes),
+    'settings.ts: the type, never the rule',
+  );
+  assert.ok(!/\.source/.test(settingsTypes), 'and it never looks at a session at all');
   // `useRoster` legitimately names the wire's `cron` SLICE (`slices.cron`); what it must not do is
   // classify a session itself. It delegates: `buildRoster` applies the filter and the hook only asks
   // whether any type is on.
@@ -867,48 +897,67 @@ test('0.8.0 D: the list draws the checked types and explains the ones it hides',
     { id: 'hook-1', profile: 'cody', source: 'webhook', title: 'GitHub hook', last_active: 1_700_000_200 },
   ];
 
-  // The DEFAULT view: conversations only, cron/webhook nowhere in sight.
+  // The DEFAULT view: conversations only. SUPERSEDED IN 0.9.1 (S4.2): the one-shot run used to be
+  // drawn here because `oneshot` was an unknown source; now it is a RUN and its own type is off.
   const byDefault = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], sessionTypes: DEFAULT_SESSION_TYPES, now: 1_700_000_000_000 });
-  const titles = byDefault.rows[0].sessions.map((hit) => hit.sessionId);
-  assert.deepEqual(titles, ['chat-1', 'oneshot-1'], 'the conversations, and the unknown source with them');
-  assert.equal(byDefault.rows[0].automatic.length, 0, 'no cron rows under the profile');
-  assert.equal(byDefault.automaticSeen, 2, 'the runs were there…');
-  assert.equal(byDefault.automaticHidden, 2, '…and the model says they are hidden, so the screen can say why');
+  assert.deepEqual(byDefault.rows[0].sessions.map((hit) => hit.sessionId), ['chat-1'], 'the conversation, and nothing else');
+  assert.equal(byDefault.rows[0].automatic.length, 0, 'no run rows under the profile');
+  assert.equal(byDefault.automaticSeen, 3, 'the three runs were there…');
+  assert.equal(byDefault.automaticHidden, 3, '…and the model says they are hidden, so the screen can say why');
   // The profile row's preview describes what is ON the list.
   assert.equal(byDefault.rows[0].preview, 'uma conversa');
 
   // Opting in brings them back — same column, marked automatic.
-  const opted = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], sessionTypes: { sessions: true, automatic: true }, now: 1_700_000_000_000 });
-  assert.equal(opted.rows[0].automatic.length, 2, 'cron and webhook runs are drawn');
+  const opted = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], sessionTypes: { sessions: true, cron: true, webhook: true, oneshot: true }, now: 1_700_000_000_000 });
+  assert.equal(opted.rows[0].automatic.length, 3, 'cron, webhook and one-shot runs are all drawn');
   assert.equal(opted.automaticHidden, 0);
 
   // Conversations off, runs on: the mirror image, and the preview follows the visible set.
-  const runsOnly = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], sessionTypes: { sessions: false, automatic: true }, now: 1_700_000_000_000 });
+  const runsOnly = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], sessionTypes: { sessions: false, cron: true, webhook: true, oneshot: true }, now: 1_700_000_000_000 });
   assert.deepEqual(runsOnly.rows[0].sessions, [], 'no conversations drawn');
-  assert.equal(runsOnly.rows[0].automatic.length, 2);
+  assert.equal(runsOnly.rows[0].automatic.length, 3);
   assert.equal(runsOnly.rows[0].preview, '', 'and no conversation preview is advertised');
 
   // No opinion (the 0.7.0 call sites) still shows the runs: the filter is opt-in.
   const noOpinion = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], now: 1_700_000_000_000 });
-  assert.equal(noOpinion.rows[0].automatic.length, 2);
+  assert.equal(noOpinion.rows[0].automatic.length, 3);
   assert.equal(noOpinion.automaticHidden, 0, 'nothing is hidden unless the setting says so');
+
+  // 0.9.1 S4.2 — EACH BOX FILTERS ITS OWN KIND. The four cases, one at a time:
+  const only = (partial: Partial<typeof DEFAULT_SESSION_TYPES>) => {
+    const types = { sessions: false, cron: false, webhook: false, oneshot: false, ...partial };
+    const model = buildRoster({ contacts, sessions: sessions as never[], expanded: ['cody'], sessionTypes: types, now: 1_700_000_000_000 });
+    return model.rows[0].automatic.map((hit) => hit.sessionId);
+  };
+  assert.deepEqual(only({ cron: true }), ['cron-1'], 'cron shows cron runs and nothing else');
+  assert.deepEqual(only({ webhook: true }), ['hook-1'], 'webhooks show webhook runs and nothing else');
+  assert.deepEqual(only({ oneshot: true }), ['oneshot-1'], 'one-shots show one-shot runs and nothing else');
+  assert.deepEqual(only({ cron: true, webhook: true }), ['cron-1', 'hook-1'], 'two boxes, two kinds');
+  assert.deepEqual(only({ sessions: true }), [], 'conversations on draws no runs at all');
 });
 
-test('0.8.0 D: both checkboxes off is a legal state that names itself', () => {
-  const off = { sessions: false, automatic: false };
+test('0.8.0 D: all four types off is a legal state that names itself', () => {
+  // SUPERSEDED IN 0.9.1 (S4.2): this was "both checkboxes off", over the two-boolean shape. Same rule,
+  // four rows now — and the ROWS ARE ONE PER KIND, in the user's order (sessions, cron, webhooks, one-shots).
+  const off = { sessions: false, cron: false, webhook: false, oneshot: false };
   assert.equal(anySessionType(off), false);
-  assert.equal(anySessionType({ sessions: true, automatic: false }), true);
+  assert.equal(anySessionType({ sessions: true, cron: false, webhook: false, oneshot: false }), true);
+  assert.equal(anySessionType({ sessions: false, cron: false, webhook: false, oneshot: true }), true, 'one run type on is enough');
   assert.deepEqual(
     sessionTypeChoices(off),
     [
       { id: 'sessions', enabled: false },
-      { id: 'automatic', enabled: false },
+      { id: 'cron', enabled: false },
+      { id: 'webhook', enabled: false },
+      { id: 'oneshot', enabled: false },
     ],
-    'the two rows Settings renders, in order',
+    'the four rows Settings renders, in order',
   );
   assert.deepEqual(sessionTypeChoices(DEFAULT_SESSION_TYPES), [
     { id: 'sessions', enabled: true },
-    { id: 'automatic', enabled: false },
+    { id: 'cron', enabled: false },
+    { id: 'webhook', enabled: false },
+    { id: 'oneshot', enabled: false },
   ]);
   const model = buildRoster({
     contacts: [{ name: 'cody', label: 'Cody', isDefault: false, hasAvatar: null }],
@@ -950,7 +999,7 @@ test('0.8.0 D: search still reaches a session the type filter hides', () => {
     sessions: sessions as never[],
     expanded: [],
     search,
-    sessionTypes: { sessions: false, automatic: true },
+    sessionTypes: { sessions: false, cron: true, webhook: true, oneshot: true },
     now: 1_700_000_000_000,
   });
   const hits = model.rows.flatMap((row) => row.sessions.map((hit) => hit.sessionId));
@@ -1348,7 +1397,7 @@ test('0.8.0 H: the thread on screen is suppressed, and so is a hidden session ty
   assert.deepEqual(withTypes.map((event) => event.sessionId), ['open', 'other'], 'the cron run is silent');
   // …and with the type switched ON it does notify, so the silence above is the filter and not a bug.
   assert.deepEqual(
-    detectCheckpoints({ previous: before, current: after, kinds: { waiting: true, finished: true }, types: { sessions: true, automatic: true }, capability })
+    detectCheckpoints({ previous: before, current: after, kinds: { waiting: true, finished: true }, types: { sessions: true, cron: true, webhook: true, oneshot: true }, capability })
       .map((event) => event.sessionId),
     ['cron-1', 'open', 'other'],
   );
@@ -2233,7 +2282,12 @@ async function main(): Promise<void> {
     });
   });
 
-  test('i18n: the en and pt tables have the same keys, with functions in the same places', () => {
+  test('i18n: pt never leads en, and en leads only by the named 0.9.1 keys', () => {
+    // SUPERSEDED IN 0.9.1 (S4.2): this read `assert.deepEqual(pt, en)` — "the two tables have the same
+    // keys". the user's rule for new strings is now "an EN entry only" (§1.4), and the PT table is to be
+    // left in place rather than extended. So the guard becomes two-sided and exact: EN may lead PT by
+    // EXACTLY the keys named in `EN_ONLY_SETTINGS_KEYS`, and PT may never carry a key EN does not have.
+    // The asymmetry therefore cannot grow quietly, and PT still cannot lose a pre-existing string.
     const shape = (value: unknown, path: string, out: string[]): string[] => {
       if (typeof value === 'function') out.push(`${path}()/${(value as (...a: unknown[]) => unknown).length}`);
       else if (value && typeof value === 'object') {
@@ -2243,8 +2297,12 @@ async function main(): Promise<void> {
     };
     const en = shape(stringsFor('en'), 't', []);
     const pt = shape(stringsFor('pt'), 't', []);
-    assert.deepEqual(pt, en);
+    const enOnly = en.filter((leaf) => !pt.includes(leaf)).sort();
+    const expectedEnOnly = EN_ONLY_SETTINGS_KEYS.map((key) => `t.settings.${key}:string`).sort();
+    assert.deepEqual(enOnly, expectedEnOnly, 'EN leads PT by exactly the named 0.9.1 keys, and by nothing else');
+    assert.deepEqual(pt.filter((leaf) => !en.includes(leaf)), [], 'and PT never leads — it cannot invent a key');
     assert.ok(en.length > 300, `expected the full table, got ${en.length} leaves`);
+    assert.ok(pt.length >= en.length - expectedEnOnly.length, 'PT still holds the whole pre-0.9.1 table');
     // Every string leaf is filled in, in both languages.
     for (const language of ['en', 'pt'] as const) {
       const empties: string[] = [];
@@ -3918,7 +3976,7 @@ async function main(): Promise<void> {
     }
     // and the payload the phone PUTs carries nothing else: `readPortable` names its keys literally
     const payload = readPortable(
-      { sessionTypes: { sessions: true, automatic: false }, notifications: { enabled: false, waiting: true, finished: true } },
+      { sessionTypes: { sessions: true, cron: false, webhook: false, oneshot: false }, notifications: { enabled: false, waiting: true, finished: true } },
       { sections: [], members: {}, collapsed: [], sort: { all: 'activity' } } as never,
     );
     assert.deepEqual(Object.keys(payload).sort(), ['display-order', 'notifications', 'session-types']);
@@ -3934,18 +3992,18 @@ async function main(): Promise<void> {
   test('0.9.0 I: the server is the source of truth, and a stale revision is never a clobber', () => {
     const server: PreferenceDocument = {
       revision: 9,
-      preferences: { 'session-types': { sessions: false, automatic: true }, notifications: { enabled: true } },
+      preferences: { 'session-types': { sessions: false, cron: true, webhook: true, oneshot: true }, notifications: { enabled: true } },
       revs: { 'session-types': 8, notifications: 4 },
     };
     const base = {
       ...DEFAULT_SETTINGS,
-      sessionTypes: { sessions: true, automatic: false },
+      sessionTypes: { sessions: true, cron: false, webhook: false, oneshot: false },
       notifications: { enabled: false, waiting: true, finished: true },
     };
     const sections = { sections: [], members: {}, collapsed: [], sort: { all: 'activity' } } as never;
     const applied = applyPortable(base, sections, server);
     assert.deepEqual(applied.applied.sort(), ['notifications', 'session-types']);
-    assert.deepEqual(applied.settings.sessionTypes, { sessions: false, automatic: true }, 'the SERVER wins');
+    assert.deepEqual(applied.settings.sessionTypes, { sessions: false, cron: true, webhook: true, oneshot: true }, 'the SERVER wins');
     assert.equal(applied.settings.notifications.enabled, true);
     // a half-written document falls back PER KEY to the local default, never to junk
     const partial = applyPortable(base, sections, { revision: 3, preferences: { 'session-types': 'nonsense' } });
@@ -3962,11 +4020,11 @@ async function main(): Promise<void> {
   });
 
   test('0.9.0 I: only a GENUINE difference is pushed, so an applied value cannot echo back', () => {
-    const before = { 'session-types': { sessions: true, automatic: false }, notifications: { enabled: false }, 'display-order': { sort: { all: 'activity' } } };
+    const before = { 'session-types': { sessions: true, cron: false, webhook: false, oneshot: false }, notifications: { enabled: false }, 'display-order': { sort: { all: 'activity' } } };
     assert.deepEqual(changedKeys(before, { ...before }), []);
     assert.deepEqual(changedKeys(before, { ...before, notifications: { enabled: true } }), ['notifications']);
     assert.deepEqual(
-      changedKeys(before, { ...before, 'session-types': { sessions: false, automatic: false } }).sort(),
+      changedKeys(before, { ...before, 'session-types': { sessions: false, cron: false, webhook: false, oneshot: false } }).sort(),
       ['session-types'],
     );
     // the hook remembers what it applied, so the value it just wrote down is not pushed again
@@ -4878,7 +4936,7 @@ async function main(): Promise<void> {
     assert.equal((first?.preferences as Record<string, { enabled: boolean }>).notifications.enabled, true);
     const second = await backend.putPreferences({
       revision: first?.revision,
-      preferences: { 'session-types': { sessions: true, automatic: false } },
+      preferences: { 'session-types': { sessions: true, cron: false, webhook: false, oneshot: false } },
     });
     const merged = second?.preferences as Record<string, unknown>;
     assert.ok(merged.notifications && merged['session-types'], 'two devices editing different keys both survive');
@@ -5109,6 +5167,192 @@ async function main(): Promise<void> {
       assert.equal(stringsFor(getLanguage()).settings.pages.agentTitle, 'Agent Preferences');
       __resetStoreProbe();
     });
+  });
+
+  test('0.9.1 S4.2: "Display session types" — four checkboxes, one per kind, each filtering on its own', () => {
+    // THE LABEL SAYS WHAT IT IS. the user asked for the rename in his own words; the help sentence has to
+    // say "this is what the list shows", because a checkbox that reads like a capability would be a lie.
+    assert.equal(stringsFor('en').settings.sessionTypes, 'Display session types');
+    assert.match(stringsFor('en').settings.sessionTypesHelp, /shows/i, 'the help says it is a display filter');
+    assert.match(stringsFor('en').settings.sessionTypesHelp, /nothing is turned off/i);
+    // HIS NOUNS, the four in his order, each with its own help sentence.
+    assert.deepEqual([...SESSION_TYPE_ORDER], ['sessions', 'cron', 'webhook', 'oneshot']);
+    assert.equal(stringsFor('en').settings.typeSessions, 'Sessions');
+    assert.equal(stringsFor('en').settings.typeCron, 'Cron');
+    assert.equal(stringsFor('en').settings.typeWebhook, 'Webhooks');
+    assert.equal(stringsFor('en').settings.typeOneshot, 'One-shots');
+    for (const help of ['typeSessionsHelp', 'typeCronHelp', 'typeWebhookHelp', 'typeOneshotHelp'] as const) {
+      assert.ok(stringsFor('en').settings[help].trim().length > 12, `${help} is a sentence`);
+    }
+    // four ROWS, in that order, and the screen draws them from the classifier's own ids
+    assert.deepEqual(sessionTypeChoices(DEFAULT_SESSION_TYPES).map((choice) => choice.id), ['sessions', 'cron', 'webhook', 'oneshot']);
+    const code = settingsCode();
+    assert.match(code, /sessionTypeChoices\(form\.sessionTypes\)\.map/, 'the rows come from the plan, not a literal list');
+    assert.match(code, /const TYPE_LABELS: Record<SessionType, \{ label: string; help: string \}>/, 'one label+help per bucket, keyed by the classifier');
+    for (const key of ['typeCron', 'typeWebhook', 'typeOneshot'] as const) {
+      assert.match(code, new RegExp(`t\\.settings\\.${key}`), `${key} is read from the table`);
+    }
+
+    // EACH BOX FILTERS INDEPENDENTLY — the four cases, against one fixed day of work.
+    const contacts = [{ name: 'cody', label: 'Cody', isDefault: false, hasAvatar: null }];
+    const day = [
+      { id: 'chat', profile: 'cody', source: 'desktop', preview: 'uma conversa', last_active: 1_700_000_500 },
+      { id: 'cron-run', profile: 'cody', source: 'cron', title: 'Daily digest', last_active: 1_700_000_400 },
+      { id: 'hook-run', profile: 'cody', source: 'webhook', title: 'GitHub hook', last_active: 1_700_000_300 },
+      { id: 'once-run', profile: 'cody', source: 'oneshot', title: 'One-off', last_active: 1_700_000_200 },
+    ];
+    const show = (types: typeof DEFAULT_SESSION_TYPES) => {
+      const model = buildRoster({ contacts, sessions: day as never[], expanded: ['cody'], sessionTypes: types, now: 1_700_000_000_000 });
+      return { conversations: model.rows[0].sessions.map((hit) => hit.sessionId), runs: model.rows[0].automatic.map((hit) => hit.sessionId), hidden: model.automaticHidden };
+    };
+    // conversations alone (the default)
+    assert.deepEqual(show(DEFAULT_SESSION_TYPES), { conversations: ['chat'], runs: [], hidden: 3 });
+    // …then one run kind at a time, with conversations off, so each box is proved on its own
+    assert.deepEqual(show({ sessions: false, cron: true, webhook: false, oneshot: false }), { conversations: [], runs: ['cron-run'], hidden: 2 });
+    assert.deepEqual(show({ sessions: false, cron: false, webhook: true, oneshot: false }), { conversations: [], runs: ['hook-run'], hidden: 2 });
+    assert.deepEqual(show({ sessions: false, cron: false, webhook: false, oneshot: true }), { conversations: [], runs: ['once-run'], hidden: 2 });
+    // and in combination
+    assert.deepEqual(show({ sessions: true, cron: true, webhook: false, oneshot: true }), { conversations: ['chat'], runs: ['cron-run', 'once-run'], hidden: 1 });
+
+    // ALL FOUR OFF is still a legal state that names itself, and the copy still says what to do.
+    const nothing = { sessions: false, cron: false, webhook: false, oneshot: false };
+    assert.equal(anySessionType(nothing), false);
+    const empty = buildRoster({ contacts, sessions: day as never[], expanded: ['cody'], sessionTypes: nothing, now: 1_700_000_000_000 });
+    assert.deepEqual(empty.rows[0].sessions, []);
+    assert.deepEqual(empty.rows[0].automatic, []);
+    assert.equal(stringsFor('en').settings.typeNoneWarning.length > 20, true, 'the empty state explains itself');
+    assert.match(readFileSync(join(process.cwd(), 'app', 'settings.tsx'), 'utf8'), /anySessionType\(form\.sessionTypes\) \? null : <Text style=\{styles\.warning\}>/);
+  });
+
+  test('0.9.1 S4.2: a legacy two-boolean blob loads as the three run types it meant', () => {
+    // THE MIGRATION. 0.8.0 wrote `{sessions, automatic}`, and `automatic` bundled cron, webhooks AND
+    // one-shots. A desktop still writing that shape must not silently switch the phone's runs off.
+    assert.deepEqual(normalizeSessionTypes({ sessions: true, automatic: true }), { sessions: true, cron: true, webhook: true, oneshot: true });
+    assert.deepEqual(normalizeSessionTypes({ sessions: false, automatic: true }), { sessions: false, cron: true, webhook: true, oneshot: true });
+    assert.deepEqual(normalizeSessionTypes({ sessions: true, automatic: false }), { sessions: true, cron: false, webhook: false, oneshot: false }, 'the legacy zero means all three off');
+    // an ABSENT legacy key is the same as the legacy false — a 0.7.0 blob has neither shape
+    assert.deepEqual(normalizeSessionTypes({ sessions: true }), { sessions: true, cron: false, webhook: false, oneshot: false });
+    assert.deepEqual(normalizeSessionTypes(null), DEFAULT_SESSION_TYPES);
+    assert.deepEqual(normalizeSessionTypes('junk'), DEFAULT_SESSION_TYPES);
+    assert.deepEqual(normalizeSessionTypes({}), DEFAULT_SESSION_TYPES);
+    // …and the legacy key is READ in exactly one function. Everything that can receive the old shape
+    // routes through it: both the local blob and the server document call `normalizeSessionTypes`, and
+    // neither of them touches the legacy key itself.
+    for (const file of ['settingsStore.ts', 'sync/preferences.ts']) {
+      const source = codeOnly(readFileSync(join(process.cwd(), 'src', file), 'utf8'));
+      assert.ok(!/\.automatic\b|automatic\s*:|\[['"]automatic['"]\]/.test(source), `${file} must not read the legacy key`);
+      assert.match(source, /normalizeSessionTypes\(/, `${file} routes the stored shape through the one migration`);
+    }
+    // …and inside that module it is read nowhere but in the migration, so a second reader cannot appear
+    // quietly beside it.
+    const settingsSrc = readFileSync(join(process.cwd(), 'src', 'settings.ts'), 'utf8');
+    const migration = settingsSrc.slice(
+      settingsSrc.indexOf('export function normalizeSessionTypes'),
+      settingsSrc.indexOf('export function normalizeNotify'),
+    );
+    assert.match(migration, /row\.automatic/, 'the migration IS where the legacy key is read');
+    assert.ok(!/\.automatic\b/.test(settingsSrc.replace(migration, '')), 'and nowhere else in the module');
+    // A half-migrated blob: an explicit new key wins for THAT bucket, and the legacy value covers the rest.
+    assert.deepEqual(
+      normalizeSessionTypes({ sessions: true, cron: false, automatic: true }),
+      { sessions: true, cron: false, webhook: true, oneshot: true },
+      'an explicit new key beats the legacy bundle, per field',
+    );
+  });
+
+  test('0.9.1 S4.2: the portable round-trip carries four booleans (and no server change was needed)', async () => {
+    const four = { sessions: true, cron: true, webhook: false, oneshot: true };
+    // what the phone PUTs is the four-key object, unchanged
+    const payload = readPortable(
+      { sessionTypes: four, notifications: DEFAULT_NOTIFY },
+      { sections: [], members: {}, collapsed: [], sort: { all: 'activity' } } as never,
+    );
+    assert.deepEqual(payload['session-types'], four, 'the payload carries all four keys');
+    assert.deepEqual(Object.keys(payload['session-types'] as object).sort(), ['cron', 'oneshot', 'sessions', 'webhook']);
+    // …through the document, over HTTP, and back
+    const backend = createBackend(settingsFor(stateMock.url, { apiKey: DASH_BEARER }));
+    const current = await backend.preferences();
+    const put = await backend.putPreferences(patchFor('session-types', payload['session-types'], current?.revision ?? 0));
+    assert.deepEqual((put?.preferences as Record<string, unknown>)['session-types'], four, 'four booleans survive the document');
+    const readBack = await backend.preferences();
+    assert.deepEqual((readBack?.preferences as Record<string, unknown>)['session-types'], four, 'and they are still four on the next read');
+    // the APP is the only migrator: the document hands a legacy value straight back, untouched, and
+    // `normalizeSessionTypes` is what turns it into the three run types.
+    const legacyPut = await backend.putPreferences(patchFor('session-types', { sessions: true, automatic: true }, readBack?.revision ?? 0));
+    assert.deepEqual((legacyPut?.preferences as Record<string, unknown>)['session-types'], { sessions: true, automatic: true }, 'the document does not rewrite the old shape');
+    assert.deepEqual(
+      normalizeSessionTypes((legacyPut?.preferences as Record<string, unknown>)['session-types']),
+      { sessions: true, cron: true, webhook: true, oneshot: true },
+      'the app reads it as the three run types it meant — all three, not the one it happened to name',
+    );
+    // no new portable key was needed, so the server's own list is untouched
+    assert.deepEqual([...PORTABLE_KEYS], ['session-types', 'notifications', 'display-order']);
+    const plugin = readFileSync(join(process.cwd(), 'server/personae-mobile-state/dashboard/preferences.py'), 'utf8');
+    assert.match(plugin, /PORTABLE_KEYS: frozenset\[str\] = frozenset\(\{\s*"session-types",/);
+    backend.dispose();
+  });
+
+  test('0.9.1 S4.2: the list and the checkpoint watcher still consult ONE classifier', () => {
+    // (a) the four-way split is DERIVED from the run table, so it cannot drift from "is this a run"
+    assert.deepEqual([...NON_CONVERSATION_SOURCES].sort(), Object.keys(RUN_SOURCES).sort());
+    assert.deepEqual(Object.keys(RUN_SOURCES).sort(), ['cron', 'cron_output', 'oneshot', 'webhook']);
+    for (const [source, bucket] of Object.entries(RUN_SOURCES)) {
+      assert.notEqual(bucket, 'sessions', `${source} is a run, not a conversation`);
+      assert.equal(isAutomatic({ source } as never), true);
+      assert.equal(sessionTypeOf({ source } as never), bucket);
+      assert.equal(sessionVisible({ source } as never, { sessions: true, cron: true, webhook: true, oneshot: true }), true);
+    }
+    // an unknown source stays a conversation in BOTH answers
+    assert.equal(isAutomatic({ source: 'brand-new' } as never), false);
+    assert.equal(sessionTypeOf({ source: 'brand-new' } as never), 'sessions');
+    // (b) exactly one module carries the classification
+    const readers: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) { walk(full); continue; }
+        if (!/\.tsx?$/.test(entry.name)) continue;
+        const code = codeOnly(readFileSync(full, 'utf8'));
+        if (code.includes('RUN_SOURCES') || code.includes('NON_CONVERSATION_SOURCES')) readers.push(full.slice(process.cwd().length + 1));
+      }
+    };
+    walk(join(process.cwd(), 'src'));
+    assert.deepEqual(readers, ['src/logic/rosterFeed.ts'], 'exactly one module classifies a session');
+    // (c) the watcher ASKS the classifier, it does not re-implement it
+    const checkpoints = readFileSync(join(process.cwd(), 'src', 'logic', 'checkpoints.ts'), 'utf8');
+    assert.match(checkpoints, /import \{ sessionVisible \} from '\.\/rosterFeed'/, 'one import, one classifier');
+    assert.match(checkpoints, /sessionVisible\(/);
+    assert.ok(!/RUN_SOURCES|sessionTypeOf|isAutomatic|webhook/.test(codeOnly(checkpoints)), 'and no second rule');
+    // (d) BEHAVIOUR: the phone can never hide a run and then announce it. ONE setting object, both
+    //     features, and they agree about which run is hidden.
+    const before = snapshotOf([
+      snapshotRow('cron-run', { source: 'cron', is_active: true, last_active: 1_700_000_000 }),
+      snapshotRow('once-run', { source: 'oneshot', is_active: true, last_active: 1_700_000_000 }),
+    ]);
+    const after = snapshotOf([
+      snapshotRow('cron-run', { source: 'cron', is_active: false, last_active: 1_700_000_900 }),
+      snapshotRow('once-run', { source: 'oneshot', is_active: false, last_active: 1_700_000_900 }),
+    ]);
+    const capability = surfaceCapability([snapshotRow('a', { is_active: true })]);
+    const cronHidden = { sessions: true, cron: false, webhook: false, oneshot: true };
+    assert.deepEqual(
+      detectCheckpoints({ previous: before, current: after, kinds: { waiting: true, finished: true }, types: cronHidden, capability }).map((event) => event.sessionId),
+      ['once-run'],
+      'the hidden cron run is silent, and only it',
+    );
+    const list = buildRoster({
+      contacts: [{ name: 'cody', label: 'Cody', isDefault: false, hasAvatar: null }],
+      sessions: [
+        { id: 'cron-run', profile: 'cody', source: 'cron', title: 'Daily digest', last_active: 2 },
+        { id: 'once-run', profile: 'cody', source: 'oneshot', title: 'One-off', last_active: 2 },
+      ] as never[],
+      expanded: ['cody'],
+      sessionTypes: cronHidden,
+      now: 1_700_000_000_000,
+    });
+    assert.deepEqual(list.rows[0].automatic.map((hit) => hit.sessionId), ['once-run'], 'the SAME object hides that run from the list too');
+    assert.equal(list.automaticSeen, 2);
+    assert.equal(list.automaticHidden, 1, 'and the list says one run is hidden');
   });
 
   // ─────────────────────────────────────────────────────── report ──

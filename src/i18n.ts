@@ -288,11 +288,24 @@ const en = {
     baseUrl: 'Server address',
     baseUrlHelp: 'E.g. http://10.0.0.5:9119',
     baseUrlHelpGateway: 'E.g. http://10.0.0.5:9222',
-    // ── session types (0.8.0 D): what the session list shows ─────────────
-    sessionTypes: 'Session types',
-    sessionTypesHelp: 'Choose what the session list shows. You can change this at any time.',
+    // ── display session types (0.8.0 D; renamed and widened in 0.9.1 S4.2) ──
+    // THE NAME IS THE POINT: this is what the list SHOWS, not a capability being switched on. Nothing
+    // here stops anything running.
+    sessionTypes: 'Display session types',
+    sessionTypesHelp:
+      'What the session list shows. This is a display filter: nothing is turned off or changed by it, and each kind can be shown or hidden on its own.',
     typeSessions: 'Sessions',
     typeSessionsHelp: 'Conversations you have with a profile.',
+    typeCron: 'Cron',
+    typeCronHelp: 'Scheduled jobs. They run on the box whether or not they are shown here.',
+    typeWebhook: 'Webhooks',
+    typeWebhookHelp: 'Runs started by something outside, such as a hook.',
+    typeOneshot: 'One-shots',
+    typeOneshotHelp: 'Runs made once, by hand or by another tool.',
+    // SUPERSEDED IN 0.9.1 (S4.2): `typeAutomatic` = 'Automatic runs (cron, webhooks)' was the one label
+    // that bundled three kinds together. It is kept here (and in PT, unreachable) rather than deleted —
+    // removing a string is a separate decision. `typeNoneWarning` still says what to do with none
+    // checked, and now means all FOUR.
     typeAutomatic: 'Automatic runs (cron, webhooks)',
     typeAutomaticHelp: 'Scheduled jobs that ran on their own. They are not conversations.',
     typeNoneWarning: 'No type is checked, so the session list is empty. Check one to see sessions.',
@@ -670,8 +683,32 @@ const en = {
 
 export type Strings = typeof en;
 
+/**
+ * 0.9.1 §1.4 / §3.3 — THE PT TABLE IS NARROWER THAN EN, ON PURPOSE, AND FOR THE FIRST TIME.
+ *
+ * the user's rule for new strings is "an EN entry only", and the PT table is to be left in place,
+ * unreachable, rather than extended (writing PT entries for the four new labels) or deleted. So these
+ * six keys — the four Display-session-type labels and their help sentences — exist in EN and NOT in PT,
+ * and this list is the ONLY place that asymmetry is declared.
+ *
+ * `pt` is still typed against `Strings` MINUS exactly these keys, so a pre-existing translation cannot
+ * silently lose a key, and the suite asserts this list is exactly the EN-only set (the asymmetry cannot
+ * grow quietly).
+ */
+export const EN_ONLY_SETTINGS_KEYS = [
+  'typeCron',
+  'typeCronHelp',
+  'typeWebhook',
+  'typeWebhookHelp',
+  'typeOneshot',
+  'typeOneshotHelp',
+] as const;
+
+type EnOnlySettingsKey = (typeof EN_ONLY_SETTINGS_KEYS)[number];
+type PtStrings = Omit<Strings, 'settings'> & { settings: Omit<Strings['settings'], EnOnlySettingsKey> };
+
 /** Portuguese (PT-PT): typed against the English table, so a missing or extra key fails typecheck. */
-const pt: Strings = {
+const pt: PtStrings = {
   appName: 'Personae',
   loading: 'A carregar…',
   retry: 'Tentar de novo',
@@ -1317,7 +1354,14 @@ const pt: Strings = {
   },
 };
 
-const tables: Record<Language, Strings> = { en, pt };
+/**
+ * The tables, by language. PT is deliberately NARROWER than EN since 0.9.1 — it lacks exactly
+ * `EN_ONLY_SETTINGS_KEYS` — so the values are widened to `Strings` here, in this one place. Nothing can
+ * read the difference: the app's language is `DEFAULT_LANGUAGE` and no production module can change it
+ * (0.9.1 S4.1), so PT is unreachable at runtime. The cast is the honest shape of "kept in place" rather
+ * than "kept in sync", and the suite is where the asymmetry is measured.
+ */
+const tables: Record<Language, Strings> = { en, pt: pt as unknown as Strings };
 
 let current: Language = DEFAULT_LANGUAGE;
 const listeners = new Set<() => void>();

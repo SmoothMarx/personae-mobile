@@ -33,15 +33,32 @@ import { UNASSIGNED, sectionOf } from './sections';
 export type FeedSession = HermesSession & { profile?: string | null };
 
 /**
- * Sources that are job runs, never conversations a human resumes. Verbatim from the plugin
- * (`NON_CONVERSATION_SOURCES`, plugin.js:179) — `cron_output` is a pane-side token, and the
- * backend's own listing deny-list covers `webhook` too, so this is belt-and-braces in both
- * directions. A scheduler run must never be drawn as if it were a chat.
+ * The sources that are RUNS, never conversations a human resumes, each with the bucket it belongs to.
+ *
+ * **This table is the whole classification.** Its first job is fidelity to the plugin
+ * (`NON_CONVERSATION_SOURCES`, plugin.js:179) plus the sources measured on the live box: `cron` and
+ * `cron_output` are the same run family (one is the pane-side token), `webhook` is its own, and
+ * `oneshot` — measured 2026-10-12 — is a FOURTH bucket the user asked for by name. Adding a new job-run
+ * source is ONE line here, and `NON_CONVERSATION_SOURCES` follows: the four-way split cannot drift from
+ * "is this a run".
  */
-export const NON_CONVERSATION_SOURCES = new Set(['cron', 'cron_output', 'webhook']);
+export const RUN_SOURCES: Record<string, SessionType> = {
+  cron: 'cron',
+  cron_output: 'cron',
+  webhook: 'webhook',
+  oneshot: 'oneshot',
+};
+
+/** The run sources, as a set — derived from `RUN_SOURCES`, so the two can never disagree. */
+export const NON_CONVERSATION_SOURCES = new Set(Object.keys(RUN_SOURCES));
+
+/** A session's `source`, normalised the way the plugin's own comparisons are. */
+function sourceOf(session: HermesSession | null | undefined): string {
+  return String(session?.source ?? '').trim().toLowerCase();
+}
 
 export function isAutomatic(session: HermesSession | null | undefined): boolean {
-  return NON_CONVERSATION_SOURCES.has(String(session?.source ?? '').trim().toLowerCase());
+  return NON_CONVERSATION_SOURCES.has(sourceOf(session));
 }
 
 /** The feed: conversations only. This is the function the "no cron in the roster" test pins. */
@@ -54,29 +71,35 @@ export function automaticRuns(sessions: FeedSession[]): FeedSession[] {
   return sessions.filter((session) => isAutomatic(session));
 }
 
-// ───────────────────────────────────── session types (0.8.0 D) ──
+// ───────────────────────────────────── session types (0.8.0 D, widened in 0.9.1 S4.2) ──
 
-/** The two buckets the Session-types checkboxes select between. */
-export type SessionType = 'sessions' | 'automatic';
+/** The four buckets the "Display session types" checkboxes select between. */
+export type SessionType = 'sessions' | 'cron' | 'webhook' | 'oneshot';
+
+/** The order they are drawn in — the user's own order: sessions, cron, webhooks, one-shots. */
+export const SESSION_TYPE_ORDER: readonly SessionType[] = ['sessions', 'cron', 'webhook', 'oneshot'];
 
 /**
- * What each bucket means when the setting is missing. Conversations are the default view; job runs
- * are opt-in (the operator's "no cron jobs in the session list").
+ * What each bucket means when the setting is missing. Conversations are the default view; every kind of
+ * run is opt-in (the operator's "no cron jobs in the session list").
  */
-export const SESSION_TYPE_DEFAULT: Record<SessionType, boolean> = { sessions: true, automatic: false };
+export const SESSION_TYPE_DEFAULT: Record<SessionType, boolean> = { sessions: true, cron: false, webhook: false, oneshot: false };
 
 /**
- * THE classifier — the one place that decides which bucket a session is in, and therefore the one
- * place the roster list and the checkpoint notifications can disagree from. It is a thin read of
- * `isAutomatic`, which is itself the only reader of `NON_CONVERSATION_SOURCES`, so a new job-run
- * source is added in exactly one line and both features follow.
+ * THE classifier — the one place that decides which bucket a session is in, and therefore the one place
+ * the roster list and the checkpoint notifications can disagree from. It reads `RUN_SOURCES` through
+ * `isAutomatic`, which is itself the only reader of that table, so a new job-run source is added in
+ * exactly one line and both features follow.
  *
- * FAIL-OPEN, DELIBERATELY: an unknown `source` is a CONVERSATION. A brand-new source the app has
- * never heard of must not make a real session vanish from the user's list. The live box already
- * carries one (`oneshot`, measured 2026-10-12), which is exactly the case this rule is for.
+ * FAIL-OPEN, DELIBERATELY: an unknown `source` is a CONVERSATION. A brand-new source the app has never
+ * heard of must not make a real session vanish from the user's list. (Before 0.9.1 the live box's
+ * `oneshot` was the example of that rule; the user has since asked for it by name, so it is a bucket now —
+ * the rule itself is unchanged.) A source INSIDE the run table always has a bucket: the table is the
+ * only thing `isAutomatic` consults, so this lookup cannot miss.
  */
 export function sessionTypeOf(session: HermesSession | null | undefined): SessionType {
-  return isAutomatic(session) ? 'automatic' : 'sessions';
+  if (!isAutomatic(session)) return 'sessions';
+  return RUN_SOURCES[sourceOf(session)] ?? 'sessions';
 }
 
 /** Is this bucket switched on? A missing key falls back to that bucket's DEFAULT, not to `true`. */
@@ -96,17 +119,14 @@ export function filterSessionTypes<T extends FeedSession>(sessions: T[], types: 
   return sessions.filter((session) => sessionVisible(session, types));
 }
 
-/** Are ANY types selected? Both off is a legal state the list has to explain. */
+/** Are ANY types selected? All four off is a legal state the list has to explain. */
 export function anySessionType(types: SessionTypes | null | undefined): boolean {
-  return sessionTypeEnabled('sessions', types) || sessionTypeEnabled('automatic', types);
+  return SESSION_TYPE_ORDER.some((type) => sessionTypeEnabled(type, types));
 }
 
-/** The two checkboxes, as data — what Settings renders and what Phase H respects. */
+/** The four checkboxes, as data — what Settings renders and what Phase H respects. */
 export function sessionTypeChoices(types: SessionTypes | null | undefined): { id: SessionType; enabled: boolean }[] {
-  return [
-    { id: 'sessions', enabled: sessionTypeEnabled('sessions', types) },
-    { id: 'automatic', enabled: sessionTypeEnabled('automatic', types) },
-  ];
+  return SESSION_TYPE_ORDER.map((id) => ({ id, enabled: sessionTypeEnabled(id, types) }));
 }
 
 export function profileOf(session: FeedSession): string {
@@ -427,9 +447,9 @@ export type RosterModel = {
   /** True when the response carried at least one cron/webhook run, whatever we did with it. */
   automaticSeen: number;
   /**
-   * 0.8.0 D: runs the response carried that the type filter hid. Non-zero only when the user turned
-   * "Automatic runs" OFF, and it exists so the list can SAY they are being hidden instead of
-   * looking like the box has no scheduled work at all.
+   * 0.8.0 D, widened in 0.9.1 S4.2: runs the response carried that the type filter hid. Non-zero only
+   * when the user left some run type unchecked, and it exists so the list can SAY they are being hidden
+   * instead of looking like the box has no scheduled work at all.
    */
   automaticHidden: number;
 };
@@ -476,8 +496,8 @@ export function buildRoster(input: {
   const search = input.search ?? null;
   const needle = search?.needle ?? '';
   const types = input.sessionTypes ?? null;
-  // No opinion (the 0.7.0 call sites) still shows the runs; only an explicit setting hides them.
-  const showRuns = types ? sessionTypeEnabled('automatic', types) : true;
+  /** Runs the filter HIDES. Zero when the caller has no opinion (the 0.7.0 call sites). */
+  const runVisible = (session: HermesSession) => (types ? sessionTypeEnabled(sessionTypeOf(session), types) : true);
 
   // The feed: conversations only, from the batched slice plus anything lazily loaded per profile.
   const merged: FeedSession[] = [...input.sessions];
@@ -541,9 +561,10 @@ export function buildRoster(input: {
       dot: profileRollup(shown, input.lastSeen?.[name] ?? 0),
       lastActiveMs: latest ? toMillis(latest.last_active ?? latest.started_at) : null,
       sessions: searching ? rowSessions : rowsForProfile.length ? rowSessions : [],
-      automatic: showRuns
-        ? (runsByProfile[name] ?? []).slice(0, perProfile).map((session) => ({ ...toHit(session, name), source: 'metadata' as const }))
-        : [],
+      automatic: (runsByProfile[name] ?? [])
+        .filter(runVisible)
+        .slice(0, perProfile)
+        .map((session) => ({ ...toHit(session, name), source: 'metadata' as const })),
     });
   }
 
@@ -555,7 +576,7 @@ export function buildRoster(input: {
     return (b.lastActiveMs ?? 0) - (a.lastActiveMs ?? 0);
   });
 
-  return { rows, matches, autoExpand: search?.autoExpand ?? [], automaticSeen: runs.length, automaticHidden: types && !showRuns ? runs.length : 0 };
+  return { rows, matches, autoExpand: search?.autoExpand ?? [], automaticSeen: runs.length, automaticHidden: runs.length - runs.filter(runVisible).length };
 }
 
 /** A session row's display model, with the colour that fills it and its own dot. */
