@@ -376,8 +376,9 @@ export function isColdSessionRpc(error: ApiError): boolean {
  * Why it exists. `GET /api/sessions/{id}/messages` answers the SAME body — `404`, detail
  * `Session not found` — for an id the gateway has no record of AND for the different-profile case, so
  * the response cannot tell a brand-new session from a real error. The app knows the one thing the body
- * does not: whether IT minted the id. That is the discriminator, and it is the only one used — no
- * string is filtered anywhere (a `filter(s => !s.includes('does not exist'))` is not the fix).
+ * does not: whether IT minted the id. That is the discriminator, and it is the only one used. The banner
+ * text is NOT filtered anywhere: fixing the draft case removes the SOURCE of both strings, because a
+ * filter that hides a sentence leaves the real error one code path away from being hidden too.
  *
  * Module-level on purpose, and outside every backend instance: the screen that CONSULTS it
  * (`app/thread/[id].tsx`) holds a different `Backend` object than the roster that MINTED the id, so a
