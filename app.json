@@ -2,7 +2,7 @@
   "expo": {
     "name": "Personae",
     "slug": "personae-mobile",
-    "version": "0.9.1",
+    "version": "0.10.0",
     "orientation": "default",
     "scheme": "personae",
     "icon": "./assets/icon.png",
@@ -18,7 +18,7 @@
     },
     "android": {
       "package": "com.personae.mobile",
-      "versionCode": 11,
+      "versionCode": 12,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#0b0f14"

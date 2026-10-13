@@ -556,7 +556,7 @@ export default function ConnectWizard(props: WizardProps = {}) {
             autoCapitalize="none"
             autoCorrect={false}
             keyboardType="numbers-and-punctuation"
-            placeholder="10.0.0.15"
+            placeholder="192.168.1.50"
             placeholderTextColor={colors.faint}
           />
           <Text style={styles.help}>{t.settings.wizIpHelp}</Text>
@@ -618,7 +618,7 @@ export default function ConnectWizard(props: WizardProps = {}) {
             onChangeText={setHost}
             autoCapitalize="none"
             autoCorrect={false}
-            placeholder="box.tailnet.ts.net"
+            placeholder="my-desktop.tailnet.ts.net"
             placeholderTextColor={colors.faint}
           />
           <Text style={styles.help}>{t.settings.wizHostHelp}</Text>

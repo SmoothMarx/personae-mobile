@@ -2238,3 +2238,256 @@ renamed to "ONE back control in the header — it walks the plan, never straight
 verifier's list follows it. That rename is the only change in the final commit beyond the version bump and
 this record.
 
+
+## 0.10.0 — Gateway Settings and the connection wizard (2026-10-13)
+
+A feature batch (the user's own spec, kept verbatim at the top of `GOAL-0.10.0.md`), on top of the page
+0.9.1 S3 already built. One commit per item:
+
+| item | commit | what it closed |
+|---|---|---|
+| S0 | `57da24a` | "a dropdown that lists all created connections" — read as: the dropdown lists the ROUTES |
+| S1 | `2815f53` | his §3 + §4: dropdown → status (kept, moved up) → pills → wizard button → Advanced last |
+| S2 | `e21a2c7` | a status dot per connection: one probe per row, in parallel, no polling |
+| S3 | `ad3e4d8` | the wizard: LAN or Remote, both branches, the manual fields, the staged test, the share |
+| S4 | `cfb6cd4` | the iOS platform gap: local-networking ATS + a usage description |
+| S5 | `4da9e0e` | rename / edit / delete a connection, and ONE duplicate rule |
+| S6 | this commit | version pair, the verifier, the artifact, this record |
+
+## Floors, measured
+
+| suite | 0.9.1 | now |
+|---|---|---|
+| app (`npm test`) | **250/250, 0 failed** | **261/261, 0 failed** |
+| typecheck (`tsc --noEmit`) | rc 0 | rc 0 |
+| server (`server/run-tests.sh tests`) | **77 passed** | **77 passed** (untouched, as the brief said it should be) |
+| `server/install.sh --check` | no drift | **no drift** |
+| verifier | 88 PASS / 0 FAIL | **103 PASS / 0 FAIL** |
+
+Eleven new app tests, every one named `0.10.0 S<n>: …`. No test was deleted and no existing test was
+changed to make room: the 0.9.1 and 0.9.0 named lists are BOTH still asserted by the verifier, and the
+whole 0.9.1 acceptance suite runs unchanged.
+
+## Every item's test FAILS before its change (the RED proofs)
+
+`logs/red-0.10.0.sh` is the harness, in the shape 0.9.1 used: `git archive HEAD` (the source BEFORE the
+item's change) + the CURRENT `tests/run.ts`, run with `npx tsx` in the archived tree. For items whose
+test imports a module the item ADDS, that module is carried in so the suite can still LOAD — the string
+table, the screen wiring and the plan data are the OLD state, which is what the test then fails on. The
+helper prints which files were carried, and why, in each log.
+
+| file | exit | failing tests |
+|---|---|---|
+| `logs/red-0.10.0-S0.txt` | 1 | 250/251 — the S0 test, and nothing else |
+| `logs/red-0.10.0-S1.txt` | 1 | 251/252 — the S1 test, and nothing else |
+| `logs/red-0.10.0-S2.txt` | 1 | 252/253 — the S2 test, and nothing else |
+| `logs/red-0.10.0-S3.txt` | 1 | 253/259 — the six S3 tests, and nothing else |
+| `logs/red-0.10.0-S4.txt` | 1 | 259/260 — the S4 test, and nothing else |
+| `logs/red-0.10.0-S5.txt` | 1 | 260/261 — the S5 test, and nothing else |
+
+## S0 — a connection IS a route
+
+the user, when asked to confirm the word: *"When I said connections, I was referring to Routes."* So
+`src/gateway/connections.ts` is a READER, not a model: `connectionRows(settings)` is exactly
+`orderRoutes(effectiveRoutes(settings))`, in priority order, with no second storage shape, no "server"
+entity and no credential per row. The two styled roles get his nouns — **Local** for `lan`, **Remote**
+for `tailscale` — and every other role (including `public`, and anything a future build invents) keeps
+`roleLabel()`'s own name, so the open-string rule in `src/routes.ts` is not narrowed. A legacy install
+with a `baseUrl` and no `routes` yields exactly ONE row; nothing configured yields zero (the screen then
+shows the empty state that offers the wizard).
+
+`RouteCandidate` gained one optional field in this batch: `label?: string`, carried through
+`normalizeRoutes`, used by S5's rename and by nothing else.
+
+## S1 — the Gateway Settings layout, as data
+
+`src/gateway/plan.ts` is the page, in the user's order: `GATEWAY_SECTION_IDS = ['connections','status',
+'pills','wizard','link','advanced']`. The status panel is populated from the **selected** row — the row
+the user tapped — and deliberately NOT from the route the engine chose: "represents the selected
+connection" is a different question from "the connection that is working", and the panel answers the
+question the user asked. The pills ARE `preferredRouteRole`, relabelled Local / Remote, and a list with
+one kind draws NO pills. The "Connection Wizard" button's action is `open-wizard`: `app/settings.tsx`
+sets its own `wizardOpen`, so the wizard opens IN PLACE — never `router.push('/connect')` — and a
+half-finished setup is never thrown away by a screen swap.
+
+`src/gateway/status.ts` is the one public read the panel makes: `GET /api/status`, timed by the user's
+own `probeTimeoutMs`, parsing only `version` + `gateway_state` (null otherwise — a version is never
+fabricated).
+
+**A section the brief does not name, and why it is still there.** the user's §4 lists what the page must
+have; it is not a licence to delete a shipped control. So 0.9.1 S3's Tailscale section — Log in, Choose
+device, the tunnel switch — stays, and it sits BETWEEN the wizard button and Advanced, which keeps all
+five of his sections in his relative order and Advanced LAST. Its copy is its own (`t.connectivity.*`),
+which is why `link` and `advanced` carry `titleKey: null` in the plan: the order is the plan's, the words
+are theirs.
+
+## S2 — the status dots
+
+`src/gateway/dots.ts`, three states (`checking` / `up` / `down`) and four rules: ONE probe per row (the
+fan-out IS the row count), in PARALLEL (`Promise.all` — asserted with a barrier probe that a sequential
+loop could never release), with the user's own `probeTimeoutMs`, and **no polling** — the answers are
+cached for the life of the visit and re-probed on re-open, with no `setInterval` anywhere in the module
+or the screen. A row whose probe is still in flight is **checking**, never **down**: the first version of
+this would have accused every connection on every page open. `GET /api/health` (public by design) is the
+route, and any HTTP status counts as reachable — the dot is about connectivity, not authorization.
+
+The screen's dot state doubles as its reachability cache: S5's delete asks it which routes are known
+DOWN, so a deletion lands on a route that is `up` or not yet probed, never on one that just failed.
+
+## S3 — the connection wizard
+
+**Entry.** `app/index.tsx` opens it by itself on a first launch with NO configured connection
+(`shouldAutoOpen`: no `baseUrl`, no routes — the same question S0's reader answers with zero rows), once
+per launch, and never again after a Skip: the `personae.wizard.v1` blob keeps `{dismissedAt, step,
+branch}`, so a Skip sticks and a part-completed wizard RESUMES on the step it was left on. The S1 button
+always reaches it.
+
+**Step 1 — LAN or Remote.** Two cards, from `wizardBranches()`. `WIZARD_STEP_IDS` is UNCHANGED
+(`service` → `sign-in` → `check`): the branch is drawn on top of the three 0.7.0 steps and both branches
+end in the same three, so a route's `role` stays inferred from its address — the standing decision in
+`src/routes.ts:115` is not reversed.
+
+**S3.1 — LAN.** An IPv4 field and a SEPARATE port field (§2 of his spec). The field keeps digits and
+periods (`ipInput`), the value is judged by `octets()` — now EXPORTED from `src/routes.ts`, so "a valid
+address" means one thing in the app, and his "numbers and periods" is stricter here than he asked,
+because the stricter rule was already the tested one. A pasted `1.2.3.4:9119` (or `http://1.2.3.4:9119`)
+splits into the two fields, `http://` is appended by the app and never typed, and the port defaults to
+9119. The `personae://` link and QR flow are untouched.
+
+**The login button** opens `<base>/login?next=%2Fpair` in the in-app browser and, when the browser
+returns, polls `/api/plugins/personae-mobile-auth/pair/status?id=` and THEN redeems — the order is
+`src/connect/pairflow.ts` and the suite asserts it on the call log itself (browser → poll → redeem). Read
+from the server's own source: `pair/status` is gated on an OWNER session (`plugin_api.py:246-262`), which
+a phone's bearer is not — so on a real device the same-device convenience ends at the `personae://`
+return the dashboard's pair page already produces, and the flow reports `needs-qr` with the reason rather
+than pretending. The QR / pasted-link path stays for that case, exactly as the brief says.
+
+**S3.2 — Remote.** The install check is Android-only (`isPackageInstalled` reads Android's package
+manager; there is no iOS half), the peer picker reads the host's tailnet through the existing
+`src/logic/peers.ts`, and when the host answers `{available: false, reason}` the branch falls through to
+manual entry AND SAYS the reason (`peers.ts`'s own vocabulary) — never an empty picker. Then the MagicDNS
+hostname field (the one field that is deliberately not IPv4-strict) with the same port field, and the
+tunnel row. **The tunnel row is rendered from `branchRows('remote', Platform.OS)`**, so on iOS it is not
+rendered at all — not disabled, not greyed, with no help sentence apologising for a platform limit (the
+`iosNote` line that used to sit on the gateway page is gone). Its help text says "asks Tailscale to
+connect", never "connects": the broadcast is fire-and-forget and readiness is proved by probing.
+
+**S3.3 — Test connection.** Three staged calls, stopping at the first failure: reachable (the existing
+native `probeTcp`), is-this-Hermes (`GET /api/status`), authenticated (one real call with the stored
+token). A **401 means "sign in"**, never "bad address" — stages 1 and 2 already proved the address. A
+timeout against a `100.64/10` or `*.ts.net` target says **"Tailscale may be off on this phone"**; the
+same silence on a LAN address says the address/port/network is wrong. Both sentences exist and differ.
+
+**S3.4 — Support log.** A redacted bundle to the OS share sheet (`expo-sharing`, already installed): app
+version, platform + OS, device model, the connection timeline with HTTP status and duration, the server
+version and gateway state, the plugin list. Never a credential: the builder has no credential field at
+all, every line goes through `redact()` (the log module's own rule) and through an opaque-token pattern,
+and every address is masked — IPv4 last octet, IPv6 middle hextets. The timeline is capped at 40
+entries. Decision §3.7: share only, no server route, no upload.
+
+## S4 — the iOS platform gap
+
+`app.json`'s `ios.infoPlist` now declares `NSAppTransportSecurity.NSAllowsLocalNetworking: true` and
+`NSLocalNetworkUsageDescription`. Both are native config keys, declared here per §1.6: two keys, no new
+dependency, and NO Android change — Android's cleartext is already on through `expo-build-properties`,
+and §1.11 says one mechanism is enough. The verifier asserts the Android side is still exactly one
+mechanism (and that no `networkSecurityConfig` appeared).
+
+**A correction to the pre-existing state, stated because the brief and the repo disagreed (§0).** 0.9.1
+shipped `NSAllowsArbitraryLoads: true`. S4's wording is explicit — local networking, and NOT the
+arbitrary-loads blanket — so the blanket was REMOVED. Consequence for iOS: a plain-http address that is
+not on the local network is now refused by ATS, which is what the app's own `checkRoute` policy already
+refuses; https and every private/LAN/localhost address are unaffected. Android, the shipped artifact, is
+untouched.
+
+## S5 — managing the connections
+
+`src/gateway/manage.ts`: `renameRoute` changes the LABEL and nothing else (role, priority, url and
+insecure are carried through, and a cleared name falls back to the kind noun); `manualAdd` takes the
+address and the port, appends the scheme, and lets a port already in the text win over the field so a
+paste cannot double it; `deleteRoute` returns `{routes, baseUrl, decision, empty}` and NOTHING else.
+
+**Deleting a connection does NOT touch the credential,** and that is not an oversight: the credential in
+this app is PER SERVER — one gateway, one device token in secure storage — not per route, so there is
+nothing to revoke when an address goes away. Forgetting the device on the server is a separate, explicit
+action (the self-revoke button in the status panel). The verifier-shaped proof is in the suite: the
+delete patch's own key list is asserted, so a future edit that started carrying `apiKey` would fail.
+
+**A duplicate is refused by ONE rule.** `src/routes.ts::routeExists` was extracted and
+`src/logic/peers.ts::peerRoute` now uses it too (its private copy is gone), so "refused exactly as
+peerRoute refuses one" is one implementation; the suite asserts that only `routes.ts` defines it and that
+both callers import it.
+
+## Decisions taken on the user's behalf (§3, one line each)
+
+1. **A connection is a route** (S0) — confirmed by the user, and the dropdown shows this app's routes, local and remote; several independent servers with separate credentials would be a later batch with a new storage shape.
+2. **Failover is not rebuilt** — `routes.ts` already implements the SRV contract and reports `pin-bypassed`; the bypass stays visible and nothing here touches `pickByPriority`/`selectRoute`.
+3. **The pills ARE `preferredRouteRole`**, relabelled Local / Remote — not a second preference, and hidden entirely when the list holds one kind.
+4. **LAN/Remote is a wizard branch; a route's `role` stays inferred** — `inferRole` is unchanged and the user is never asked to classify their own network.
+5. **Advanced gains nothing mandatory** — the six knobs were already there, and NO dot-probe interval was added: the dots are not periodic, so no interval setting exists to configure.
+6. **The tunnel toggle is Android-only and hidden on iOS** — rendered from the plan, so iOS has no row, no disabled switch, no explanation.
+7. **The support log is a share sheet only** — no server route, no upload.
+8. **Remote-first setup is manual MagicDNS entry**, with the peer picker as the fast path when a connection can already answer.
+9. **Version 0.10.0 / versionCode 12** — a feature batch, unlike 0.9.1.
+10. **`tailscalePackage` stays the existing knob** — the broadcast target, not a new setting.
+
+Two smaller calls, recorded so they are not mistaken for oversights: the gateway page keeps 0.9.1 S3's
+Tailscale section (see S1 above), and the new strings live FLAT under `t.settings.*` because that is the
+only group `EN_ONLY_SETTINGS_KEYS` can narrow — a new top-level group would have to be translated into PT
+to compile, and §1.4 says the PT table is left in place, unextended. The PT table is therefore 33 leaves
+behind EN, and the i18n test still pins the asymmetry exactly.
+
+## What could not be verified, and why
+
+* **Nothing was verified on a phone.** There is still no `adb` on this host and no renderer for
+  `app/*.tsx`, so every item is a static proof: plan-as-data, source inspection, or a pure-module test
+  driven by fakes. Specifically NOT seen: the two wizard cards, the IPv4/port fields, the peer rows, the
+  tunnel row's absence on iOS, the dots' colours, the share sheet, and whether the Auto-open fires on a
+  genuinely fresh install.
+* **The LAN login's same-device convenience is NOT exercised against a real dashboard.** The order is
+  asserted with fakes, and the endpoint's owner-session gate was read from the server's source (not
+  probed live): `pair/status` returns 403 for a device bearer, so on a real phone the flow currently ends
+  at the `personae://` return the pair page already gives. That is the honest state, and the wizard says
+  `needs-qr` rather than claiming success.
+* **A sentence rendered on a phone is not verified** (§1.7). Related, and measured: the release bundle is
+  Hermes bytecode, and **Hermes stores any string that needs UTF-16 as 2-byte characters**, so `grep`
+  cannot find it even though the app renders it (ASCII strings and strings with an em dash behave
+  differently in the same blob: 'Perfis' is findable, 'Sessões'/'A carregar…'/'surfaceCheckOk' are not).
+  The verifier's feature-string probes are therefore ASCII-only substrings, and they are the ones the
+  bundle check uses.
+* **The iOS half is config, not an exercised build**: no iOS build was produced on this host, so S4 is
+  asserted against `app.json`'s own keys.
+* **Push stays parked** (§1.8): no `google-services.json`, no sender, no Firebase scaffolding, nothing
+  device-side called "push".
+* **No new dependency, native or JS.** The whole 0.10.0 surface rides what was already installed
+  (`expo-web-browser`, `expo-sharing`, `expo-file-system`, `expo-constants`) plus what the repo already
+  had; the verifier checks those packages are present and that no gesture library or `expo-av` appeared.
+  The only NATIVE changes are S4's two iOS keys, both declared above.
+
+## The artifact, and the verifier that judged it
+
+| thing | 0.9.1 | 0.10.0 |
+|---|---|---|
+| apk | `dist/personae-0.9.1.apk` | **`dist/personae-0.10.0.apk`** |
+| bytes | 116926234 | **116979706** |
+| sha256 | `757c536e648210fac589c5a00dae008d57d0e6463218ba95acef97f3b9c77cc6` | **`3b231c830f154c5c3af64f9043297aa804430a343be23afe9e4e30286c464c2f`** |
+| apk summary | `com.personae.mobile / 11 / 0.9.1` | **`com.personae.mobile / 12 / 0.10.0`** |
+| min-sdk / target-sdk | 24 / 36 | 24 / 36 |
+| signer | `CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT` | the same |
+| signer SHA-256 | `bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26` | **the same key** — it installs straight over 0.9.1 |
+| host/credential literals in the bundle | 0 | **0** (and 0 live-bearer occurrences) |
+| build | `BUILD SUCCESSFUL in 3m 38s` | **`BUILD SUCCESSFUL in 3m 34s`**, then one leashed REBUILD of `BUILD SUCCESSFUL in 31s` after the host-literal fix above — `:app:assembleRelease`, `--max-workers=4`, `--no-daemon`, both in `logs/gradle-v0100.log` (the log's last build is the rebuild, because the fix changed the shipped bundle) |
+
+`app.json` (`0.10.0` / `12`) is compared to the APK's own summary, and the release signer's SHA-256 to the
+0.1.0-0.9.1 digest. `logs/verify-0.10.0.sh` + `.txt`: **103 PASS, 0 FAIL, `RESULT: PASS — 0.10.0 verified`**
+— the 0.10.0 §2 list, BOTH older named-test lists (0.9.1 and 0.9.0), the app/typecheck/server floors, the
+deployment measurement, the live-dashboard reads, the app.json release + S4 keys, and the artifact block.
+
+Two build-lane notes worth keeping. **`npx expo prebuild -p android` resets the release-signing patch**
+(the generated `build.gradle` signs `release` with the DEBUG keystore); `bash scripts/patch-android-signing.sh`
+put it back, and the build log's `Personae: release build signed with /signing/personae-release.keystore`
+plus the signer digest above are the proof it was re-applied *before* the build. And **the first artifact
+was rejected by the verifier's own host-literal check**: the wizard's IPv4 placeholder and its help
+sentence both used the user's real LAN address as the example, which is exactly the class of leak the 0.5.0
+forensics rule counts. The example is now a generic `192.168.1.50` and the bundle measures 0 again — the
+check earned its place on the same day it was written.
