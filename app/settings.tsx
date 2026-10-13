@@ -738,35 +738,14 @@ export default function SettingsScreen() {
         </>
       ) : null}
 
-      {/* ── 0.9.0 B: AGENT PREFERENCES — language + which session types the list shows ── */}
+      {/* ── 0.9.0 B: AGENT PREFERENCES — which session types the list shows ── */}
       {page === 'agent' ? (
         <>
-      {/* Interface language: one tap, applied and saved at once (no Save button). */}
-      <View style={styles.field}>
-        <Text style={styles.label}>{t.settings.language}</Text>
-        <View style={styles.segment}>
-          {(['en', 'pt'] as const).map((option) => {
-            const active = settings.language === option;
-            const label = option === 'en' ? t.settings.languageEnglish : t.settings.languagePortuguese;
-            return (
-              <Pressable
-                key={option}
-                onPress={() => {
-                  setForm((prev) => ({ ...prev, language: option }));
-                  update({ language: option });
-                }}
-                style={[styles.segmentButton, active && styles.segmentButtonActive]}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                accessibilityLabel={label}
-              >
-                <Text style={[styles.segmentText, active && styles.segmentTextActive]}>{label}</Text>
-              </Pressable>
-            );
-          })}
-        </View>
-        <Text style={styles.help}>{t.settings.languageHelp}</Text>
-      </View>
+      {/* 0.9.1 S4.1: the "Language / Língua" segment control stood here (two options, `settings.language`,
+          saving on tap). the user, 2026-10-13: *"remove language and English is default."* Deleted — the
+          field, the control and its two labels — and English is what this app speaks, always. The
+          `language` field is gone from `Settings`, from the device-local list and from the field plan,
+          so there is no longer anything a stored `{language: 'pt'}` could move. */}
 
       {/* ── Session types (0.8.0 D) ─────────────────────────────────────────
           CHECKBOXES, deliberately: that is the operator's own word ("check/uncheck the type of

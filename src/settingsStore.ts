@@ -20,7 +20,6 @@ import {
   type Settings,
   type StoredSettings,
 } from './settings';
-import { DEFAULT_LANGUAGE, getLanguage, isLanguage, setLanguage } from './i18n';
 import { normalizeRouteUrl, normalizeRoutes, orderRoutes, routesFromBaseUrl } from './routes';
 import { storeDelete, storeGet, storeSet } from './storage';
 
@@ -40,14 +39,11 @@ function asNumber(value: unknown, fallback: number, min: number, max: number): n
 export async function loadSettings(): Promise<Settings> {
   const [blob, apiKey] = await Promise.all([storeGet(SETTINGS_STORE_KEY), storeGet(SECRET_STORE_KEY)]);
   let parsed: Partial<StoredSettings> = {};
-  /** True when an earlier build saved a settings object here (i.e. not a fresh install). */
-  let existing = false;
   if (blob) {
     try {
       const value = JSON.parse(blob);
       if (value && typeof value === 'object') {
         parsed = value as Partial<StoredSettings>;
-        existing = true;
       }
     } catch {
       parsed = {};
@@ -59,9 +55,10 @@ export async function loadSettings(): Promise<Settings> {
 
   // `surface` is ADDITIVE: an older blob simply has no value and lands on the default, so an
   // existing install keeps working and a newer build reads the old shape unchanged.
-  // `language` is ADDITIVE too, with one twist: a blob saved before the field existed came from the
-  // Portuguese-only build, so that install keeps Portuguese. Only a fresh install gets the default.
-  const language = isLanguage(parsed.language) ? parsed.language : existing ? 'pt' : DEFAULT_LANGUAGE;
+  // 0.9.1 S4.1: the `language` key is NOT read any more — not even to honour a stored value. The app's
+  // language is `DEFAULT_LANGUAGE` (English) and the setting no longer exists, so a blob from an older
+  // build that still carries `{language: 'pt'}` must not decide anything. The key is simply ignored,
+  // and (being additive-only) `saveSettings` no longer writes it.
 
   const surface = parsed.surface === 'gateway' ? 'gateway' : parsed.surface === 'dashboard' ? 'dashboard' : 'dashboard';
 
@@ -75,7 +72,6 @@ export async function loadSettings(): Promise<Settings> {
       typeof parsed.preferredRouteRole === 'string' && parsed.preferredRouteRole.trim()
         ? parsed.preferredRouteRole.trim()
         : null,
-    language,
     autoConnect: asBoolean(parsed.autoConnect, DEFAULT_SETTINGS.autoConnect),
     tailscalePackage: asString(parsed.tailscalePackage, 'com.tailscale.ipn').trim() || 'com.tailscale.ipn',
     connectDeadlineMs: asNumber(parsed.connectDeadlineMs, 20_000, 1_000, 120_000),
@@ -98,11 +94,9 @@ export async function loadSettings(): Promise<Settings> {
     apiKey: apiKey || '',
   };
   // 0.6.0: an incoherent surface/port pair is healed on load, and the screen shows why (once).
-  // The note is written in the user's language; the switch is scoped to this one call.
-  const previous = getLanguage();
-  setLanguage(loaded.language);
+  // 0.9.1 S4.1: the heal note is written in the app's language, which is now always English — the
+  // temporary language switch this used to make (and restore) went with the language setting itself.
   const healed = healSurface(loaded);
-  setLanguage(previous);
   if (healed.note) {
     const next = { ...healed.settings, healNote: healed.note };
     await saveSettings(next).catch(() => undefined);
@@ -124,7 +118,6 @@ export async function saveSettings(settings: Settings): Promise<void> {
     model: settings.model,
     routes: settings.routes,
     preferredRouteRole: settings.preferredRouteRole,
-    language: settings.language,
     autoConnect: settings.autoConnect,
     tailscalePackage: settings.tailscalePackage,
     connectDeadlineMs: settings.connectDeadlineMs,

@@ -23,7 +23,6 @@ export type SettingsArea = 'connection' | 'tailscale' | 'sessions' | 'notificati
 
 export type SettingsFieldId =
   | 'connection'
-  | 'language'
   | 'sessionTypes'
   | 'notifications'
   | 'tailscale'
@@ -43,7 +42,7 @@ export type SettingsFieldId =
 export type SettingsField = { id: SettingsFieldId; area: SettingsArea };
 
 /**
- * In render order. The three `connection` / `language` / `tailscale` AREAS are what a user sees;
+ * In render order. The three `connection` / `sessions` / `notifications` AREAS are what a user sees;
  * everything else is `advanced`.
  *
  * `tailscalePackage`, `deadlines` and `openOnFailure` are the Tailscale knobs the brief names as
@@ -52,10 +51,12 @@ export type SettingsField = { id: SettingsFieldId; area: SettingsArea };
  */
 export const SETTINGS_FIELDS: readonly SettingsField[] = [
   { id: 'connection', area: 'connection' },
-  { id: 'language', area: 'connection' },
+  // 0.9.1 S4.1: `{ id: 'language', area: 'connection' }` was here, right after Connection. There is no
+  // language setting any more — English is what the app speaks — and this plan is the record of which
+  // settings EXIST, so the field went with the control (and with its segment row on the screen).
   // 0.8.0 D: the two Session-types checkboxes are a USER-facing choice, so the section stays on the
-  // main screen, right after the language — not behind Advanced. "An option in settings where users
-  // can check/uncheck the type of sessions they want to see" is an ask from the operator's own list.
+  // main screen, first — not behind Advanced. "An option in settings where users can check/uncheck the
+  // type of sessions they want to see" is an ask from the operator's own list.
   { id: 'sessionTypes', area: 'sessions' },
   // 0.8.0 H: the checkpoint switches are user-facing too — on the main screen, after Session types.
   { id: 'notifications', area: 'notifications' },

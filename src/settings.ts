@@ -11,7 +11,7 @@
  * (pedro-app-defaults: "the effective value always displayed, never a different one").
  */
 
-import { t, type Language } from './i18n';
+import { t } from './i18n';
 import type { RouteCandidate } from './routes';
 
 /**
@@ -81,11 +81,11 @@ export type Settings = {
   routes: RouteCandidate[];
   /** Optional manual pin, e.g. 'tailscale'. null = Auto (strict priority order). */
   preferredRouteRole: string | null;
-  /**
-   * Interface language. A fresh install starts in English; an install that saved settings before
-   * this field existed keeps Portuguese (the language it was built in) — see loadSettings.
-   */
-  language: Language;
+  // 0.9.1 S4.1: a `language: Language` field lived here. the user, 2026-10-13: *"remove language and
+  // English is default."* The interface language is `DEFAULT_LANGUAGE` ('en') ALWAYS — nothing in the
+  // app can change it, so a stored blob from an older build that still carries `{language: 'pt'}`
+  // decides nothing. `src/settingsStore.ts` no longer reads the key, and `src/i18n.ts` keeps the PT
+  // table in place, unreachable.
   /** Master switch for the launch/foreground tunnel trigger. Off by default (opt-in). */
   autoConnect: boolean;
   /** Broadcast target for the tunnel trigger; lets a fork swap in without a rebuild. */
@@ -139,7 +139,8 @@ export const DEFAULT_SETTINGS: Settings = {
   model: '',
   routes: [],
   preferredRouteRole: null,
-  language: 'en',
+  // 0.9.1 S4.1: `language: 'en'` lived here. There is no language setting any more — the app speaks
+  // `DEFAULT_LANGUAGE` (English) and nothing can change it.
   // Tailscale auto-start is opt-in: route probing runs regardless, these only gate the broadcast
   // trigger and opening the Tailscale app on failure. Stored values on an existing install win.
   autoConnect: false,

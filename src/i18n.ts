@@ -352,7 +352,7 @@ const en = {
     pagesHelp: 'Each row opens its own page. Everything below it is unchanged.',
     pages: {
       agentTitle: 'Agent Preferences',
-      agentHelp: 'The language of this app and which session types the list shows.',
+      agentHelp: 'Which session types the list shows, and how the list is displayed.',
       notificationsTitle: 'Notifications',
       notificationsHelp: 'Which checkpoints warn you, and the phone permission they need.',
       gatewayTitle: 'Gateway Settings',

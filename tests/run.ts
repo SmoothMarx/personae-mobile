@@ -171,7 +171,7 @@ import {
 import { SYNC_KEYS as SYNC_KEY_LIST } from '../src/sync/uiSync';
 import { addSecret, buildLogDocument, createLog, redact } from '../src/logging';
 import { contentToText, formatAge, formatDate, formatDateTime, formatHours, initialOf } from '../src/format';
-import { getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
+import { DEFAULT_LANGUAGE, getLanguage, setLanguage, stringsFor, t } from '../src/i18n';
 import { colors, radius, space } from '../src/theme';
 import { TYPICAL_BUTTON_INSET, TYPICAL_GESTURE_INSET, sheetPadding } from '../src/roster/sheet';
 import {
@@ -773,7 +773,9 @@ test('0.8.0 D: a 0.7.0 stored blob with no sessionTypes key loads with the defau
   assert.deepEqual(loaded.sessionTypes, { sessions: true, automatic: false }, 'defaults, not undefined');
   assert.equal(loaded.autoConnect, true, 'and the stored values still survive');
   assert.deepEqual(loaded.profiles, ['cody']);
-  assert.equal(loaded.language, 'pt');
+  // 0.9.1 S4.1: this read `assert.equal(loaded.language, 'pt')`. The blob above still carries a
+  // `language` key on purpose — it is the shape 0.7.0 wrote — and nothing reads it any more.
+  assert.equal('language' in (loaded as unknown as Record<string, unknown>), false);
   // It round-trips: the next save writes the key, and an explicit choice is preserved.
   await saveSettings({ ...loaded, sessionTypes: { sessions: false, automatic: true } });
   assert.deepEqual((await loadSettings()).sessionTypes, { sessions: false, automatic: true });
@@ -2178,28 +2180,36 @@ async function main(): Promise<void> {
   // ─────────────────────────────────────────────────── language (i18n) ──
   test('i18n: a fresh install defaults to English', async () => {
     __resetStoreProbe();
-    assert.equal(DEFAULT_SETTINGS.language, 'en');
-    assert.equal((await loadSettings()).language, 'en', 'nothing stored = fresh install = English');
+    assert.equal(DEFAULT_LANGUAGE, 'en');
+    // 0.9.1 S4.1: the SETTING is gone, so there is nothing to default — the table's own default is the
+    // only thing that decides, and nothing in the app can move off it. The old assertion here read
+    // `loaded.language === 'en'`.
+    assert.equal('language' in DEFAULT_SETTINGS, false, 'there is no language field any more');
+    const loaded = await loadSettings();
+    assert.equal('language' in (loaded as unknown as Record<string, unknown>), false, 'and loadSettings does not invent one');
   });
 
-  test('i18n: an existing install without a language field keeps Portuguese (and its other values)', async () => {
+  test('i18n: a stored language is IGNORED — and its other stored values still survive', async () => {
+    // SUPERSEDED IN 0.9.1 (S4.1): this test used to be "an existing install without a language field
+    // keeps Portuguese". Language is no longer a setting: the user, 2026-10-13, *"remove language and
+    // English is default."* The migration claim it made (an old blob decides the language) is exactly
+    // the behaviour that had to go, so it is pinned the other way round here: a stored `language` is
+    // read by nobody. See the 0.9.1 S4.1 test for the app-level version of this.
     __resetStoreProbe();
     const { storeSet } = await import('../src/storage');
-    // The exact shape the Portuguese-only build wrote: every field except `language`.
     await storeSet(
       'personae.settings.v1',
-      JSON.stringify({ baseUrl: 'http://10.0.0.15:9119', surface: 'dashboard', profiles: [], model: '', autoConnect: true, openTailscaleOnFailure: true }),
+      JSON.stringify({ baseUrl: 'http://10.0.0.15:9119', surface: 'dashboard', profiles: [], model: '', language: 'pt', autoConnect: true, openTailscaleOnFailure: true }),
     );
     const loaded = await loadSettings();
-    assert.equal(loaded.language, 'pt');
-    assert.equal(loaded.autoConnect, true, 'a stored value survives the default change');
-    assert.equal(loaded.openTailscaleOnFailure, true, 'a stored value survives the default change');
+    assert.equal('language' in (loaded as unknown as Record<string, unknown>), false, 'the stored key is dropped, not honoured');
+    assert.equal(loaded.autoConnect, true, 'a stored value still survives the change');
+    assert.equal(loaded.openTailscaleOnFailure, true, 'a stored value still survives the change');
 
-    // An explicit choice always wins, and is what gets saved back.
-    await saveSettings({ ...loaded, language: 'en' });
-    assert.equal((await loadSettings()).language, 'en');
-    await storeSet('personae.settings.v1', JSON.stringify({ baseUrl: '', language: 'pt' }));
-    assert.equal((await loadSettings()).language, 'pt');
+    // …and saving back does not write one either, so the key disappears from the blob for good.
+    await saveSettings({ ...loaded, autoConnect: false });
+    assert.equal((await loadSettings()).autoConnect, false);
+    __resetStoreProbe();
   });
 
   test('i18n: setLanguage switches t.* live through the same import', async () => {
@@ -3490,7 +3500,10 @@ async function main(): Promise<void> {
     const loaded = await loadSettings();
     assert.equal(loaded.baseUrl, 'http://10.9.9.9:9119');
     assert.equal(loaded.routes[0].url, 'http://10.9.9.9:9119');
-    assert.match(loaded.healNote, /messaging gateway, not the dashboard/);
+    // 0.9.1 S4.1: loadSettings no longer switches language for the note (the stored `language: 'en'`
+    // above is ignored), so the note is written in the ambient table — which in the app is English and
+    // in this suite is PT. The check is that the note is the HEAL sentence, in the live language.
+    assert.equal(loaded.healNote, stringsFor(getLanguage()).connect.healed('http://10.9.9.9:9222', 'http://10.9.9.9:9119'));
     // the heal is persisted: the next load is coherent and says nothing new
     const again = await loadSettings();
     assert.equal(again.baseUrl, 'http://10.9.9.9:9119');
@@ -3505,13 +3518,16 @@ async function main(): Promise<void> {
   test('0.7.0 B: Advanced is CLOSED by default, and nothing 0.6.1 had was deleted', () => {
     assert.equal(ADVANCED_OPEN_BY_DEFAULT, false, 'a fresh install shows no internals');
     const closed = visibleFieldIds(false);
-    // SUPERSEDED IN 0.8.0 (phase D): this read `['connection', 'language', 'tailscale']`. The
-    // Session-types checkboxes are a user-facing ask from the operator's own list, so they are on
-    // the main screen — right after the language, and still not behind Advanced.
-    assert.deepEqual(closed, ['connection', 'language', 'sessionTypes', 'notifications', 'tailscale']);
+    // SUPERSEDED IN 0.9.0 (phase D): this read `['connection', 'language', 'tailscale']`; then in 0.9.1
+    // (S4.1) `language` left the plan with the setting itself. The Session-types checkboxes are a
+    // user-facing ask from the operator's own list, so they are on the main screen and not behind
+    // Advanced.
+    assert.deepEqual(closed, ['connection', 'sessionTypes', 'notifications', 'tailscale']);
     assert.equal(closed[0], 'connection', 'Connection is the FIRST thing on the screen');
     assert.ok(!isAdvanced('sessionTypes'), 'the session-type checkboxes are NOT internals');
-    assert.equal(visibleFieldIds(false).indexOf('sessionTypes'), 2, 'they sit after the language');
+    assert.equal(visibleFieldIds(false).indexOf('sessionTypes'), 1, 'the checkboxes are the first choice after Connection');
+    // 0.9.1 S4.1 — and the language field is gone from the plan entirely (see the S4.1 test).
+    assert.ok(!(closed as readonly string[]).includes('language'));
     const hidden: SettingsFieldId[] = [
       'surface', 'baseUrl', 'apiKey', 'profiles', 'model', 'routes',
       'tailscalePackage', 'deadlines', 'openOnFailure', 'diagnostics', 'testConnection', 'log',
@@ -4718,9 +4734,15 @@ async function main(): Promise<void> {
     // every scope has words, never a bare colour
     assert.deepEqual(Object.keys(SCOPE_LABEL_KEY).sort(), ['device-local', 'mixed', 'portable']);
     // a gateway anything is device-local BY CLASS, never by accident
-    for (const id of ['baseUrl', 'apiKey', 'surface', 'routes', 'tailscale', 'connection', 'language']) {
+    for (const id of ['baseUrl', 'apiKey', 'surface', 'routes', 'tailscale', 'connection']) {
       assert.equal(scopeOfSetting(id), 'device-local', `${id} must never sync`);
     }
+    // 0.9.1 S4.1: `language` used to be listed here. It is no longer a setting at all, so it is no
+    // longer classified — `unknown` is the honest answer, and the page that says which settings exist
+    // stops claiming one that cannot be set. (The SERVER's device-local list still names it: nothing
+    // has ever been able to send one.)
+    assert.equal(scopeOfSetting('language'), 'unknown', 'the language setting no longer exists');
+    assert.ok(!(DEVICE_LOCAL_SETTING_IDS as readonly string[]).includes('language'));
     for (const id of ['sessionTypes', 'notifications']) {
       assert.notEqual(scopeOfSetting(id), 'device-local', `${id} is portable`);
     }
@@ -5039,6 +5061,54 @@ async function main(): Promise<void> {
       'surface', 'baseUrl', 'apiKey', 'profiles', 'model', 'routes',
       'tailscalePackage', 'deadlines', 'openOnFailure', 'diagnostics', 'testConnection', 'log',
     ], 'the advanced contents are exactly what 0.9.0 shipped');
+  });
+
+  test('0.9.1 S4.1: the Agent Preferences page offers no control that changes the language — English, always', () => {
+    // The control is GONE from the screen, field and labels included.
+    const src = settingsSource();
+    const code = settingsCode();
+    assert.ok(!/t\.settings\.language/.test(code), 'the field label, help and both option labels are unreachable');
+    assert.ok(!/setForm\(\(prev\) => \(\{ \.\.\.prev, language/.test(code), 'nothing stages a language');
+    assert.ok(!/update\(\{ language/.test(code), 'and nothing saves one');
+    // …and nothing anywhere in the app can move the table off English. `setLanguage` still exists (the
+    // suite uses it, and the PT table stays), but no PRODUCTION module calls it any more.
+    const callers: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(full);
+          continue;
+        }
+        if (!/\.tsx?$/.test(entry.name)) continue;
+        if (full.endsWith(join('src', 'i18n.ts'))) continue;
+        if (codeOnly(readFileSync(full, 'utf8')).includes('setLanguage(')) callers.push(full.slice(process.cwd().length + 1));
+      }
+    };
+    walk(join(process.cwd(), 'src'));
+    walk(join(process.cwd(), 'app'));
+    assert.deepEqual(callers, [], 'no production module can change the language');
+    // the plan stops claiming it, too
+    assert.equal(scopeOfSetting('language'), 'unknown');
+    assert.ok(!visibleFieldIds(true).includes('language' as never), 'not in the field plan either');
+    assert.equal('language' in DEFAULT_SETTINGS, false, 'not in the settings object either');
+    assert.equal(DEFAULT_LANGUAGE, 'en', 'and the table\'s own default is English');
+  });
+
+  test('0.9.1 S4.1: a stored {language: "pt"} still renders English', async () => {
+    // The app boots in English; the blob below is the one an older build leaves behind.
+    await inLanguage('en', async () => {
+      assert.equal(t.settings.title, 'Settings');
+      __resetStoreProbe();
+      const { storeSet } = await import('../src/storage');
+      await storeSet('personae.settings.v1', JSON.stringify({ baseUrl: '', language: 'pt' }));
+      const loaded = await loadSettings();
+      assert.equal('language' in (loaded as unknown as Record<string, unknown>), false, 'the stored value is not even carried');
+      assert.equal(getLanguage(), 'en', 'and it did not switch anything');
+      assert.equal(t.settings.title, 'Settings', 'the app still speaks English');
+      assert.equal(stringsFor(getLanguage()).settings.pages.agentTitle, 'Agent Preferences');
+      __resetStoreProbe();
+    });
   });
 
   // ─────────────────────────────────────────────────────── report ──

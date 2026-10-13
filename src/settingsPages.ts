@@ -165,7 +165,11 @@ export const DEVICE_LOCAL_SETTING_IDS = [
   'diagnostics', // a record of what this device did
   'testConnection',
   'log',
-  'language', // kept local so a phone in one language cannot switch a desktop
+  // 0.9.1 S4.1: `language` was listed here ("kept local so a phone in one language cannot switch a
+  // desktop"). The setting no longer EXISTS — English is what the app speaks and nothing can change it
+  // — and a device-local setting that can no longer be set is a lie on a page whose whole job is saying
+  // which settings exist. It is still absent from every sync payload, and the SERVER's device-local
+  // list still names `language` (nothing has ever been able to send one).
 ] as const;
 
 /**
