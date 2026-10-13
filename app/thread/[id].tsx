@@ -61,6 +61,9 @@ import {
   type StagedAttachment,
 } from '../../src/logic/attachments';
 import { isStaleAnswer, slashQueryOf, spliceCompletion, type SlashItem } from '../../src/logic/slash';
+// 0.12.0 — the message-body renderer. Imported here rather than beside the roster components because
+// it is the thread's own body painter, and it renders the FOUR text sites below and nothing else.
+import { MessageBody } from '../../src/MessageBody';
 import { useAudioPlayer, useAudioPlayerStatus, useAudioRecorder } from 'expo-audio';
 import { AudioModule, RecordingPresets } from 'expo-audio';
 import { ActionSheet } from '../../src/roster/components';
@@ -899,7 +902,7 @@ export default function ThreadScreen() {
             <Text style={[styles.runText, styles.reasoningTitle]}>{t.thread.reasoning}</Text>
             <Ionicons name={open ? 'chevron-up' : 'chevron-down'} size={16} color={colors.amber} />
           </Pressable>
-          {open ? <Text style={styles.reasoningBody}>{item.text}</Text> : null}
+          {open ? <MessageBody text={item.text} style={styles.reasoningBody} /> : null}
         </View>
       );
     }
@@ -910,7 +913,7 @@ export default function ThreadScreen() {
       <View style={[styles.bubbleRow, mine ? styles.bubbleRowMine : styles.bubbleRowTheirs]}>
         <View style={[styles.bubble, mine ? styles.bubbleMine : other ? styles.bubbleOther : styles.bubbleTheirs]}>
           <Text style={styles.bubbleRole}>{mine ? t.thread.you : t.thread.agent}</Text>
-          <Text style={styles.bubbleText}>{item.text}</Text>
+          <MessageBody text={item.text} style={styles.bubbleText} />
           {/* 0.9.0 G — what the message carried: a thumbnail per image, a file card per file, and
               the caption line the bubble already draws. Tap-to-open needs an in-app viewer, which
               this release did not build — so the image is shown at full width instead of pretending
@@ -975,7 +978,7 @@ export default function ThreadScreen() {
         <View style={[styles.bubbleRow, styles.bubbleRowMine]}>
           <View style={[styles.bubble, styles.bubbleMine]}>
             <Text style={styles.bubbleRole}>{t.thread.you}</Text>
-            <Text style={styles.bubbleText}>{live.user}</Text>
+            <MessageBody text={live.user} style={styles.bubbleText} />
           </View>
         </View>
       ) : null}
@@ -1013,7 +1016,7 @@ export default function ThreadScreen() {
               <Text style={styles.bubbleRole}>{t.thread.agent}</Text>
               <Text style={styles.liveTag}>{t.thread.streamed}</Text>
             </View>
-            <Text style={styles.bubbleText}>{live.text || (streaming ? t.thread.thinking : '')}</Text>
+            <MessageBody text={live.text || (streaming ? t.thread.thinking : '')} streaming={streaming} style={styles.bubbleText} />
           </View>
         </View>
       ) : null}

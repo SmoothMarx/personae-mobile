@@ -1,0 +1,26 @@
+CLAIM  T2: a live turn does not re-parse the whole reply.
+        R7 makes the thread repaint on every delta; if the renderer re-parsed the turn each
+        time, the symptom on a phone would look like "the markdown broke", not "the parser
+        is running 40 times a second". This counts the parses.
+
+== the instrument (in the SCRATCH copy only): a counter on every cache MISS
+instrumented: every real parse (a cache MISS) increments globalThis.__parses
+
+== the run, with the cache doing its job
+       200 deltas over a 6-block reply -> real parses: 5
+       each of the 5 closed blocks parsed once = 5; the tail is never parsed while streaming
+
+== MUTATION — the cache READ removed (the lookup skipped, the store left in place)
+mutated: nothing reads the cache any more
+       200 deltas over a 6-block reply -> real parses: 1000
+       each of the 5 closed blocks parsed once = 5; the tail is never parsed while streaming
+
+== the SUITE's own view of the same claim, still on the mutated tree
+       The cache READ is still removed here, so the two T2 cases about the cache must be the
+       ones that fail BY NAME, and every other T2 case must stay green. That is named-case
+       capture: a mutation that reddened the whole suite would prove nothing about these tests.
+       ok 301 - 0.12.0 T2: a fenced block carries its normalised language, its body verbatim, and a copy button
+       ok 302 - 0.12.0 T2: the label strings are in BOTH language tables, and an unlabelled fence keeps its header
+       not ok 303 - 0.12.0 T2: a 200-delta stream parses each closed block once, and the tail is painted as text
+       not ok 304 - 0.12.0 T2: the block cache is bounded, and the same block parses once
+       310/312 passed, 2 failed

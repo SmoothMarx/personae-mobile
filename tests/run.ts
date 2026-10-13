@@ -11,10 +11,14 @@
  */
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { connect as netConnect } from 'node:net';
 import { join } from 'node:path';
+import remarkGfm from 'remark-gfm';
+import remarkParse from 'remark-parse';
+import { unified } from 'unified';
 import { createMockGateway } from '../mock/server.mjs';
 import { createMockDashboard, profileFixture, sessionFixture } from '../mock/dashboard.mjs';
 import { createDashboardClient, type GatewayEvent, type PreferenceDocument } from '../src/api/dashboard';
@@ -289,6 +293,11 @@ import {
   subPageRows,
   visiblePageIds,
 } from '../src/settingsPages';
+// 0.12.0 — the plan module, the vendored text module, and (for D5) the same parsers the plan module
+// uses, imported here directly so the parity check compares two INDEPENDENT paths rather than one.
+import { parseBlocks, plainText, type BlockNode, type InlineNode } from '../src/logic/markdown';
+import * as markdownModule from '../src/logic/markdown';
+import { flattenBlocks, languageLabel, looksMarkdown, stripMarkdown } from '../src/logic/markdown-text';
 import { PLUS_KEYS, profileFromPickerKey, profilePickerEntries, profileSlug, plusMenuEntries } from '../src/roster/plusMenu';
 import { connectionKind, connectionLabel, connectionRows, selectionAfterDelete } from '../src/gateway/connections';
 import {
@@ -325,6 +334,45 @@ async function inLanguage(language: 'en' | 'pt', fn: () => void | Promise<void>)
 }
 
 type TestFn = () => void | Promise<void>;
+
+/**
+ * 0.12.0 — the sha256 of `shared/markdown-text.js`, which is ALSO the sha256 of the block inlined
+ * into the desktop plugin's `desktop/plugin.js` between its two sentinels. Both harnesses carry this
+ * one constant and both fail on drift, which is what keeps the phone and the roster saying the same
+ * thing about `**bold**`. Regenerate it by running `scripts/vendor-markdown-text.sh` in the plugin
+ * repo, which prints it.
+ */
+const MARKDOWN_TEXT_SHA256 = 'd68979838c656d2d0e570495e815c088d3e7cd7f59ded38193a9f8f6cdc1a0da';
+/** The two files this release adds to the phone for Half D, and where the plugin repo lives. */
+const MARKDOWN_TEXT_JS = join(process.cwd(), 'src', 'logic', 'markdown-text.js');
+const MARKDOWN_TEXT_DTS = join(process.cwd(), 'src', 'logic', 'markdown-text.d.ts');
+const PLUGIN_TREE = process.env.PERSONAE_PLUGIN_DIR ?? join(homedir(), 'Projects', 'hermes-desktop-plugins', 'personae');
+
+/** The source of the ONE component this batch adds, for the shape assertions it deserves. */
+const messageBodySource = (): string => readFileSync(join(process.cwd(), 'src', 'MessageBody.tsx'), 'utf8');
+
+/** The plan of a source string, narrowed so a test can talk about its blocks. */
+function firstParagraph(src: string, streaming = false): InlineNode[] {
+  const block: BlockNode = parseBlocks(src, streaming)[0];
+  assert.equal(block.t, 'p', `expected a paragraph for ${JSON.stringify(src)}, got ${block.t}`);
+  return (block as { c: InlineNode[] }).c;
+}
+
+/**
+ * The plan of a one-node source, and only the first node.
+ *
+ * `ul`/`ol` are overridden by hand because the contract's list member declares `t: 'ul' | 'ol'` — a
+ * union — so `Extract<BlockNode, { t: 'ul' }>` resolves to `never`. Everything else narrows cleanly.
+ */
+type BlockKindMap = Omit<{ [K in BlockNode['t']]: Extract<BlockNode, { t: K }> }, 'ul' | 'ol'> & {
+  ul: Extract<BlockNode, { items: BlockNode[][] }>;
+  ol: Extract<BlockNode, { items: BlockNode[][] }>;
+};
+function firstBlock<K extends BlockNode['t']>(src: string, kind: K): BlockKindMap[K] {
+  const block: BlockNode = parseBlocks(src)[0];
+  assert.equal(block.t, kind, `expected ${kind} for ${JSON.stringify(src)}, got ${block.t}`);
+  return block as BlockKindMap[K];
+}
 const tests: { name: string; fn: TestFn }[] = [];
 let failures = 0;
 
@@ -7113,6 +7161,485 @@ async function main(): Promise<void> {
       !Object.keys(pkg.dependencies).some((name) => /keyboard-controller/.test(name)),
       'react-native-keyboard-controller (or any other) is NOT here',
     );
+  });
+
+  // ────────────────────────────────────────────── 0.12.0 — rich text and tables ──
+  // Half A is T1 (inline marks + block structure, the renderer and its wiring). Half B is T2 (a
+  // fenced code block, and the block cache that keeps a live turn smooth). Half C is T3 (a table as a
+  // horizontal-scroll grid). Half D is the vendored text module — the ONE authored file copied to
+  // both surfaces, whose hash both harnesses assert.
+  //
+  // The plan below is EXECUTED (it is the real parser on the real input). What a painted message
+  // LOOKS like on a phone is not verifiable on this host at all: no `adb`, no renderer for `.tsx`.
+  // So the renderer's structure is asserted as its source shape, exactly as every other screen in
+  // this suite is, and every pixel claim is a MANUAL line in the verifier (§14).
+
+  test('0.12.0 T1: the sealed bubble really renders structure, at the plan level', () => {
+    const inline = firstParagraph(
+      'Some **bold** and *em* and _em2_ and ~~gone~~ and `code` and [link](https://x.y/z).',
+    );
+    assert.deepEqual(
+      inline.map((node) => node.t),
+      ['text', 'strong', 'text', 'em', 'text', 'em', 'text', 'strike', 'text', 'code', 'text', 'link', 'text'],
+      'every inline mark is its own node, in reading order',
+    );
+    assert.deepEqual(inline[1], { t: 'strong', c: [{ t: 'text', v: 'bold' }] });
+    assert.deepEqual(inline[3], { t: 'em', c: [{ t: 'text', v: 'em' }] });
+    assert.deepEqual(inline[5], { t: 'em', c: [{ t: 'text', v: 'em2' }] }, 'underscore emphasis is emphasis');
+    assert.deepEqual(inline[7], { t: 'strike', c: [{ t: 'text', v: 'gone' }] }, '~~strike~~ needs remark-gfm');
+    assert.deepEqual(inline[9], { t: 'code', v: 'code' });
+    assert.deepEqual(inline[11], { t: 'link', href: 'https://x.y/z', c: [{ t: 'text', v: 'link' }] });
+    // An autolink is already a link node, and nothing here invented autolink detection.
+    assert.deepEqual(firstParagraph('see <https://auto.link> now')[1], {
+      t: 'link',
+      href: 'https://auto.link',
+      c: [{ t: 'text', v: 'https://auto.link' }],
+    });
+    // ATX headings, all six depths, with the depth kept for the size ramp.
+    const depths = ['#', '##', '###', '####', '#####', '######'].map(
+      (hashes, index) => firstBlock(`${hashes} H`, 'h').depth === index + 1,
+    );
+    assert.ok(depths.every(Boolean), 'each heading keeps its depth');
+  });
+
+  test('0.12.0 T1: the four text sites go through MessageBody, and the LIVE reasoning body keeps its clamp', () => {
+    const src = threadSource();
+    assert.match(src, /import \{ MessageBody \} from '\.\.\/\.\.\/src\/MessageBody'/, 'the renderer is imported');
+    // H1: the sealed bubble — the main site.
+    assert.match(src, /<MessageBody text=\{item\.text\} style=\{styles\.bubbleText\} \/>/);
+    // H1: the sealed reasoning body, inside the collapsible card.
+    assert.match(src, /\{open \? <MessageBody text=\{item\.text\} style=\{styles\.reasoningBody\} \/> : null\}/);
+    // H1: the live user bubble.
+    assert.match(src, /<MessageBody text=\{live\.user\} style=\{styles\.bubbleText\} \/>/);
+    // H1: the live agent bubble — with the placeholder and the empty-string case surviving VERBATIM,
+    // and `streaming` passed so the tail is painted as text (§7.3).
+    assert.match(
+      src,
+      /<MessageBody text=\{live\.text \|\| \(streaming \? t\.thread\.thinking : ''\)\} streaming=\{streaming\} style=\{styles\.bubbleText\} \/>/,
+    );
+    // The ONE site that must NOT change: the LIVE reasoning body. A View tree cannot be line-clamped,
+    // so rendering it through MessageBody would silently drop the clamp and let a reasoning stream
+    // push the thread off the screen. It stays a single Text, and this is the test that says so.
+    assert.match(src, /<Text style=\{styles\.reasoningBody\} numberOfLines=\{10\}>/);
+    assert.equal((src.match(/numberOfLines=\{10\}/g) ?? []).length, 1, 'exactly one clamped body on this screen');
+    assert.ok(!/<MessageBody[^>]*numberOfLines/.test(src), 'and no MessageBody claims a clamp it cannot honour');
+    // The role line and the timestamp are not message text and were not swallowed.
+    assert.match(src, /<Text style=\{styles\.bubbleRole\}>/);
+    assert.match(src, /<Text style=\{styles\.bubbleMeta\}>/);
+  });
+
+  test('0.12.0 T1: soft breaks become line breaks in prose, and a hard break is one too', () => {
+    // The desktop turns a single newline inside a paragraph into a line break (remark-soft-breaks.ts)
+    // so a reply reads as it was written. Mobile MUST match, or one message reads two ways.
+    assert.deepEqual(firstParagraph('a soft\nbreak here'), [
+      { t: 'text', v: 'a soft' },
+      { t: 'break' },
+      { t: 'text', v: 'break here' },
+    ]);
+    // ... and both markdown spellings of a HARD break are breaks too.
+    assert.deepEqual(
+      firstParagraph('two  \nspaces').map((node) => node.t),
+      ['text', 'break', 'text'],
+    );
+    assert.deepEqual(
+      firstParagraph('back\\\nslash').map((node) => node.t),
+      ['text', 'break', 'text'],
+    );
+    // A newline is never a PARAGRAPH break: that is a blank line, and it splits blocks instead.
+    assert.equal(parseBlocks('one\n\ntwo').length, 2);
+  });
+
+  test('0.12.0 T1: nested marks compose, and an unknown node degrades to its text', () => {
+    // The whole reason the plan is a TREE and not a regex pass: marks nest, and they nest per run.
+    assert.deepEqual(firstParagraph('**bold with `code` inside**'), [
+      {
+        t: 'strong',
+        c: [{ t: 'text', v: 'bold with ' }, { t: 'code', v: 'code' }, { t: 'text', v: ' inside' }],
+      },
+    ]);
+    assert.deepEqual(firstParagraph('*em with **strong** in it*'), [
+      { t: 'em', c: [{ t: 'text', v: 'em with ' }, { t: 'strong', c: [{ t: 'text', v: 'strong' }] }, { t: 'text', v: ' in it' }] },
+    ]);
+    // Raw HTML has no DOM to render into on a phone, so it is painted as its LITERAL SOURCE (§4.2) —
+    // a stated parity gap with core, not a bug.
+    const html = firstParagraph('text <b>raw</b> html');
+    assert.equal(html.map((node) => (node.t === 'text' ? node.v : '')).join(''), 'text <b>raw</b> html');
+    // An image is its alt text: no remote-image policy exists in this app, and inventing one here
+    // would have turned a formatting batch into a privacy review (§10.2.5).
+    assert.deepEqual(firstParagraph('an ![alt text](https://img/x.png) image')[1], { t: 'text', v: 'alt text' });
+    // A footnote reference degrades to its LITERAL source rather than to a crash, and its definition
+    // is not content. MEASURED consequence of per-block parsing, and worth stating: a reference and
+    // the definition it points at sit in different blocks (a blank line is a boundary), so the
+    // reference cannot resolve. Footnotes are out of scope for this batch (§10.2.5), and text is the
+    // honest fallback for a client that does not render them.
+    const footnote = parseBlocks('text[^1]\n\n[^1]: note');
+    assert.deepEqual(footnote, [{ t: 'p', c: [{ t: 'text', v: 'text[^1]' }] }]);
+    // A link definition is a target, not content.
+    assert.deepEqual(parseBlocks('[x]: https://a.b\n\ntext'), [{ t: 'p', c: [{ t: 'text', v: 'text' }] }]);
+  });
+
+  test('0.12.0 T1: lists, blockquotes, rules and one level of nesting are the blocks the plan carries', () => {
+    const list = firstBlock('- one\n- two\n  - nested\n\n3. third', 'ul');
+    assert.equal(list.items.length, 2);
+    assert.deepEqual(list.items[0], [{ t: 'p', c: [{ t: 'text', v: 'one' }] }]);
+    assert.deepEqual(list.items[1].map((child) => child.t), ['p', 'ul'], 'the nested list is INSIDE its item');
+    // An ordered list with a non-1 start keeps the number it was written with.
+    assert.equal(firstBlock('3. third', 'ol').start, 3);
+    assert.equal(firstBlock('1. first', 'ol').start, undefined, 'a list starting at 1 needs no start');
+    // A quote is a container: it holds paragraphs, lists, and (measured) tables.
+    const quote = firstBlock('> quoted\n>\n> - item', 'quote');
+    assert.deepEqual(quote.c.map((child) => child.t), ['p', 'ul']);
+    const quoteTable = firstBlock('> | a | b |\n> |---|---|\n> | 1 | 2 |', 'quote');
+    assert.deepEqual(quoteTable.c.map((child) => child.t), ['table'], 'a table survives inside a quote');
+    assert.deepEqual(parseBlocks('a\n\n---\n\nb').map((block) => block.t), ['p', 'hr', 'p']);
+    // A fence is ONE block even when its body contains a blank line: the splitter is fence-aware, and
+    // this is how that is observable through the plan (the boundary is blank lines ELSEWHERE).
+    assert.deepEqual(parseBlocks('```\nfirst\n\nsecond\n```'), [{ t: 'code', lang: '', v: 'first\n\nsecond' }]);
+    // The renderer draws each of these; the styles are the §5 contract.
+    const body = messageBodySource();
+    assert.match(body, /strong: \{ fontWeight: '700' \}/);
+    assert.match(body, /em: \{ fontStyle: 'italic' \}/);
+    assert.match(body, /strike: \{ textDecorationLine: 'line-through' \}/);
+    assert.match(body, /1: Math\.round\(BODY \* 1\.35\)/, 'the heading ramp is derived from the body size');
+    assert.match(body, /marker: \{ width: MARKER_WIDTH/, 'a fixed marker column: hanging indent, not a wrapped bullet');
+    assert.match(body, /borderLeftWidth: 3/, 'the blockquote rule');
+  });
+
+  test('0.12.0 T1: math stays exactly as typed, and the renderer adds no chrome to the bubble', () => {
+    // the user chose "math as typed" for this batch, and the reason is measured: every maintained route
+    // to a math NODE pulls katex through micromark-extension-math. `$x$` is therefore literal text.
+    assert.deepEqual(firstParagraph('the value $x$ and $$y$$ stay'), [
+      { t: 'text', v: 'the value $x$ and $$y$$ stay' },
+    ]);
+    const src = threadSource();
+    // §6.5 — nothing else changed about a bubble: no new chrome, no avatar, no timestamp move.
+    assert.ok(!/bubbleText: \{/.test(src.replace(/bubbleText: \{ color: colors\.text, fontSize: font\.body \}/, '')), 'the bubble text style is untouched');
+    assert.match(src, /bubbleText: \{ color: colors\.text, fontSize: font\.body \}/);
+    assert.match(src, /bubbleRow: \{ flexDirection: 'row' \}/);
+    assert.match(src, /bubble: \{ maxWidth: '86%'/);
+    // and the composer is not this batch's business
+    assert.match(src, /composerPlaceholder/);
+  });
+
+  test('0.12.0 T2: a fenced block carries its normalised language, its body verbatim, and a copy button', () => {
+    assert.deepEqual(parseBlocks('```js\nconst x = 1 | 2;\n```'), [
+      { t: 'code', lang: 'javascript', v: 'const x = 1 | 2;' },
+    ]);
+    // Known languages are normalised and lowercased; an unknown one is displayed AS TYPED.
+    assert.equal(firstBlock('```ts\nlet y = 1\n```', 'code').lang, 'typescript');
+    assert.equal(firstBlock('```py\nprint(1)\n```', 'code').lang, 'python');
+    assert.equal(firstBlock('```PYTHON\nprint(1)\n```', 'code').lang, 'PYTHON');
+    assert.equal(firstBlock('```rusty\nx\n```', 'code').lang, 'rusty');
+    // An UNLABELLED fence keeps its block (and therefore its header and copy button) with no language.
+    assert.deepEqual(parseBlocks('```\nplain\n```'), [{ t: 'code', lang: '', v: 'plain' }]);
+    // A tilde fence is a fence, and indented code is the same node to mdast.
+    assert.deepEqual(parseBlocks('~~~ts\nlet y = 1\n~~~'), [{ t: 'code', lang: 'typescript', v: 'let y = 1' }]);
+    assert.deepEqual(parseBlocks('    indented'), [{ t: 'code', lang: '', v: 'indented' }]);
+    // The renderer: monospace, no wrap, and the copy button copies the BODY.
+    const body = messageBodySource();
+    assert.match(body, /Platform\.select\(\{ ios: 'Menlo', android: 'monospace' \}\)/, 'monospace family');
+    assert.match(body, /Clipboard\.setStringAsync\(props\.value\)/, 'the copy button copies the fenced body');
+    assert.match(body, /accessibilityLabel=\{t\.thread\.copyCode\}/, 'and its label is not hard-coded English');
+    assert.match(body, /<ScrollView horizontal showsHorizontalScrollIndicator=\{false\}>/, 'a long line scrolls');
+    assert.match(body, /<Text style=\{styles\.codeText\} selectable>/, 'inside a Text with no numberOfLines, so it cannot wrap');
+    assert.ok(!/numberOfLines=/.test(body), 'nothing in the body is clamped');
+    assert.ok(
+      !/^import .*(shiki|highlight|prism)/im.test(body),
+      'code is MONOCHROME in this batch: no highlighter is imported anywhere near it',
+    );
+  });
+
+  test('0.12.0 T2: the label strings are in BOTH language tables, and an unlabelled fence keeps its header', async () => {
+    await inLanguage('en', () => {
+      assert.equal(t.thread.copyCode, 'Copy');
+      assert.equal(t.thread.copiedCode, 'Copied');
+    });
+    await inLanguage('pt', () => {
+      assert.equal(t.thread.copyCode, 'Copiar');
+      assert.equal(t.thread.copiedCode, 'Copiado');
+    });
+    const en = readFileSync(join(process.cwd(), 'src', 'i18n.ts'), 'utf8');
+    assert.equal((en.match(/copyCode:/g) ?? []).length, 2, 'one entry per table');
+    assert.equal((en.match(/copiedCode:/g) ?? []).length, 2);
+    // The header is drawn even with an empty label, so an unlabelled fence keeps its copy button.
+    const body = messageBodySource();
+    assert.match(body, /<Text style=\{styles\.codeLang\}>\{props\.lang\}<\/Text>/);
+    assert.match(body, /accessibilityRole="button"/);
+  });
+
+  test('0.12.0 T2: a 200-delta stream parses each closed block once, and the tail is painted as text', () => {
+    // Six blocks, the last one growing by a character per delta, 200 deltas: the shape of a live turn.
+    const closed = [
+      'Block **one** here.',
+      'Block two here.',
+      'Block three here.',
+      'Block four here.',
+      'Block five here.',
+    ].join('\n\n');
+    const tail = 'and now the agent is still typing **half a bo';
+    const first = parseBlocks(`${closed}\n\n${tail[0]}`, true);
+    // Six blocks: five closed, one tail.
+    assert.equal(first.length, 6, 'five closed blocks plus the in-flight tail');
+    const firstNodes = first.slice(0, 5);
+
+    for (let delta = 1; delta <= 200; delta += 1) {
+      const prefix = `${closed}\n\n${tail.slice(0, 1 + ((delta - 1) % tail.length))}`;
+      const plan = parseBlocks(prefix, true);
+      assert.equal(plan.length, 6, `delta ${delta} still has six blocks`);
+      // IDENTITY is the proof of "parsed once": a re-parse would hand back a fresh array and fresh
+      // nodes, and the cache hands back the very same objects it stored the first time.
+      plan.slice(0, 5).forEach((node, index) => {
+        assert.ok(Object.is(node, firstNodes[index]), `delta ${delta}: closed block ${index} was not re-parsed`);
+      });
+      // ... and the tail is the RAW text it still is: the marker it is halfway through is visible,
+      // which is correct for an in-flight turn and impossible in a sealed one (§7.3).
+      const last = plan[5];
+      assert.equal(last.t, 'p');
+      assert.equal((last as { c: InlineNode[] }).c[0].t, 'text', 'the tail is one text run, never an inline tree');
+    }
+    // A SEALED render of the same text parses normally — the difference is `streaming`, nothing else.
+    const sealed = parseBlocks(`${closed}\n\n**bold**`, false);
+    assert.deepEqual(sealed[5], { t: 'p', c: [{ t: 'strong', c: [{ t: 'text', v: 'bold' }] }] });
+    // The brief's own falsification for this rule: forced streaming, the marker shows literally.
+    const forced = parseBlocks(`${closed}\n\n**bold**`, true);
+    assert.deepEqual(forced[5], { t: 'p', c: [{ t: 'text', v: '**bold**' }] });
+  });
+
+  test('0.12.0 T2: the block cache is bounded, and the same block parses once', () => {
+    const once = parseBlocks('a cache probe paragraph');
+    assert.ok(
+      Object.is(parseBlocks('a cache probe paragraph')[0], once[0]),
+      'the same block comes back as the same object — it parsed once',
+    );
+    // Positive control for the eviction claim below: an unrelated block is NOT this object.
+    assert.ok(!Object.is(parseBlocks('a different paragraph')[0], once[0]));
+    for (let i = 0; i < 260; i += 1) parseBlocks(`filler block number ${i}`);
+    assert.ok(
+      !Object.is(parseBlocks('a cache probe paragraph')[0], once[0]),
+      'past the bound the oldest entry is gone: a 500-message thread cannot leak through this cache',
+    );
+  });
+
+  test('0.12.0 T3: a table is a horizontal-scroll grid, and only the table scrolls', () => {
+    const table = firstBlock('| a | b |\n|:--|--:|\n| 1 | 2 |\n| 3 | 4 |', 'table');
+    assert.deepEqual(table.align, ['l', 'r'], 'alignment comes from the delimiter row, per column');
+    assert.deepEqual(table.head, [
+      [{ t: 'text', v: 'a' }],
+      [{ t: 'text', v: 'b' }],
+    ]);
+    assert.equal(table.rows.length, 2);
+    assert.deepEqual(table.rows[0], [
+      [{ t: 'text', v: '1' }],
+      [{ t: 'text', v: '2' }],
+    ]);
+    // A centre-aligned column, and a table with no alignment row at all.
+    assert.deepEqual(firstBlock('| a | b | c |\n|:-:|--|--:|\n| 1 | 2 | 3 |', 'table').align, ['c', null, 'r']);
+    // The grid is the ONLY thing that scrolls sideways, and the thread gains no sideways scroller.
+    const body = messageBodySource();
+    assert.match(body, /<ScrollView horizontal showsHorizontalScrollIndicator>\s*<View style=\{styles\.table\}>/);
+    assert.equal(
+      (threadSource().match(/<ScrollView horizontal/g) ?? []).length,
+      1,
+      'the thread screen still has exactly its one pre-existing sideways scroller (the staging strip)',
+    );
+    assert.match(body, /TABLE_COL_WIDTH = 140/, 'over the 96dp floor');
+    assert.match(body, /rowIndex === 0 \? styles\.th : null/, 'the header row is bold');
+    assert.match(body, /textAlign: ALIGN\[align\[columnIndex\]/, 'alignment is applied per column');
+    assert.match(body, /trLine: \{ borderBottomWidth: 1/, 'row separators are 1dp in the border colour');
+  });
+
+  test('0.12.0 T3: a cell with a pipe inside stays inside its cell — the grid never re-splits', () => {
+    // MEASURED, and the briefs premise is the other way round: GFM splits an UNESCAPED pipe inside a
+    // code span, and its own spec says so (escape it as \| "including inside other inline spans").
+    // So the property that matters — and that this asserts — is that the GRID renders the cells the
+    // parser produced and never re-splits a cell's own text on a pipe.
+    const table = firstBlock('| h1 | h2 |\n|----|----|\n| a `b\\|c` d | e |', 'table');
+    assert.equal(table.head.length, 2, 'two columns, as the header says');
+    assert.equal(table.rows[0].length, 2, 'and the body row has two cells: the escaped pipe is CONTENT');
+    assert.deepEqual(table.rows[0][0], [
+      { t: 'text', v: 'a ' },
+      { t: 'code', v: 'b|c' },
+      { t: 'text', v: ' d' },
+    ]);
+    // The positive control for that: the same table written with an UNESCAPED pipe really does split,
+    // which is why the assertion above is about escaping and not about the grid being clever.
+    assert.equal(firstBlock('| h1 | h2 |\n|----|----|\n| a `b|c` d | e |', 'table').rows[0].length, 3);
+    // And the renderer never touches the text of a cell.
+    const body = messageBodySource();
+    assert.ok(!body.includes("split('|')"), 'the grid does not split on pipes');
+  });
+
+  test('0.12.0 T3: degenerate tables fall back to the code block and keep the source', () => {
+    const wide = `|${Array.from({ length: 40 }, (_v, i) => ` c${i} `).join('|')}|\n|${Array.from({ length: 40 }, () => '---').join('|')}|\n|${Array.from({ length: 40 }, (_v, i) => ` v${i} `).join('|')}|`;
+    const degenerate: [string, string][] = [
+      ['one column', '| h |\n|---|\n| v |'],
+      ['a delimiter row and nothing else', '| h |\n|---|'],
+      ['every cell empty', '|  |  |\n|---|---|\n|  |  |'],
+      ['forty columns', wide],
+    ];
+    for (const [name, src] of degenerate) {
+      const block = parseBlocks(src)[0];
+      assert.equal(block.t, 'code', `${name} falls back to the pre-block rather than a broken grid`);
+      assert.equal((block as { lang: string }).lang, '', `${name} falls back unlabelled`);
+      assert.ok((block as { v: string }).v.includes('|'), `${name} keeps its source text`);
+    }
+    // POSITIVE CONTROL, and the reason the four above mean anything: a table that is NOT degenerate
+    // is rendered as a grid. An absence probe with no control proves nothing.
+    for (const [name, src] of [
+      ['two columns, one body row', '| a | b |\n|---|---|\n| 1 | 2 |'],
+      ['twelve columns', `|${Array.from({ length: 12 }, (_v, i) => ` c${i} `).join('|')}|\n|${Array.from({ length: 12 }, () => '---').join('|')}|\n|${Array.from({ length: 12 }, (_v, i) => ` v${i} `).join('|')}|`],
+      ['a header and one empty row', '| a | b |\n|---|---|\n|  |  |'],
+    ] as [string, string][]) {
+      assert.equal(parseBlocks(src)[0].t, 'table', `${name} renders as a grid`);
+    }
+    // Never a link out, never a placeholder, never a truncation: the fallback IS the code renderer.
+    assert.ok(!/Table\b.*placeholder/i.test(messageBodySource()));
+  });
+
+  test('0.12.0 D1: the vendored markdown-text.js is the plugin copy, byte for byte', () => {
+    const vendored = readFileSync(MARKDOWN_TEXT_JS);
+    assert.equal(
+      createHash('sha256').update(vendored).digest('hex'),
+      MARKDOWN_TEXT_SHA256,
+      'the phone copy of the shared text module is the hash both harnesses assert',
+    );
+    // ... and the plugin's inlined copy is the same bytes, read from ITS side of the sentinels. This
+    // is the cross-check the plugin harness also performs, from the other end.
+    const pluginFile = join(PLUGIN_TREE, 'desktop', 'plugin.js');
+    let pluginSource: string | null = null;
+    try {
+      pluginSource = readFileSync(pluginFile, 'utf8');
+    } catch {
+      pluginSource = null;
+    }
+    if (pluginSource === null) {
+      assert.ok(true, `plugin tree not present at ${PLUGIN_TREE} — the plugin harness asserts this end`);
+    } else {
+      const beginAt = pluginSource.indexOf('// ── BEGIN vendored markdown-text.js');
+      const beginEol = pluginSource.indexOf('\n', beginAt) + 1;
+      const endAt = pluginSource.indexOf('// ── END vendored markdown-text.js');
+      assert.ok(beginAt > 0 && endAt > beginAt, 'the plugin still has its sentinel pair');
+      assert.equal(
+        createHash('sha256').update(pluginSource.slice(beginEol, endAt)).digest('hex'),
+        MARKDOWN_TEXT_SHA256,
+        'and the plugin inlines those bytes, unchanged',
+      );
+    }
+    // The hand-written declarations cover the whole surface, so the import cannot drift from the file.
+    const declaration = readFileSync(MARKDOWN_TEXT_DTS, 'utf8');
+    for (const name of [
+      'MARKDOWN_TEXT_VERSION',
+      'MATH_DELIMITERS',
+      'FENCE',
+      'languageLabel',
+      'looksMarkdown',
+      'stripMarkdown',
+      'flattenInline',
+      'flattenBlocks',
+    ]) {
+      assert.match(declaration, new RegExp(`export declare (const|function) ${name}`), `${name} is declared`);
+    }
+  });
+
+  test('0.12.0 D2: the text policy has ONE definition, and the plan module has no second stripper', () => {
+    const module = readFileSync(join(process.cwd(), 'src', 'logic', 'markdown.ts'), 'utf8');
+    assert.match(module, /from '\.\/markdown-text'/, 'the shared module is IMPORTED, not reimplemented');
+    assert.match(
+      module,
+      /export function plainText\(src: string\): string \{\s*return stripMarkdown\(src, 0\);/,
+      'and plainText IS the shared policy, applied',
+    );
+    // The public surface is exactly the contract: parseBlocks and plainText. Types do not exist at
+    // runtime, so this is the whole of it.
+    assert.deepEqual(
+      Object.keys(markdownModule).sort(),
+      ['parseBlocks', 'plainText'],
+      'the module exports the two functions the contract names, and nothing else',
+    );
+    // No marker-stripping regex lives in the plan module: the markers are the vendored module's job.
+    assert.ok(!/replace\(\/\\\*/.test(module), 'markdown.ts does not strip markers itself');
+    assert.ok(!/looksMarkdown/.test(module.replace(/from '\.\/markdown-text'/, '')), 'and does not re-gate');
+  });
+
+  test('0.12.0 D3: stripMarkdown takes the markers out, and leaves prose that only LOOKS marked alone', () => {
+    assert.equal(plainText('a **bold** word and `code` and *em*'), 'a bold word and code and em');
+    assert.equal(plainText('see [the docs](https://x.y/z) and ![alt](u)'), 'see the docs and alt');
+    assert.equal(plainText('# Title\n\n- one\n- two'), 'Title one two');
+    assert.equal(plainText('> quoted line'), 'quoted line');
+    assert.equal(plainText('a  ~~gone~~  b'), 'a gone b', 'and whitespace collapses to single spaces');
+    // The gate matters: prose that merely contains punctuation is returned alone, not mangled.
+    assert.equal(plainText('the snake_case_name is fine'), 'the snake_case_name is fine');
+    assert.equal(plainText('a | b without a table'), 'a | b without a table');
+    assert.equal(plainText('the total is 42 and 7.5 percent'), 'the total is 42 and 7.5 percent');
+    assert.equal(plainText('the value $x$ and $$y$$ stay'), 'the value $x$ and $$y$$ stay', 'math is not stripped');
+    assert.equal(plainText('text <b>raw</b> html'), 'text <b>raw</b> html', 'raw HTML is literal on BOTH surfaces');
+    assert.equal(plainText(''), '');
+    assert.equal(stripMarkdown(null, 0), '', 'a null body coerces rather than throwing');
+    assert.equal(languageLabel('JS'), 'javascript', 'the same language table serves both surfaces');
+    // The limit is honoured, and 0 means no limit.
+    assert.equal(stripMarkdown('x'.repeat(50), 10), 'x'.repeat(10));
+    assert.equal(stripMarkdown('x'.repeat(50), 0).length, 50);
+    assert.equal(looksMarkdown('**x**'), true);
+    assert.equal(looksMarkdown('plain sentence, with a comma'), false);
+  });
+
+  test('0.12.0 D4: a fenced preview drops its body to the language label and leaks no backticks', () => {
+    const stripped = plainText('before\n```js\nconst x = 1 | 2;\n```\nafter');
+    assert.ok(!stripped.includes('`'), 'no backticks survive into a preview');
+    assert.ok(!stripped.includes('const x'), 'and no code body does either');
+    assert.equal(stripped, 'before javascript after');
+    assert.equal(plainText('~~~python\nprint(1)\n~~~'), 'python');
+    assert.equal(plainText('```\nraw body\n```'), '', 'an unlabelled fence leaves nothing behind');
+    // A table in a preview is its cells, with the pipes (and the delimiter row) gone.
+    assert.equal(plainText('| a | b |\n|---|---|\n| 1 | 2 |'), 'a b 1 2');
+  });
+
+  test('0.12.0 D5: the same string strips byte-equal on both sides, and the mdast mirror agrees', async () => {
+    const samples = [
+      'a **bold** word and `code` and *em* end',
+      'see [the docs](https://x.y/z) here',
+      'before\n```js\nconst x = 1;\n```\nafter',
+      '| a | b |\n|---|---|\n| 1 | 2 |',
+      '# Title\n\n- one\n- two\n\n> quoted',
+      'Some **bold** and `code` and [link](https://x.y/z).\nA soft\nbreak.',
+      'text <b>raw</b> html',
+      'the snake_case_name is fine',
+      '',
+    ];
+    // (a) THE PARITY THAT MATTERS: the desktop plugin's own copy of the module, executed here from
+    // its bytes, against the phone's. Byte-equality of the files is D1; that the same input comes out
+    // the same from both is what "parity" means to a user, so it is measured and not inferred.
+    const pluginFile = join(PLUGIN_TREE, 'desktop', 'plugin.js');
+    let pluginModule: { stripMarkdown: (text: unknown, limit?: number) => string } | null = null;
+    try {
+      const pluginSource = readFileSync(pluginFile, 'utf8');
+      const beginEol = pluginSource.indexOf('\n', pluginSource.indexOf('// ── BEGIN vendored markdown-text.js')) + 1;
+      const endAt = pluginSource.indexOf('// ── END vendored markdown-text.js');
+      const bytes = pluginSource.slice(beginEol, endAt);
+      pluginModule = await import(`data:text/javascript;base64,${Buffer.from(bytes).toString('base64')}`);
+    } catch {
+      pluginModule = null;
+    }
+    if (pluginModule === null) {
+      assert.ok(true, `plugin tree not present at ${PLUGIN_TREE} — the plugin harness asserts this end`);
+    } else {
+      for (const sample of samples) {
+        assert.equal(
+          pluginModule.stripMarkdown(sample, 0),
+          plainText(sample),
+          `the plugin and the phone disagree about: ${JSON.stringify(sample)}`,
+        );
+      }
+    }
+    // (b) the mdast mirror and the regex stripper are two independent paths to the same policy.
+    const parser = unified().use(remarkParse).use(remarkGfm);
+    for (const sample of samples) {
+      assert.equal(
+        flattenBlocks(parser.parse(sample).children, {}),
+        plainText(sample),
+        `the mdast mirror disagrees with the stripper about: ${JSON.stringify(sample)}`,
+      );
+    }
   });
 
   // ─────────────────────────────────────────────────────── report ──

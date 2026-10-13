@@ -1,0 +1,29 @@
+CLAIM  T3: a table does not break the thread — and C is revertable ALONE.
+        (a) an escaped pipe stays inside its cell, (b) a 40-column table falls back rather
+        than rendering, (c) a table inside a blockquote, (d) the grid's scroller is the
+        table's and the thread's own scroll is untouched.
+
+== the plan, on the tree as it stands
+       (a) escaped pipe   : {"t":"table","align":[null,null],"head":[[{"t":"text","v":"h1"}],[{"t":"text","v":"h2"}]],"rows":[[[{"t":"text","v":"a "},{"t":"code","v":"b|c"},{"t":"text","v":" d"}],[{"t":"text","v":"e"}]]]}
+       (a) unescaped pipe : 3 cells in the body row (GFM really splits this one — measured, and the reason the assertion above is about ESCAPING and not about the grid being clever)
+       (b) 40 columns     : code lang="" source kept=true
+       (c) table in quote : "quote"
+       (d) a real grid    : {"t":"table","align":["l","r"],"head":[[{"t":"text","v":"a"}],[{"t":"text","v":"b"}]],"rows":[[[{"t":"text","v":"1"}],[{
+
+== the tree shape: which scroller scrolls, asserted as source
+       MessageBody's table scroller : 1
+       the thread's own sideways scrollers : 1 (the 0.9.0 staging strip, unchanged)
+
+== MUTATION — C reverted: ONE branch, every table through the code path
+mutated: isDegenerateTable() says yes to everything, so no table is ever a grid
+       not ok 305 - 0.12.0 T3: a table is a horizontal-scroll grid, and only the table scrolls
+       not ok 306 - 0.12.0 T3: a cell with a pipe inside stays inside its cell — the grid never re-splits
+       not ok 307 - 0.12.0 T3: degenerate tables fall back to the code block and keep the source
+       308/312 passed, 4 failed
+RED-TEAM: PASS — reverting Half C turned 3 named case(s) red
+       All three T3 cases are red, and the third one is the interesting one: the degenerate-
+       fallback case goes red because its POSITIVE CONTROL needs a real grid to exist somewhere,
+       and a reverted C has removed every grid. That is why the control was written in the same
+       case: without it, a C-revert would have left that case green and hiding the loss. The
+       revert itself is ONE branch in isDegenerateTable, and nothing else in the batch moved —
+       which is what C being revertable alone means.

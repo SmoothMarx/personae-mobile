@@ -2802,3 +2802,227 @@ re-enter. What to look at first on the device: a voice note that arrives (R1/R3)
 phone (R2), `/` in the message box (R5/R6), and a turn started on the desktop painting into the thread
 without leaving the screen (R7). R8 is the one to confirm by eye: tap the message box and watch whether
 the composer clears the keyboard.
+
+## 0.12.0 — rich text and tables, the way Telegram does it (2026-10-13)
+
+One release, one build, **four halves**. `GOAL-0.12.0.md` §0-§16 as written, `DESIGN-0.12.0.md` as
+locked, with the two departures the brief itself states (§12) and one more this run had to take (§T3
+below, measured). **Half A** is T1 — inline marks and block structure, plus the renderer and its four
+call sites. **Half B** is T2 — a fenced code block: monospace, no wrap, a language label, a copy button.
+**Half C** is T3 — a table as a horizontal-scroll grid, revertable alone. **Half D** is the *other
+repo*: one authored text module vendored by copy into both surfaces, and the desktop plugin's one-line
+previews finally stripped of their markers.
+
+| half | item | what landed |
+|---|---|---|
+| A | T1 | `src/logic/markdown.ts` (the plan: blocks + inline runs, from `unified 11` + `remark-parse 11` + `remark-gfm 4` — the desktop core's own parser family) and `src/MessageBody.tsx` (the painter), wired into the sealed bubble, the sealed reasoning body, the live user bubble and the live agent bubble |
+| B | T2 | the fenced-code renderer (monospace, `ScrollView horizontal`, a normalised language label, a copy button via the existing `expo-clipboard`) **and** the block cache that keeps a live turn smooth: 200 deltas over a 6-block reply parse each closed block once (measured 5, and 1000 with the cache read removed) |
+| C | T3 | the GFM table as a horizontal-scroll grid (fixed 140dp columns over the 96dp floor, per-column alignment, a bold header, 1dp separators), with degenerate input falling back to the code block and keeping its source |
+| D | D1-D5 | `shared/markdown-text.js` — zero imports, plain ESM, authored once, copied byte-for-byte to `src/logic/markdown-text.js` and inlined into `desktop/plugin.js` between two sentinels; sha256 `d6897983…` asserted in BOTH harnesses; the plugin's four preview call sites now go through it |
+
+The wire was not touched: no new RPC, no route, no socket, no polling (asserted by count in
+`logs/red-0.12.0-guards.txt`). This is a renderer plus a parse seam — the gateway sends markdown
+SOURCE, and React Native's nested `<Text>` is the same primitive Telegram uses internally.
+
+### Floors, measured
+
+| measure | value |
+|---|---|
+| app suite | **312/312 passed, 0 failed** (294 at 0.11.0 → 312 here: the eighteen 0.12.0 cases) |
+| typecheck | `npx tsc --noEmit` rc 0 |
+| plugin harness | **696/696 passed** (690 before this batch) + 136/136 class tokens + 36/36 codicons |
+| gradle | `BUILD SUCCESSFUL in 7m 58s` — `605 actionable tasks: 605 executed`, `logs/gradle-v0120b.log` (the artifact of record). A first assembly of this release exists in `logs/gradle-v0120.log` and is **history for a reason worth reading** — see the artifact note below |
+| the build lane | docker `personae-android:1`, `--env-file ~/.personae-android/build.env`, `:app:assembleRelease --no-daemon --console=plain --max-workers=4` |
+| verifier | `logs/verify-0.12.0.sh` → **206 PASS / 0 FAIL** + 8 MANUAL, `RESULT: PASS — 0.12.0 verified` |
+
+`android/` is generated, so the version bump required a prebuild — with the 0.4.0 lesson applied
+again: `sudo rm -rf android/{.kotlin,build,.gradle} android/app/{build,.cxx}`, `rm -rf android`,
+`npx expo prebuild -p android --no-install` (rc 0, `versionCode 15 / versionName "0.12.0"` in the
+regenerated project), then `bash scripts/patch-android-signing.sh` (which reports `patched` — prebuild
+restores the DEBUG signing config every time).
+
+### Every item's check FAILS before its change (the RED proofs)
+
+`bash logs/red-0.12.0.sh <item>` → `logs/red-0.12.0-<item>.txt`. Every mutation is applied to a
+**scratch copy** of the tree (`/tmp/red-0120-<item>`, a tar of the working tree with `node_modules`
+symlinked), never to the committed one; each file carries the claim, the command, the observed output
+and the mutation that turned it red.
+
+| item | claim | mutation | named cases that went red |
+|---|---|---|---|
+| T1 | the sealed bubble really renders STRUCTURE | `app/thread/[id].tsx` site 913 back to a bare `<Text>` | 1 (`T1: the four text sites go through MessageBody…`) — and only that one: a wiring defect is not a parser defect |
+| T1 | the streaming tail is RAW text | forced `streaming` on a sealed body | plan shows `{text: 'A sealed tail with **x** in it.'}` where the sealed plan shows a `strong` node — the marker is visible, and that is CORRECT |
+| T2 | a live turn does not re-parse the whole reply | the cache READ removed | parses 5 → **1000** for the same 200 deltas; and the two cache cases (`T2: a 200-delta stream…`, `T2: the block cache is bounded…`) are the ones that fail, by name |
+| T3 | a table does not break the thread, and C is revertable alone | `isDegenerateTable()` says yes to everything (ONE branch) | 3 T3 cases, including the fallback case — whose **positive control** requires a real grid to exist somewhere, which a reverted C has removed |
+| D | drift fails the build | one byte in each copy, in turn | mobile: `D1` (1 byte in `src/logic/markdown-text.js`); plugin: the inlined-hash check (1 byte inside the sentinels, 695/696). The vendoring script on the clean tree is a **no-op**: three equal hashes, both files' sha256 AND mtime unchanged |
+| D | parity is what a user means by parity | — | the same five sample strings through `stripMarkdown` on BOTH surfaces come out **byte-equal** |
+| guards | this batch changed nothing it did not name | — | the changed-file set compared **as a set** against §2 + §8.1: `EXTRA: none`, `MISSING: none`; 7 of the 26 `markdown` mentions in the 9,469-line plugin live outside the vendored block and every one is a comment or a call site; exactly 3 dependencies added; `numberOfLines={10}` still on the live reasoning body (count 1) |
+
+### T1 — inline marks and block structure
+
+The plan is a tree, not a regex pass, which is the whole reason `**bold with `code` inside**` works:
+`strong`/`em`/`strike`/`code`/`link`/`break` nodes nest per run. Blocks: paragraphs, ATX headings (all
+six depths, with the depth kept for the size ramp), unordered and ordered lists (a non-1 `start` is
+carried), one level of nesting visibly indented via a fixed marker column, blockquotes (which hold
+paragraphs, lists **and** tables — measured), rules, and fences (rendered by Half B).
+
+Three rules are part of the contract rather than taste, and each has a named case:
+
+* **Soft breaks become line breaks in prose.** Core turns a single newline inside a paragraph into a
+  line break (`remark-soft-breaks.ts`); the phone must match or the same message reads two ways. mdast
+  keeps that newline INSIDE a text node's value — measured, not assumed — so the walk splits on it.
+  Both hard-break spellings (two trailing spaces, a trailing backslash) are breaks too.
+* **Raw HTML is painted as its literal source.** RN has no DOM. This is a stated parity gap with core
+  (whose `markdown-html-depth.ts` policy has no phone equivalent), not a bug.
+* **Unknown nodes degrade to their text**, never to nothing and never to a crash: an image is its alt
+  text (no remote-image policy exists and inventing one here would have made a formatting release into
+  a privacy review), a footnote reference is its literal source, a definition is dropped as a target.
+
+**The one site that did NOT change** is the LIVE reasoning body (`app/thread/[id].tsx:970`): it carries
+`numberOfLines={10}` and a `View` tree cannot be line-clamped, so routing it through the renderer would
+have silently deleted the clamp and let a reasoning stream push the thread off the screen. There is a
+named test that says so, and the count of clamped bodies on the screen is asserted to be exactly one.
+
+### T2 — a fenced block, and the cache that keeps a live turn smooth
+
+The block is monospace (`Platform.select({ios: 'Menlo', android: 'monospace'})`), inside a
+`ScrollView horizontal` so a long line SCROLLS instead of wrapping or widening the bubble, with a header
+carrying the normalised language (`js` → `javascript`, `ts` → `typescript`, unknown displayed as typed,
+an unlabelled fence still showing the header and the copy button) and a copy button using the
+`expo-clipboard` that was already a dependency. Copy confirmation is ONE `setTimeout`, cleared on
+unmount — not a poll. **No syntax colouring**: code is monochrome (the user's pick), and the node is
+already `{t:'code', lang}`, so a later batch swaps one renderer and re-tokenizes nothing.
+
+The cache is mandatory, not an optimisation. Source is split on blank lines **fence-aware** (a blank
+line inside an open fence is content), each block is parsed INDIVIDUALLY against a bounded `Map`
+(200 entries, oldest evicted), and while `streaming` is true **the last block is not trusted** — a reply
+can be half a fence, half a table, a `**` with no partner — so it is painted as the raw text it still
+is. A live reply therefore shows `**` for a moment and a sealed one never does; that difference is
+correct and asserted, not "fixed". The cost is measured: **5 parses for 200 deltas** over a 6-block
+reply, and 1000 with the cache read removed. The proof of "parsed once" is object IDENTITY — a re-parse
+hands back fresh nodes — and the bound is proven the same way, from the other side: the same block
+comes back as the same object, and past the bound it does not.
+
+### T3 — a table as a horizontal-scroll grid
+
+Fixed **140dp** columns (over the §8.2 floor of 96), so a long cell WRAPS inside its column instead of
+widening the grid; per-column alignment from the delimiter row; a bold header row; 1dp separators in the
+border colour; the grid inside its own `ScrollView horizontal` and the thread's own scroll untouched —
+the screen still has exactly its one pre-existing sideways scroller (the 0.9.0 staging strip).
+
+**A premise of the brief is the other way round, and it was measured rather than argued.** §8.2/§13
+T3(a) say `| a `b|c` d |` "is two cells, and GFM's own parser handles it". GFM does not: an
+UNESCAPED pipe inside a code span splits the row (measured: `remark-gfm 4.0.1` gives 3 cells for
+`| a `b|c` d | e |`), and the spec's own example escapes it (`\|`) *"including inside other inline
+spans"*. So the property that matters — the one the brief is actually protecting — is what T3(a)
+asserts: the grid renders the cells the parser produced and **never re-splits a cell's own text on a
+pipe**, and an escaped pipe stays inside its cell (`{text:'a '},{code:'b|c'},{text:' d'}`). The
+unescaped case is asserted as the boundary, so the test cannot be read as a claim about GFM.
+
+Degenerate input falls back to the code-block path rather than to a broken grid: one column, a delimiter
+row and nothing else, every cell empty, more than twelve columns. The fallback KEEPS THE SOURCE (the
+plan module is the only place that holds it) and keeps it as an unlabelled pre-block. The positive
+control for that fallback lives in the SAME case as the fallback, which is why a C-revert reddens it:
+without the control, reverting C would have left it green and hiding the loss.
+
+### Half D — one authored file, two byte-identical copies, one asserted hash
+
+Why it cannot be one import: a desktop plugin is ONE plain-JavaScript ESM file with no build step that
+can resolve neither a sibling file nor an npm package, and the phone's copy must live in-root for Metro
+to bundle it. So `shared/markdown-text.js` is authored once and `scripts/vendor-markdown-text.sh` copies
+it to `src/logic/markdown-text.js` and rewrites the block between two sentinel lines in
+`desktop/plugin.js`, printing all three hashes and exiting non-zero if they disagree. It writes a file
+ONLY when its bytes are wrong, so re-running it on a clean tree is a genuine no-op — asserted by sha256
+**and mtime**. The sha256 (`d6897983…`) is a constant in both harnesses, so editing either copy without
+running the script turns at least one suite red. The failure this prevents is concrete: somebody
+rewriting `stripMarkdown` from scratch inside `plugin.js` six months from now because importing was
+impossible.
+
+The plugin side is four call sites, all preview-shaped — the roster row's second line, the activity
+toast (clipped at 140), the search snippet (stripped on the way IN, so a later consumer cannot show
+markers by forgetting a call) and `humanPreview()`, which keeps its own job (the injected-boilerplate
+refusal) and then strips markers under `sessionLabel`'s unchanged 96-character clip. The body-search
+matcher is deliberately LEFT ALONE with a comment: it matches the RAW preview, and stripping first would
+change which rows answer a query — a search-semantics change smuggled into a formatting batch is exactly
+what nobody could attribute later. No renderer, no transcript pane, no second markdown implementation:
+of the 26 `markdown` mentions in the 9,469-line file, 19 are inside the vendored block and the other 7
+are four call sites and their comments.
+
+### What could not be verified, and why
+
+* **Nothing was verified on a phone.** There is no `adb` on this host and no renderer for `app/*.tsx`,
+  so every rendering claim here is a SHAPE claim: the plan (executed), the renderer's source shape, and
+  the bundle's own bytes. Nine `MANUAL` lines in the verifier carry the device questions, and none of
+  them is written as PASS.
+* **Nine device-only items, printed MANUAL:** whether bold *looks* bold, italic italic and strike
+  struck; whether a long paragraph and a nested list read well at the bubble width; whether the code
+  block's horizontal scroll fights the thread's vertical scroll; whether the copy button is reachable
+  with a thumb and the clipboard really receives the body; whether a table's sideways drag works inside
+  the thread's vertical list; whether tapping a link opens the URL (the plan carries the `href` and the
+  handler is wired — the intent is the OS); and whether a live tail showing `**` for a moment reads as
+  working rather than broken.
+* **A sentence rendered on a phone is still not verifiable**: the shipped bundle is Hermes bytecode,
+  which stores anything needing UTF-16 as 2-byte characters, so every bundle probe is ASCII. The
+  batch's own markers (`monospace`, `javascript`, `Copiar`, `Copiado`) are ASCII and are asserted with a
+  positive control beside them; the two ABSENCE probes (no katex, no shiki) share that control, because
+  an empty grep is not a proof.
+* **`remark-math` is not here, and §12.1's departure stands on a measurement**: the only maintained
+  route to a math NODE is `remark-math 6.0.0` → `micromark-extension-math 3.1.0`, whose own declared
+  dependencies include **`katex ^0.16.0`** (npm metadata, read today) — a full typesetting engine
+  pulled in to produce a node this batch would paint as raw source anyway. `$x$` stays exactly as
+  typed, which is what the user chose, and the cost of reversing this later is one pipeline line.
+* **The iOS half is still config, not an exercised build** — no Mac, no EAS run. Nothing in this batch
+  changes the iOS surface beyond the renderer being shared React Native code.
+
+### What was found during the run, and is flagged rather than fixed
+
+1. **The npm install that added the three parser packages pruned 19 peer-only packages** —
+   `react-native-reanimated`, `react-native-worklets`, `react-native-gesture-handler`, `react-dom`,
+   `scheduler`, `@react-native/babel-preset` and 13 more, all present only as *satisfied peers* of
+   `expo-router` / `expo-modules-core` / `react-native-drawer-layout` because an earlier plain
+   `npm install` had pulled them in. npm 11 with `--legacy-peer-deps` will not install them (and
+   `npm ci` will not either — measured), so the first assembly of this release came out **13.2 MB
+   smaller**. Nothing in the JS imports any of them (0 occurrences in the 0.11.0 bundle too), but the
+   native libraries they autolink were in 0.11.0's artifact, and an unexplained 13 MB delta that
+   nobody can attribute is worse than a slow rebuild. The tree was restored explicitly
+   (`npm install --no-save --legacy-peer-deps` at the versions the 0.11.0 lockfile pins) and the
+   project rebuilt: **605 tasks / 605 executed**, the same task shape as 0.11.0, and the artifact is
+   now +304,040 bytes over 0.11.0 — the honest size of this batch's code. `DECISION-REPORT.md` §7
+   carries the measurement. **A future batch that runs `npm install` on this repo will hit the same
+   prune**; the 19 specs are recorded there.
+2. **The legacy state-plugin mount is still pinned by this app** (§10.2.4 of the brief): the bundle
+   still carries `/api/plugins/messenger/state` and `/api/plugins/messenger/search`, and the 795-byte
+   shim at `~/.hermes/plugins/messenger/` exists only because of those two strings. Retiring them and
+   deleting the shim is real, small, and deliberately **not this batch** — a phone that cannot reach
+   its state plugin is a failure nobody could attribute between a markdown rewrite and a path rename.
+   It deserves its own micro-batch.
+3. **`server/install.sh --check` still reports five `messenger` entries of drift and one missing file**,
+   exactly as 0.11.0 found and flagged. None of it is this release's (the changed-file set is asserted
+   in `logs/red-0.12.0-guards.txt` and contains no `server/` file), and the verifier prints it rather
+   than swallowing it. **the user should know something outside this project keeps rewriting
+   `~/.hermes/plugins/messenger/`.**
+
+### The artifact, and the verifier that judged it
+
+| thing | 0.11.0 | 0.12.0 |
+|---|---|---|
+| apk | `dist/personae-0.11.0.apk` | **`dist/personae-0.12.0.apk`** (`dist/` is git-ignored; these numbers are the record) |
+| bytes | 130737973 | **131042013** (+304040 over 0.11.0 — the batch's own code) |
+| sha256 | `e98bbbfc1b778480acd16fb93d57144a70a62479b968921053516b7ce5947ea8` | **`e2168904bb1f4f46150f6eafa34ba730fb8fdb6715fbc545628e0bcc55a01982`** |
+| apk summary | `com.personae.mobile / 14 / 0.11.0` | **`com.personae.mobile / 15 / 0.12.0`** |
+| min-sdk / target-sdk | 24 / 36 | 24 / 36 |
+| signer | `bd40e005…` (DN `CN=Personae Mobile`) | **the same `bd40e005…`** → it installs straight over 0.11.0 |
+| verifier | 166 PASS / 0 FAIL | **206 PASS / 0 FAIL** + 8 MANUAL (including `scripts/verify-secrets.sh` and the in-bundle bearer count, both 0) |
+| host/credential literals | 0 | **0** (the same five probes) |
+| live-bearer occurrences in the bundle | 0 | **0** |
+
+No byte count is pinned in the verifier (a feature release legitimately changes it); it is recorded.
+The tree was built **twice** and the second build is the artifact — the first one is kept in
+`logs/gradle-v0120.log` as the history of the peer-prune above.
+
+Install: put `dist/personae-0.12.0.apk` on the phone and tap it. Same release key, `versionCode` up, so
+it upgrades 0.11.0 in place — no uninstall, nothing to re-enter. What to look at first: a reply that
+arrived as markdown (T1 — bold, a list, a quote, a heading), a long code fence (T2 — does it scroll, does
+the copy button work), and a wide table (T3 — does the table scroll sideways while the thread stays
+still). The one to confirm by eye is the middle one: scroll the thread with a code block in view and
+check the two scrollers do not fight.

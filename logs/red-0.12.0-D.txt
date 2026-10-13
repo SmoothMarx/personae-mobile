@@ -1,0 +1,43 @@
+CLAIM  Half D: drift fails the build — one authored file, two copies, one asserted hash.
+
+== (a) mobile drift: ONE byte changed in the phone's copy
+mutated: exactly one byte in src/logic/markdown-text.js (the version string)
+       not ok 308 - 0.12.0 D1: the vendored markdown-text.js is the plugin copy, byte for byte
+       ok 309 - 0.12.0 D2: the text policy has ONE definition, and the plan module has no second stripper
+       ok 310 - 0.12.0 D3: stripMarkdown takes the markers out, and leaves prose that only LOOKS marked alone
+       ok 311 - 0.12.0 D4: a fenced preview drops its body to the language label and leaks no backticks
+       ok 312 - 0.12.0 D5: the same string strips byte-equal on both sides, and the mdast mirror agrees
+       not ok 308 - 0.12.0 D1: the vendored markdown-text.js is the plugin copy, byte for byte
+         the phone copy of the shared text module is the hash both harnesses assert
+         + actual - expected
+         
+RED-TEAM: PASS — one byte of mobile drift turned 1 named case(s) red
+
+== (b) plugin drift: ONE byte inside the block inlined into desktop/plugin.js
+mutated: one byte inside the inlined block (a scratch copy of the plugin tree)
+       FAIL  0.12.0 D1: the block inlined between the sentinels IS shared/markdown-text.js
+       PASS  0.12.0 D1: and the sentinel comment carries that same hash
+       PASS  0.12.0 D1: the phone holds the same bytes as this plugin
+       PASS  0.12.0 D3: a **bold** preview renders as bold
+       PASS  0.12.0 D4: a fenced preview leaks no backticks
+       PASS  0.12.0 D5: the roster row, the toast, the snippet and the title all go through it
+       695/696 passed
+RED-TEAM: PASS — one byte of plugin drift turned 1 named case(s) red
+
+== (c) the vendoring script on the CLEAN tree is a no-op, and its three hashes agree
+       canonical  d68979838c656d2d0e570495e815c088d3e7cd7f59ded38193a9f8f6cdc1a0da  ~/Projects/hermes-desktop-plugins/personae/shared/markdown-text.js
+       mobile     d68979838c656d2d0e570495e815c088d3e7cd7f59ded38193a9f8f6cdc1a0da  ~/Projects/personae-mobile/src/logic/markdown-text.js  (unchanged)
+       inlined    d68979838c656d2d0e570495e815c088d3e7cd7f59ded38193a9f8f6cdc1a0da  ~/Projects/hermes-desktop-plugins/personae/desktop/plugin.js  (unchanged)
+       vendor-markdown-text: one file, two copies, three equal hashes
+       mobile  file sha256 unchanged : yes
+       plugin  file sha256 unchanged : yes
+       mobile  mtime unchanged       : yes
+       plugin  mtime unchanged       : yes
+
+== (d) the same string, through stripMarkdown on BOTH sides, byte-equal
+       byte-equal on both sides: "a **bold** word and `code` and *em" -> "a bold word and code and em end"
+       byte-equal on both sides: "before\n```js\nconst x = 1;\n```\nafte" -> "before javascript after"
+       byte-equal on both sides: "| a | b |\n|---|---|\n| 1 | 2 |" -> "a b 1 2"
+       byte-equal on both sides: "# Title\n\n- one\n- two\n\n> quoted" -> "Title one two quoted"
+       byte-equal on both sides: "the snake_case_name is fine" -> "the snake_case_name is fine"
+       PARITY: every sample is byte-equal on both surfaces

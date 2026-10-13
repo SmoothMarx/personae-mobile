@@ -1,0 +1,47 @@
+CLAIM  T1: the sealed bubble really renders structure — the wiring, not only the parser.
+        A plan that is right and a call site that still paints raw text is the whole failure
+        mode this half exists to prevent, and only a mutation of the CALL SITE can show it.
+
+== the tree before the mutation
+ M app.json
+ M app/thread/[id].tsx
+ M package-lock.json
+ M package.json
+ M src/i18n.ts
+scratch: /tmp/red-0120-T1 (node_modules symlinked, everything else a copy)
+
+== control run — the unmutated scratch tree
+named 0.12.0 cases failing before the mutation: 0
+       312/312 passed, 0 failed
+
+== MUTATION — app/thread/[id].tsx, the sealed bubble body, back to a bare Text
+mutated: the sealed bubble no longer goes through MessageBody
+       ok 295 - 0.12.0 T1: the sealed bubble really renders structure, at the plan level
+       not ok 296 - 0.12.0 T1: the four text sites go through MessageBody, and the LIVE reasoning body keeps its clamp
+       ok 297 - 0.12.0 T1: soft breaks become line breaks in prose, and a hard break is one too
+       ok 298 - 0.12.0 T1: nested marks compose, and an unknown node degrades to its text
+       ok 299 - 0.12.0 T1: lists, blockquotes, rules and one level of nesting are the blocks the plan carries
+       ok 300 - 0.12.0 T1: math stays exactly as typed, and the renderer adds no chrome to the bubble
+       ok 301 - 0.12.0 T2: a fenced block carries its normalised language, its body verbatim, and a copy button
+       ok 302 - 0.12.0 T2: the label strings are in BOTH language tables, and an unlabelled fence keeps its header
+       ok 303 - 0.12.0 T2: a 200-delta stream parses each closed block once, and the tail is painted as text
+       ok 304 - 0.12.0 T2: the block cache is bounded, and the same block parses once
+       ok 305 - 0.12.0 T3: a table is a horizontal-scroll grid, and only the table scrolls
+       ok 306 - 0.12.0 T3: a cell with a pipe inside stays inside its cell — the grid never re-splits
+       ok 307 - 0.12.0 T3: degenerate tables fall back to the code block and keep the source
+       ok 308 - 0.12.0 D1: the vendored markdown-text.js is the plugin copy, byte for byte
+       ok 309 - 0.12.0 D2: the text policy has ONE definition, and the plan module has no second stripper
+       ok 310 - 0.12.0 D3: stripMarkdown takes the markers out, and leaves prose that only LOOKS marked alone
+       ok 311 - 0.12.0 D4: a fenced preview drops its body to the language label and leaks no backticks
+       ok 312 - 0.12.0 D5: the same string strips byte-equal on both sides, and the mdast mirror agrees
+       311/312 passed, 1 failed
+       not ok 296 - 0.12.0 T1: the four text sites go through MessageBody, and the LIVE reasoning body keeps its clamp
+         The input did not match the regular expression /<MessageBody text=\{item\.text\} style=\{styles\.bubbleText\} \/>/. Input:
+         
+         '/**\n' +
+RED-TEAM: PASS — unwiring the sealed bubble turned 1 named case(s) red
+
+== the streaming-tail claim, on the same scratch tree (plan level)
+       sealed  : {"t":"p","c":[{"t":"text","v":"A sealed tail with "},{"t":"strong","c":[{"t":"text","v":"x"}]},{"t":"text","v":" in it."}]}
+       streamed: {"t":"p","c":[{"t":"text","v":"A sealed tail with **x** in it."}]}
+       the tail shows the marker literally while streaming: true

@@ -1,0 +1,75 @@
+CLAIM  the scope guards: this batch changed nothing it did not name, and grew no second
+        implementation, no new RPC/route/socket, exactly three dependencies, and the LIVE
+        reasoning body still carries its clamp.
+
+== the diff, by file
+        M app.json
+        M app/thread/[id].tsx
+        M package-lock.json
+        M package.json
+        M src/i18n.ts
+        M tests/run.ts
+       ?? DECISION-REPORT.md
+       ?? DESIGN-0.12.0.md
+       ?? GOAL-0.10.0.md
+       ?? GOAL-0.10.1.md
+       ?? GOAL-0.11.0.md
+       ?? GOAL-0.12.0.md
+       ?? GOAL-0.6.0-CONTINUE-2.md
+       ?? GOAL-0.6.0-CONTINUE-3.md
+       ?? GOAL-0.6.0-CONTINUE.md
+       ?? GOAL-0.6.0.md
+       ?? GOAL-0.7.0-CONTINUE.md
+       ?? GOAL-0.7.0.md
+       ?? GOAL-0.8.0.md
+       ?? GOAL-0.9.0.md
+       ?? GOAL-0.9.1.md
+       ?? PLAN-0.7.0.md
+       ?? RESUME-0.9.0.md
+       ?? SCOPE-0.9.0.md
+       ?? brand/
+       ?? src/MessageBody.tsx
+       ?? src/logic/markdown-text.d.ts
+       ?? src/logic/markdown-text.js
+       ?? src/logic/markdown.ts
+       ---
+        app.json            |    4 +-
+        app/thread/[id].tsx |   11 +-
+        package-lock.json   | 1578 ++++++++++++++++++++++++++++++++++++++-------------
+        package.json        |    7 +-
+        src/i18n.ts         |    9 +
+        tests/run.ts        |  527 +++++++++++++++++
+        6 files changed, 1724 insertions(+), 412 deletions(-)
+
+== the changed-file set, compared as a SET (a keyword grep cannot answer this)
+       expected (from §2 + §8.1): app.json app/thread/[id].tsx package-lock.json package.json src/MessageBody.tsx src/i18n.ts src/logic/markdown-text.d.ts src/logic/markdown-text.js src/logic/markdown.ts tests/run.ts
+       actually changed/added   : app.json app/thread/[id].tsx package-lock.json package.json src/MessageBody.tsx src/i18n.ts src/logic/markdown-text.d.ts src/logic/markdown-text.js src/logic/markdown.ts tests/run.ts
+       EXTRA (not authorised)   : none
+       MISSING (not touched)    : none
+       SET MATCH — nothing outside the brief's own file list was touched
+
+== 'markdown' inside the 9,469-line plugin: ONE implementation, or several?
+       inside the vendored block (lines 138-407): 19
+       OUTSIDE it: 7 — and every one of them must be a comment or a call site:
+       2594: // Markdown markers are OUT of the roster's second line (0.12.0): the row shows a message the way
+       2595: // a reader reads it, not the way its author typed it. `stripMarkdown` is the vendored shared
+       2597: preview: last ? stripMarkdown(String(last.preview || last.title || ''), 0) : '',
+       2641: message: stripMarkdown(row.preview, 140) || 'Open the session to see it.',
+       2931: const snippet = stripMarkdown(String(row?.snippet || '').replace(/>>>|<<</g, ''), 0)
+       5034: *  then strips the markdown markers, so the SAME policy decides what a title-less
+       5046: return PREVIEW_BOILERPLATE.some(pattern => pattern.test(text)) ? '' : stripMarkdown(text, 0)
+
+== no new RPC, route, socket or timer in anything this batch added
+       (the rendering half: markdown.ts, markdown-text.js, MessageBody.tsx)
+       none
+
+== the dependency budget: exactly three, and every declined renderer absent
+       added over the 0.11.0 tip: remark-gfm, remark-parse, unified = 3
+       declined and absent: marked, react-native-markdown-display, react-native-syntax-highlighter, shiki, katex, remark-math, react-native-webview
+
+== the ONE site that must NOT have changed: the live reasoning body
+       970:          <Text style={styles.reasoningBody} numberOfLines={10}>
+       count: 1
+
+== and the tree is clean at the end (no mutation touched it)
+       untracked-or-modified entries: 29

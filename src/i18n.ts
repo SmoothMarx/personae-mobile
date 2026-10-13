@@ -277,6 +277,12 @@ const en = {
     stopped: 'Reply stopped. The text received so far was kept.',
     fellBack: 'Live mode failed; the reply was requested again in one piece.',
     truncated: (n: number) => `(+${n} characters)`,
+    // ── 0.12.0: the fenced code block's copy button (Half B). EN + PT, because `thread` is one of
+    // the namespaces that IS translated — the EN-only rule covers `settings`, where the type is
+    // narrowed to allow it. A hard-coded English label would be the one string on this screen that
+    // ignores the reading language.
+    copyCode: 'Copy',
+    copiedCode: 'Copied',
   },
 
   plus: {
@@ -1119,6 +1125,9 @@ const pt: PtStrings = {
     stopped: 'Resposta parada. O texto recebido ficou guardado.',
     fellBack: 'O modo em direto falhou; a resposta foi pedida novamente em bloco.',
     truncated: (n: number) => `(+${n} caracteres)`,
+    // ── 0.12.0: o botão de copiar do bloco de código (Metade B) ──
+    copyCode: 'Copiar',
+    copiedCode: 'Copiado',
   },
 
   plus: {
