@@ -386,6 +386,28 @@ const en = {
     // dropdown adds of its own: every other role keeps its `roleLabel()` name (src/routes.ts).
     gwKindLocal: 'Local',
     gwKindRemote: 'Remote',
+    // The page plan (src/gateway/plan.ts). `link` and `advanced` are NOT here: they already had copy
+    // of their own before this batch (`t.connectivity.*`, and the advanced page's own row).
+    gwConnectionsTitle: 'Connections',
+    gwConnectionsHelp: 'Every address this phone can reach the gateway on, in the order it tries them.',
+    gwStatusTitle: 'Connection status',
+    gwStatusHelp: 'What this phone knows about the connection you picked above.',
+    gwPickOne: 'Pick a connection above to see its status.',
+    gwKindsTitle: 'Preferred connection kind',
+    gwKindsHelp: 'Which kind to prefer when both answer. Automatic always follows the order above.',
+    gwWizardButton: 'Connection Wizard',
+    gwWizardHelp: 'Set up a connection, local or remote, step by step.',
+    gwFieldOrigin: 'Address',
+    gwFieldRole: 'Kind',
+    gwFieldSecurity: 'Encryption',
+    gwFieldSurface: 'Interface',
+    gwFieldServer: 'Server',
+    gwFieldDevice: 'This phone',
+    gwFieldLastSeen: 'Last seen',
+    gwUnknown: 'Not known yet',
+    gwNone: 'None',
+    gwNoDevice: 'Not paired',
+    gwNever: 'Never',
   },
 
   routes: {
@@ -714,6 +736,26 @@ export const EN_ONLY_SETTINGS_KEYS = [
   // `PtStrings` below) — a new top-level group would have to be translated to compile.
   'gwKindLocal',
   'gwKindRemote',
+  'gwConnectionsTitle',
+  'gwConnectionsHelp',
+  'gwStatusTitle',
+  'gwStatusHelp',
+  'gwPickOne',
+  'gwKindsTitle',
+  'gwKindsHelp',
+  'gwWizardButton',
+  'gwWizardHelp',
+  'gwFieldOrigin',
+  'gwFieldRole',
+  'gwFieldSecurity',
+  'gwFieldSurface',
+  'gwFieldServer',
+  'gwFieldDevice',
+  'gwFieldLastSeen',
+  'gwUnknown',
+  'gwNone',
+  'gwNoDevice',
+  'gwNever',
 ] as const;
 
 type EnOnlySettingsKey = (typeof EN_ONLY_SETTINGS_KEYS)[number];

@@ -43,7 +43,7 @@ import {
   transportSecurityNote,
   type RouteCandidate,
 } from '../src/routes';
-import { checkBaseUrl, DEFAULT_NOTIFY, DEFAULT_SESSION_TYPES, DEFAULT_SETTINGS, healSurface, normalizeNotify, normalizeSessionTypes, splitProfiles, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
+import { checkBaseUrl, DEFAULT_NOTIFY, DEFAULT_SESSION_TYPES, DEFAULT_SETTINGS, healSurface, normalizeNotify, normalizeSessionTypes, splitProfiles, surfaceLabel, profilePrefix, surfaceForUrl, type Settings } from '../src/settings';
 import { loadSettings, saveSettings, loadLastSeen, saveLastSeen } from '../src/settingsStore';
 import { __resetStoreProbe } from '../src/storage';
 import { candidateAddresses, dashboardAddressFor, pairPageUrl, parseConnectLink, settingsAfterPairing, PairingError, probeService, redeemPairing, REDEEM_PATH } from '../src/pairing';
@@ -277,6 +277,15 @@ import {
 } from '../src/settingsPages';
 import { PLUS_KEYS, profileFromPickerKey, profilePickerEntries, profileSlug, plusMenuEntries } from '../src/roster/plusMenu';
 import { connectionKind, connectionLabel, connectionRows } from '../src/gateway/connections';
+import {
+  STATUS_FIELD_IDS,
+  gatewaySectionIds,
+  gatewaySections,
+  pillOptions,
+  statusFields,
+  wizardButtonAction,
+} from '../src/gateway/plan';
+import { parseGatewayStatus, readGatewayStatus, statusUrl } from '../src/gateway/status';
 
 // Most assertions below were written against the Portuguese copy, so the suite runs in PT
 // explicitly. The language tests switch on purpose and always restore 'pt' afterwards.
@@ -5405,6 +5414,96 @@ async function main(): Promise<void> {
     assert.equal(legacyRows[0].kind, 'Local');
       assert.equal(connectionRows({ ...DEFAULT_SETTINGS, baseUrl: '', routes: [] } as Settings).length, 0, 'nothing configured is zero rows, not a fabricated one');
     });
+  });
+
+
+  test('0.10.0 S1: the gateway page is a plan — connections, status, pills, wizard, Advanced last', async () => {
+    await inLanguage('en', () => {
+      // (a) the ORDER, top to bottom: the user's §3 (status stays, and moves up) and §4.
+      assert.deepEqual(gatewaySectionIds(), ['connections', 'status', 'pills', 'wizard', 'link', 'advanced']);
+      const at = (id: string) => (gatewaySectionIds() as string[]).indexOf(id);
+      assert.ok(at('connections') < at('status'), 'the dropdown is first');
+      assert.ok(at('status') < at('pills'), 'the status panel sits above the pills');
+      assert.ok(at('pills') < at('wizard'), 'the pills sit above the wizard button');
+      assert.ok(at('wizard') < at('advanced'), 'the wizard button sits above Advanced');
+      assert.equal(gatewaySectionIds()[gatewaySectionIds().length - 1], 'advanced', 'Advanced is LAST (his §4)');
+      for (const section of gatewaySections()) {
+        if (section.id === 'link' || section.id === 'advanced') {
+          assert.equal(section.titleKey, null, `${section.id} keeps the copy it already had`);
+          continue;
+        }
+        assert.ok(section.titleKey && t.settings[section.titleKey].trim(), `${section.id} has a heading`);
+        assert.ok(section.helpKey && t.settings[section.helpKey].trim(), `${section.id} explains itself`);
+      }
+
+      // (b) the status fields answer the SELECTED row — never the one the engine is using.
+      const active = { role: 'lan', priority: 0, url: 'http://10.0.0.15:9119', insecure: true };
+      const selected = { role: 'tailscale', priority: 1, url: 'http://100.64.0.2:9119', insecure: true };
+      const fields = statusFields({
+        route: selected,
+        surface: 'dashboard',
+        server: { version: '0.21.5', gatewayState: 'ready' },
+        device: { label: 'Pixel', lastSeenMs: 1_700_000_000_000 },
+        now: 1_700_000_120_000,
+      });
+      assert.deepEqual(fields.map((field) => field.id), [...STATUS_FIELD_IDS], 'every field, in order');
+      const byId = Object.fromEntries(fields.map((field) => [field.id, field.value]));
+      assert.equal(byId.origin, selected.url);
+      assert.notEqual(byId.origin, active.url, 'the panel is about the row the user picked');
+      assert.equal(byId.role, 'Remote');
+      assert.equal(byId.security, transportSecurityNote(selected), 'the transport sentence travels with the row');
+      assert.equal(byId.surface, surfaceLabel('dashboard'));
+      assert.equal(byId.server, '0.21.5 · ready');
+      assert.equal(byId.device, 'Pixel');
+      assert.equal(byId.lastSeen, formatAge(1_700_000_000_000, 1_700_000_120_000));
+      // nothing selected, nothing known: the panel SAYS so rather than inventing a value
+      const empty = Object.fromEntries(
+        statusFields({ route: null, surface: 'dashboard', server: null, device: { label: '', lastSeenMs: null } })
+          .map((field) => [field.id, field.value]),
+      );
+      assert.equal(empty.origin, t.settings.gwNone);
+      assert.equal(empty.role, t.settings.gwNone);
+      assert.equal(empty.server, t.settings.gwUnknown);
+      assert.equal(empty.device, t.settings.gwNoDevice);
+      assert.equal(empty.lastSeen, t.settings.gwNever);
+      // a device that is paired but has never been seen on THIS route is not "seen just now"
+      assert.equal(
+        statusFields({ route: selected, surface: 'dashboard', server: null, device: { label: 'Pixel', lastSeenMs: null } })
+          .find((field) => field.id === 'lastSeen')!.value,
+        t.settings.gwNever,
+      );
+
+      // the /api/status read: the documented shape or null — never a fabricated version
+      assert.equal(statusUrl('http://box.test:9119/'), 'http://box.test:9119/api/status');
+      assert.deepEqual(parseGatewayStatus({ version: '0.21.5', gateway_state: 'ready' }), { version: '0.21.5', gatewayState: 'ready' });
+      assert.deepEqual(parseGatewayStatus({ version: '0.21.5' }), { version: '0.21.5', gatewayState: '' }, 'a field the gateway does not send is empty, not invented');
+      assert.equal(parseGatewayStatus({ gateway_state: 'ready' })?.gatewayState, 'ready');
+      assert.equal(parseGatewayStatus({ ok: true, auth_required: true }), null, 'a health body is not a status body');
+      assert.equal(parseGatewayStatus('nope'), null);
+      assert.equal(parseGatewayStatus(null), null);
+
+      // (c) the pills ARE preferredRouteRole, and a single-kind list draws none
+      assert.deepEqual(pillOptions([active]), [], 'one kind is nothing to prefer');
+      assert.deepEqual(pillOptions([]), []);
+      const pills = pillOptions([active, selected]);
+      assert.deepEqual(pills.map((pill) => pill.role), [null, 'lan', 'tailscale'], 'Automatic first, then each kind in the list');
+      assert.deepEqual(pills.map((pill) => pill.label), [t.routes.preferredAuto, 'Local', 'Remote']);
+      assert.deepEqual(pillOptions([active, { ...selected, role: 'lan' }]), [], 'two rows of the SAME kind are still one kind, so still nothing to prefer');
+
+      // (d) the button OPENS the wizard in place — it is not a navigation away
+      assert.equal(wizardButtonAction(), 'open-wizard');
+    });
+    // the screen is wired to the plan (no renderer on this host, so this half is source inspection)
+    const code = settingsCode();
+    assert.match(code, /gatewaySections\(\)/, 'the sections come from the plan');
+    assert.match(code, /connectionRows\(/, 'the dropdown rows come from S0s reader');
+    assert.match(code, /pillOptions\(/, 'the pills come from the plan');
+    assert.match(code, /useState\(0\)/, 'the selection starts on the first row');
+    assert.match(code, /route: selectedRoute/, 'the status panel is fed the SELECTED route');
+    assert.match(code, /statusFields\(\{/, 'and rendered by the plans own fields');
+    assert.match(code, /setWizardOpen\(true\)/, 'the wizard button is the wizard opener');
+    assert.match(code, /wizardOpen \? \(/, 'and the wizard it opens is the shared component, in place');
+    assert.ok(!/router\.push\('\/connect'\)/.test(code), 'never a navigation away');
   });
 
   // ─────────────────────────────────────────────────────── report ──

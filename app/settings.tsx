@@ -18,6 +18,9 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { createBackend } from '../src/api/backend';
 import { normalizeError } from '../src/api/errors';
 import ConnectWizard from '../src/connect/Wizard';
+import { connectionLabel, connectionRows } from '../src/gateway/connections';
+import { gatewaySections, pillOptions, statusFields, type GatewaySectionId } from '../src/gateway/plan';
+import { readGatewayStatus, statusUrl, type GatewayStatus } from '../src/gateway/status';
 import { peerAddress, peerRoute, peersPort, peersState, type PeerRow, type PeersResult } from '../src/logic/peers';
 import { probeTcp } from '../src/native/tailscale';
 import { ADVANCED_OPEN_BY_DEFAULT } from '../src/settingsLayout';
@@ -111,6 +114,69 @@ export default function SettingsScreen() {
   const routeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const routes = useMemo(() => orderRoutes(form.routes), [form.routes]);
+
+  // ── 0.10.0 S1 — Gateway Settings is a PAGE PLAN: connections, status, pills, wizard, Advanced ──
+  /**
+   * The rows the connections dropdown draws: this phone's ROUTES, in priority order (S0's reader —
+   * `orderRoutes(effectiveRoutes(settings))`, nothing else).
+   */
+  const rows = useMemo(() => connectionRows(form), [form]);
+  /** Which row the user picked. Index 0 — the highest-priority route — until they pick another. */
+  const [selectedIndex, setSelectedIndex] = useState(0);
+  /**
+   * The row the status panel is about. It is the SELECTED row, which is deliberately not the same
+   * question as "the route the engine chose": the user taps a row to ask about THAT connection, and the
+   * panel answers the question he asked. Clamped, so deleting a row cannot leave the selection
+   * pointing past the end of the list.
+   */
+  const selectedRow = rows.length ? rows[Math.min(selectedIndex, rows.length - 1)] : null;
+  const selectedRoute = selectedRow ? selectedRow.route : null;
+  /** The wizard, opened IN PLACE by the button (never a navigation away). */
+  const [wizardOpen, setWizardOpen] = useState(false);
+  /** `/api/status` for the selected row: its version and gateway_state, or null. */
+  const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus | null>(null);
+  /** When THIS phone last got an answer from each address. Screen-local; nothing is stored. */
+  const [routeSeen, setRouteSeen] = useState<Record<string, number>>({});
+  /** The section headings/help, resolved live from the plan's own keys. */
+  const sectionText = (id: GatewaySectionId, part: 'titleKey' | 'helpKey'): string => {
+    const section = gatewaySections().find((candidate) => candidate.id === id);
+    const key = section ? section[part] : null;
+    return key ? t.settings[key] : '';
+  };
+
+  /**
+   * The two reads the status panel needs, and no timer: ONE `/api/status` per selected row, with the
+   * user's own `probeTimeoutMs` budget. It runs when the page opens and when the selection changes —
+   * never on an interval (S2's rule, and the dots below follow it too).
+   */
+  useEffect(() => {
+    if (page !== 'gateway' || !selectedRoute) {
+      setGatewayStatus(null);
+      return undefined;
+    }
+    let live = true;
+    void readGatewayStatus(selectedRoute.url, { timeoutMs: form.probeTimeoutMs }).then((status) => {
+      if (!live) return;
+      setGatewayStatus(status);
+      // "last seen" is what THIS panel observed: we only claim a sighting when one happened.
+      if (status) setRouteSeen((prev) => ({ ...prev, [selectedRoute.url]: Date.now() }));
+    });
+    return () => {
+      live = false;
+    };
+  }, [page, selectedRoute?.url, form.probeTimeoutMs]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  /**
+   * 0.10.0 S2 — the per-row status dot. The state of each address lives HERE, for the life of the
+   * screen: `checking` until its one probe answers, then `up` or `down`. S2 replaces the map below
+   * with the real fan-out (`src/gateway/dots.ts`) — the three states, and no fourth.
+   */
+  const [dots, setDots] = useState<Record<string, string>>({});
+  const dotState = (url: string): string => dots[url] ?? 'checking';
+  /** The dot's colour by state: green up, red down, grey while the answer is still coming. */
+  const dotStyle = (state: string) => ({
+    backgroundColor: state === 'up' ? colors.green : state === 'down' ? colors.red : colors.faint,
+  });
 
   // ── 0.7.0 — Advanced is CLOSED by default; the Connection section is the wizard ──
   const [advancedOpen, setAdvancedOpen] = useState(ADVANCED_OPEN_BY_DEFAULT);
@@ -614,11 +680,64 @@ export default function SettingsScreen() {
           </Pressable>
         </View>
       ) : null}
+      {/* ── 0.10.0 S1.1: the CONNECTIONS dropdown — one row per route, with its status dot (S2) ──
+          the user, 2026-10-13: *"A dropdown that lists all created connections (both local and remote)
+          along with a status dot indicating their connectivity status."* Each row IS a route (S0):
+          the kind noun, the address, and the dot. Tapping a row selects it — which is what the
+          status panel below is about. */}
       <View style={styles.field}>
-        <Text style={styles.label}>{t.connect.title}</Text>
-        {/* 0.7.0 — the wizard IS the Connection section: the same three steps, drawn in place.
-            `personae://connect` still lands on the same components (src/connect/Wizard.tsx). */}
-        <ConnectWizard embedded onDone={() => router.push('/')} />
+        <Text style={styles.label}>{sectionText('connections', 'titleKey')}</Text>
+        <Text style={styles.help}>{sectionText('connections', 'helpKey')}</Text>
+        {rows.length ? (
+          rows.map((row) => (
+            <Pressable
+              key={row.url}
+              onPress={() => setSelectedIndex(row.index)}
+              accessibilityRole="button"
+              accessibilityLabel={`${connectionLabel(row.route)} — ${row.url}`}
+              style={({ pressed }) => [
+                styles.connRow,
+                row.index === selectedIndex && styles.connRowActive,
+                pressed && styles.pressed,
+              ]}
+            >
+              <View style={[styles.dot, dotStyle(dotState(row.url))]} />
+              <View style={styles.connText}>
+                <Text style={styles.connTitle} numberOfLines={1}>
+                  {connectionLabel(row.route)}
+                </Text>
+                <Text style={styles.help} numberOfLines={1}>
+                  {row.url}
+                </Text>
+              </View>
+              <Text style={styles.help}>{row.kind}</Text>
+            </Pressable>
+          ))
+        ) : (
+          <Text style={styles.help}>{t.routes.empty}</Text>
+        )}
+      </View>
+
+      {/* ── 0.10.0 S1.2: CONNECTION STATUS — kept (his §3: it stays) and moved to the TOP of what
+          matters, populated from the SELECTED row (his §4) rather than from the route the engine is
+          using. The paired-device line and the one destructive verb that acts on the SERVER live
+          here, because that is the panel that describes this phone's identity. ── */}
+      <View style={styles.field}>
+        <Text style={styles.label}>{sectionText('status', 'titleKey')}</Text>
+        <Text style={styles.help}>{sectionText('status', 'helpKey')}</Text>
+        {selectedRoute ? (
+          statusFields({
+            route: selectedRoute,
+            surface: form.surface,
+            server: gatewayStatus,
+            device: {
+              label: settings.deviceLabel || settings.deviceId,
+              lastSeenMs: routeSeen[selectedRoute.url] ?? null,
+            },
+          }).map((field) => <DiagRow key={field.id} label={field.label} value={field.value} />)
+        ) : (
+          <Text style={styles.help}>{t.settings.gwPickOne}</Text>
+        )}
         {settings.deviceId ? (
           <>
             <Text style={styles.help}>{t.connect.deviceLabel(settings.deviceLabel || settings.deviceId)}</Text>
@@ -637,6 +756,68 @@ export default function SettingsScreen() {
             </Pressable>
           </>
         ) : null}
+      </View>
+
+      {/* ── 0.10.0 S1.3: the pills — which KIND of connection to prefer. This IS
+          `preferredRouteRole`, relabelled Local / Remote (decision §3.3): the pin already works
+          (`selectRoute`) and a bypass is already reported out loud. A list with ONE kind draws no
+          pills at all, because there is nothing to choose. ── */}
+      {pillOptions(routes).length ? (
+        <View style={styles.field}>
+          <Text style={styles.label}>{sectionText('pills', 'titleKey')}</Text>
+          <View style={styles.pillRow}>
+            {pillOptions(routes).map((pill) => {
+              const active = (form.preferredRouteRole ?? null) === pill.role;
+              return (
+                <Pressable
+                  key={pill.role ?? 'auto'}
+                  onPress={() => {
+                    setForm((prev) => ({ ...prev, preferredRouteRole: pill.role }));
+                    update({ preferredRouteRole: pill.role });
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel={pill.label}
+                  style={({ pressed }) => [styles.pill, active && styles.pillActive, pressed && styles.pressed]}
+                >
+                  <Text style={[styles.pillText, active && styles.pillTextActive]}>{pill.label}</Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Text style={styles.help}>{sectionText('pills', 'helpKey')}</Text>
+        </View>
+      ) : null}
+
+      {/* ── 0.10.0 S1.4: the CONNECTION WIZARD button — the first action below the pills. It opens
+          the wizard IN PLACE (the same `src/connect/Wizard.tsx` the `personae://connect` route
+          hosts): `setWizardOpen(true)`, never a navigation away, so a half-finished setup is never
+          thrown away by a screen swap and the button always reaches it (S3, entry (d)). ── */}
+      <View style={styles.field}>
+        {wizardOpen ? (
+          <>
+            <Pressable
+              onPress={() => setWizardOpen(false)}
+              accessibilityRole="button"
+              accessibilityLabel={t.common.close}
+              style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
+            >
+              <Text style={styles.secondaryText}>{t.common.close}</Text>
+            </Pressable>
+            <ConnectWizard embedded onDone={() => router.push('/')} />
+          </>
+        ) : (
+          <>
+            <Pressable
+              onPress={() => setWizardOpen(true)}
+              accessibilityRole="button"
+              accessibilityLabel={t.settings.gwWizardButton}
+              style={({ pressed }) => [styles.primary, pressed && styles.pressed]}
+            >
+              <Text style={styles.primaryText}>{t.settings.gwWizardButton}</Text>
+            </Pressable>
+            <Text style={styles.help}>{sectionText('wizard', 'helpKey')}</Text>
+          </>
+        )}
       </View>
 
       {/* ── Ligação (0.7.0): THREE affordances and no knobs ──────────────────
@@ -668,18 +849,27 @@ export default function SettingsScreen() {
         <Text style={styles.help}>{t.connectivity.chooseDeviceHelp}</Text>
         {peersNote ? <Text style={styles.help}>{peersNote}</Text> : null}
 
-        <View style={styles.rowBetween}>
-          <Text style={styles.label}>{t.connectivity.autoConnect}</Text>
-          <Switch
-            value={form.autoConnect}
-            onValueChange={(value) => {
-              setForm((prev) => ({ ...prev, autoConnect: value }));
-              update({ autoConnect: value });
-            }}
-          />
-        </View>
-        <Text style={styles.help}>{t.connectivity.autoConnectHelp}</Text>
-        {Platform.OS !== 'android' ? <Text style={styles.help}>{t.connectivity.iosNote}</Text> : null}
+        {/* ── 0.10.0 S3.2 / decision §3.6 — the tunnel row is ANDROID-ONLY, and on iOS it is not
+            rendered at all: no disabled switch, no dead row, no help sentence apologising for a
+            platform limit (the `iosNote` line that used to sit here is gone). iOS keeps only
+            `openTailscaleOnFailure` under Advanced, which starts nothing. The row maps onto the
+            existing `autoConnect` and says "asks", never "connects": the broadcast is
+            fire-and-forget and readiness is proven by probing. ── */}
+        {Platform.OS === 'android' ? (
+          <>
+            <View style={styles.rowBetween}>
+              <Text style={styles.label}>{t.connectivity.autoConnect}</Text>
+              <Switch
+                value={form.autoConnect}
+                onValueChange={(value) => {
+                  setForm((prev) => ({ ...prev, autoConnect: value }));
+                  update({ autoConnect: value });
+                }}
+              />
+            </View>
+            <Text style={styles.help}>{t.connectivity.autoConnectHelp}</Text>
+          </>
+        ) : null}
       </View>
 
       {/* The picker itself. Only what can be known is shown: installed, tunnel, and the host's list. */}
@@ -1150,27 +1340,9 @@ export default function SettingsScreen() {
         </View>
         <Text style={styles.help}>{t.routes.ackHelp}</Text>
 
-        <Text style={styles.label}>{t.routes.preferredTitle}</Text>
-        <View style={styles.pillRow}>
-          {[null, ...Array.from(new Set(routes.map((route) => route.role)))].map((role) => {
-            const active = (form.preferredRouteRole ?? null) === role;
-            return (
-              <Pressable
-                key={role ?? 'auto'}
-                onPress={() => {
-                  setForm((prev) => ({ ...prev, preferredRouteRole: role }));
-                  update({ preferredRouteRole: role });
-                }}
-                style={({ pressed }) => [styles.pill, active && styles.pillActive, pressed && styles.pressed]}
-              >
-                <Text style={[styles.pillText, active && styles.pillTextActive]}>
-                  {role === null ? t.routes.preferredAuto : roleLabel(role)}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-        <Text style={styles.help}>{t.routes.preferredHelp}</Text>
+        {/* 0.10.0 S1.3 — the preferred-kind pills MOVED to the top of Gateway Settings (they are
+            the first thing after the status panel there). They are not drawn twice: one
+            `preferredRouteRole`, one control. The rule they encode is unchanged. */}
       </View>
 
       {/* ── Ligação internals (Advanced): the knobs a user never reasons about ─ */}
@@ -1501,6 +1673,24 @@ const styles = StyleSheet.create({
   testLabel: { color: colors.text, fontSize: font.small, width: 90, fontWeight: '600' },
   testDetail: { color: colors.muted, fontSize: font.small, flex: 1 },
   dot: { width: 8, height: 8, borderRadius: 4 },
+
+  // ── 0.10.0 S1 — the connections dropdown's rows ─────────────────────────
+  connRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: space.sm,
+    paddingVertical: space.sm,
+    paddingHorizontal: space.md,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.panel,
+    marginTop: space.xs,
+  },
+  /** The SELECTED row — the one the status panel below is about. */
+  connRowActive: { borderColor: colors.accent },
+  connText: { flex: 1, gap: 2 },
+  connTitle: { color: colors.text, fontSize: font.body, fontWeight: '600' },
   secondary: {
     alignSelf: 'flex-start',
     borderWidth: 1,
