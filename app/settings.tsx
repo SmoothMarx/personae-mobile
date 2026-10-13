@@ -21,6 +21,7 @@ import ConnectWizard from '../src/connect/Wizard';
 import { connectionLabel, connectionRows } from '../src/gateway/connections';
 import { gatewaySections, pillOptions, statusFields, type GatewaySectionId } from '../src/gateway/plan';
 import { readGatewayStatus, statusUrl, type GatewayStatus } from '../src/gateway/status';
+import { createDotProbe, dotStateOf, probeDots, type DotRow, type DotState } from '../src/gateway/dots';
 import { peerAddress, peerRoute, peersPort, peersState, type PeerRow, type PeersResult } from '../src/logic/peers';
 import { probeTcp } from '../src/native/tailscale';
 import { ADVANCED_OPEN_BY_DEFAULT } from '../src/settingsLayout';
@@ -167,16 +168,35 @@ export default function SettingsScreen() {
   }, [page, selectedRoute?.url, form.probeTimeoutMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
-   * 0.10.0 S2 — the per-row status dot. The state of each address lives HERE, for the life of the
-   * screen: `checking` until its one probe answers, then `up` or `down`. S2 replaces the map below
-   * with the real fan-out (`src/gateway/dots.ts`) — the three states, and no fourth.
+   * 0.10.0 S2 — the per-row status dot. The answers live HERE, for the life of the screen:
+   * `checking` until a row's own probe answers, then `up` or `down` (`src/gateway/dots.ts` owns the
+   * three states, the parallel fan-out and the rule that a row with no answer yet is CHECKING).
    */
-  const [dots, setDots] = useState<Record<string, string>>({});
-  const dotState = (url: string): string => dots[url] ?? 'checking';
+  const [dots, setDots] = useState<DotRow[]>([]);
+  const dotState = (url: string): DotState => dotStateOf(dots, url);
   /** The dot's colour by state: green up, red down, grey while the answer is still coming. */
-  const dotStyle = (state: string) => ({
+  const dotStyle = (state: DotState) => ({
     backgroundColor: state === 'up' ? colors.green : state === 'down' ? colors.red : colors.faint,
   });
+  /**
+   * ONE probe per row, in parallel, with the user's own `probeTimeoutMs` — run when the gateway page
+   * is OPENED and when the rows themselves change, never on an interval: the answers are cached for
+   * the life of the visit and a re-open re-probes (S2).
+   */
+  const dotKey = rows.map((row) => row.url).join('|');
+  useEffect(() => {
+    if (page !== 'gateway' || !rows.length) return undefined;
+    let live = true;
+    void probeDots(
+      rows.map((row) => row.route),
+      { timeoutMs: form.probeTimeoutMs, probe: createDotProbe() },
+    ).then((answers) => {
+      if (live) setDots(answers);
+    });
+    return () => {
+      live = false;
+    };
+  }, [page, dotKey, form.probeTimeoutMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── 0.7.0 — Advanced is CLOSED by default; the Connection section is the wizard ──
   const [advancedOpen, setAdvancedOpen] = useState(ADVANCED_OPEN_BY_DEFAULT);

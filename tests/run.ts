@@ -286,6 +286,7 @@ import {
   wizardButtonAction,
 } from '../src/gateway/plan';
 import { parseGatewayStatus, readGatewayStatus, statusUrl } from '../src/gateway/status';
+import { DOT_STATES, createDotProbe, dotStateOf, healthUrlFor, initialDots, probeDots } from '../src/gateway/dots';
 
 // Most assertions below were written against the Portuguese copy, so the suite runs in PT
 // explicitly. The language tests switch on purpose and always restore 'pt' afterwards.
@@ -5504,6 +5505,92 @@ async function main(): Promise<void> {
     assert.match(code, /setWizardOpen\(true\)/, 'the wizard button is the wizard opener');
     assert.match(code, /wizardOpen \? \(/, 'and the wizard it opens is the shared component, in place');
     assert.ok(!/router\.push\('\/connect'\)/.test(code), 'never a navigation away');
+  });
+
+
+  test('0.10.0 S2: the status dots — one probe per row, in parallel, with no repeating timer', async () => {
+    const lan = { role: 'lan', priority: 0, url: 'http://10.0.0.15:9119', insecure: true };
+    const remote = { role: 'tailscale', priority: 1, url: 'http://100.64.0.2:9119', insecure: true };
+    const routes = [lan, remote];
+
+    // (a) ONE probe per row, and no more — the fan-out is the row count, keyed on the health route
+    const seen: { url: string; timeoutMs: number }[] = [];
+    await probeDots(routes, {
+      timeoutMs: 1500,
+      probe: async (url, timeoutMs) => {
+        seen.push({ url, timeoutMs });
+        return { status: 200 };
+      },
+    });
+    assert.deepEqual(seen.map((entry) => entry.url), routes.map((route) => healthUrlFor(route.url)));
+    assert.deepEqual(seen.map((entry) => entry.timeoutMs), [1500, 1500], 'the per-probe timeout IS probeTimeoutMs');
+    assert.equal(healthUrlFor('http://10.0.0.15:9119/'), 'http://10.0.0.15:9119/api/health');
+
+    // (b) IN PARALLEL: every probe is started before the first one finishes. A sequential loop would
+    //     never release this barrier, and the race below turns that into a failure instead of a hang.
+    let started = 0;
+    let release: () => void = () => undefined;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const parallel = probeDots(routes, {
+      timeoutMs: 1500,
+      probe: async () => {
+        started += 1;
+        if (started === routes.length) release();
+        await barrier;
+        return { status: 200 };
+      },
+    });
+    await Promise.race([
+      parallel,
+      new Promise((_, reject) => setTimeout(() => reject(new Error('the fan-out is SEQUENTIAL — a later probe never started')), 1000)),
+    ]);
+    assert.equal(started, routes.length, 'all probes were in flight together');
+
+    // (c) the states: an answer is up, silence is down — and a NON-200 answer is still up, because the
+    //     dot is about connectivity, not authorization
+    const three = [
+      { role: 'lan', priority: 0, url: 'http://10.0.0.15:9119', insecure: true },
+      { role: 'tailscale', priority: 1, url: 'http://100.64.0.2:9119', insecure: true },
+      { role: 'public', priority: 2, url: 'https://box.ts.example:10443', insecure: false },
+    ];
+    const answered = await probeDots(three, {
+      timeoutMs: 1500,
+      probe: async (url) => (url.includes('100.64.0.2') ? null : { status: url.includes('10.0.0.15') ? 200 : 401 }),
+    });
+    assert.deepEqual(answered.map((row) => row.state), ['up', 'down', 'up']);
+    assert.deepEqual(answered.map((row) => row.status), [200, 0, 401]);
+    assert.equal(answered[1].url, healthUrlFor(three[1].url), 'a row is keyed by its health URL');
+    assert.deepEqual([...DOT_STATES], ['checking', 'up', 'down'], 'three states, and no fourth');
+
+    // (d) IN FLIGHT IS `checking`, NOT `down` — the whole point of the third state
+    assert.equal(dotStateOf([], 'http://10.0.0.15:9119'), 'checking', 'a row with no answer yet is not accused');
+    const pending = initialDots(routes);
+    assert.deepEqual(pending.map((row) => row.state), ['checking', 'checking']);
+    assert.equal(dotStateOf(pending, 'http://100.64.0.2:9119'), 'checking');
+    assert.equal(dotStateOf(answered, 'http://100.64.0.2:9119'), 'down', 'and once it answered, the answer counts');
+    assert.equal(dotStateOf(answered, 'http://10.0.0.15:9119'), 'up');
+
+    // the production probe: a timed GET whose every failure is "nothing answered"
+    const okProbe = createDotProbe(async () => ({ status: 200, ok: true, json: async () => ({}) }) as unknown as Response);
+    assert.deepEqual(await okProbe(healthUrlFor(lan.url), 1500), { status: 200 });
+    const deadProbe = createDotProbe(async () => {
+      throw new Error('ECONNREFUSED');
+    });
+    assert.equal(await deadProbe(healthUrlFor(lan.url), 1500), null);
+
+    // (e) the SCREEN: it calls the fan-out with the user's timeout, and NOTHING anywhere schedules a
+    //     repeating timer — the answers live for the life of the visit and a re-open re-probes.
+    const code = settingsCode();
+    assert.match(code, /probeDots\(/);
+    assert.match(code, /timeoutMs: form\.probeTimeoutMs/);
+    assert.match(code, /dotStateOf\(dots, /, 'the dot reads the fan-out result');
+    assert.ok(!/setInterval/.test(code), 'no repeating timer in the screen');
+    const dotsSource = readFileSync(join(process.cwd(), 'src', 'gateway', 'dots.ts'), 'utf8');
+    assert.ok(!/setInterval|setTimeout\(.*probe/.test(dotsSource), 'no repeating timer in the module');
+    assert.match(dotsSource, /Promise\.all/, 'and the fan-out is parallel by construction');
+    assert.ok(!/connectThrough|poll/i.test(dotsSource.replace(/\/\*[\s\S]*?\*\//g, '')), 'the dots are not a polling engine');
   });
 
   // ─────────────────────────────────────────────────────── report ──
