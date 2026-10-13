@@ -37,6 +37,7 @@ import {
   orderRoutes,
   pickByPriority,
   renumberRoutes,
+  roleLabel,
   routesFromBaseUrl,
   selectRoute,
   transportSecurityNote,
@@ -275,6 +276,7 @@ import {
   visiblePageIds,
 } from '../src/settingsPages';
 import { PLUS_KEYS, profileFromPickerKey, profilePickerEntries, profileSlug, plusMenuEntries } from '../src/roster/plusMenu';
+import { connectionKind, connectionLabel, connectionRows } from '../src/gateway/connections';
 
 // Most assertions below were written against the Portuguese copy, so the suite runs in PT
 // explicitly. The language tests switch on purpose and always restore 'pt' afterwards.
@@ -5353,6 +5355,56 @@ async function main(): Promise<void> {
     assert.deepEqual(list.rows[0].automatic.map((hit) => hit.sessionId), ['once-run'], 'the SAME object hides that run from the list too');
     assert.equal(list.automaticSeen, 2);
     assert.equal(list.automaticHidden, 1, 'and the list says one run is hidden');
+  });
+
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.10.0 — Gateway Settings and the connection wizard (the user, 2026-10-13)
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  test('0.10.0 S0: the dropdown lists the routes — each route IS a connection', async () => {
+    // The suite's own language is PT, but the APP speaks English (0.9.1 S4.1) and these two nouns are
+    // EN-only (§1.4): the words the dropdown draws are the English ones, so that is the frame.
+    await inLanguage('en', () => {
+    const two = {
+      ...DEFAULT_SETTINGS,
+      baseUrl: 'http://10.0.0.15:9119',
+      routes: [
+        { role: 'tailscale', priority: 1, url: 'http://100.64.0.2:9119', insecure: true },
+        { role: 'lan', priority: 0, url: 'http://10.0.0.15:9119', insecure: true },
+      ],
+    } as Settings;
+    const rows = connectionRows(two);
+    // (a) the row set is EXACTLY orderRoutes(effectiveRoutes(settings)) — no second entity, no
+    //     re-sorting, no filtering. The dropdown draws the routes the engine already uses.
+    assert.deepEqual(rows.map((row) => row.route), orderRoutes(effectiveRoutes(two)), 'the rows ARE the routes');
+    assert.deepEqual(rows.map((row) => row.url), ['http://10.0.0.15:9119', 'http://100.64.0.2:9119'], 'in priority order');
+    assert.deepEqual(rows.map((row) => row.index), [0, 1]);
+    // (b) the two styled roles get the user words for the two kinds of connection
+    assert.equal(connectionKind('lan'), 'Local');
+    assert.equal(connectionKind('tailscale'), 'Remote');
+    assert.deepEqual(rows.map((row) => row.kind), ['Local', 'Remote']);
+    // …and every other role keeps its OWN name: the open-string rule is not narrowed here
+    assert.equal(connectionKind('public'), roleLabel('public'));
+    assert.equal(connectionKind('wireguard'), roleLabel('wireguard'), 'a role this build has never heard of still renders');
+    assert.equal(
+      connectionLabel({ role: 'wireguard', priority: 0, url: 'http://10.1.2.3:9119', insecure: false }),
+      roleLabel('wireguard'),
+      'a nameless route shows its role',
+    );
+    assert.equal(
+      connectionLabel({ role: 'lan', priority: 0, url: 'http://10.0.0.15:9119', insecure: false, label: 'Home' }),
+      'Home',
+      'a renamed route (S5) shows the name the user gave it',
+    );
+    // (c) a legacy install: a stored `baseUrl` and no `routes` → exactly ONE row
+    const legacy = { ...DEFAULT_SETTINGS, baseUrl: 'http://10.0.0.15:9119', routes: [] } as Settings;
+    const legacyRows = connectionRows(legacy);
+    assert.equal(legacyRows.length, 1);
+    assert.equal(legacyRows[0].url, 'http://10.0.0.15:9119');
+    assert.equal(legacyRows[0].kind, 'Local');
+      assert.equal(connectionRows({ ...DEFAULT_SETTINGS, baseUrl: '', routes: [] } as Settings).length, 0, 'nothing configured is zero rows, not a fabricated one');
+    });
   });
 
   // ─────────────────────────────────────────────────────── report ──

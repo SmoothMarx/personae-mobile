@@ -32,6 +32,15 @@ export type RouteCandidate = {
   url: string;
   /** Consent flag for a plain-http route on a private overlay (see `checkRoute`). */
   insecure: boolean;
+  /**
+   * 0.10.0 S5 — the name the USER gave this connection ('' / absent = none).
+   *
+   * A label, never an identity: `role` stays inferred from the address (`inferRole`), and two routes
+   * may share a label without confusing anything, because the dropdown keys its rows by address. It
+   * exists so the connections dropdown can say "Home" instead of showing a bare address — nothing in
+   * the route model reads it, and no security decision is taken from it.
+   */
+  label?: string;
 };
 
 /** Styled roles. Everything else renders as `Personalizado (<role>)`. */
@@ -293,7 +302,12 @@ export function normalizeRoutes(raw: unknown): RouteCandidate[] {
       ? Math.max(0, Math.trunc(value.priority))
       : 0;
     const role = typeof value.role === 'string' && value.role.trim() ? value.role.trim() : inferRole(url);
-    out.push({ role, priority, url, insecure: value.insecure === true });
+    const label = typeof value.label === 'string' ? value.label.trim() : '';
+    const route: RouteCandidate = { role, priority, url, insecure: value.insecure === true };
+    // 0.10.0 S5: a renamed connection's label survives a reload. Written only when non-empty, so a
+    // blob without one normalizes to the same object shape the pre-0.10.0 build produced.
+    if (label) route.label = label;
+    out.push(route);
   }
   return out;
 }

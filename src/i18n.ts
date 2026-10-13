@@ -380,6 +380,12 @@ const en = {
     scopeHelp:
       'A setting is either shared with the desktop or kept on this phone. A gateway address or a key is never shared: the desktop dials itself and this phone dials the tailnet.',
     scopeOpen: 'See what is shared',
+
+    // ── 0.10.0: Gateway Settings and the connection wizard ───────────────────
+    // The two nouns the user uses for the two kinds of connection, and the only words the connections
+    // dropdown adds of its own: every other role keeps its `roleLabel()` name (src/routes.ts).
+    gwKindLocal: 'Local',
+    gwKindRemote: 'Remote',
   },
 
   routes: {
@@ -702,6 +708,12 @@ export const EN_ONLY_SETTINGS_KEYS = [
   'typeWebhookHelp',
   'typeOneshot',
   'typeOneshotHelp',
+  // 0.10.0 S0-S5 — the Gateway Settings / connection-wizard strings. Same rule as 0.9.1 (§1.4): the
+  // EN entry is written, the PT table is left in place, unreachable, and never extended. The whole
+  // new surface lives under `t.settings.*` because that is the ONE group this list can narrow (see
+  // `PtStrings` below) — a new top-level group would have to be translated to compile.
+  'gwKindLocal',
+  'gwKindRemote',
 ] as const;
 
 type EnOnlySettingsKey = (typeof EN_ONLY_SETTINGS_KEYS)[number];
