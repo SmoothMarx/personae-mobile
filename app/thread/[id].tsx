@@ -90,6 +90,15 @@ import { colors, font, radius, space } from '../../src/theme';
 type Live = { user: string | null; text: string } | null;
 
 /**
+ * 0.13.0 W1 — the outcome of ONE `submitTurn`, as data.
+ *
+ * `reason` is exactly the sentence the failure produced (`normalizeError(error).message`), or `null`
+ * when nothing failed. The caller renders it; the generic turn-not-started sentence survives ONLY as
+ * the fallback for an EMPTY reason — it is never passed in place of a reason the function knows.
+ */
+type TurnResult = { ok: boolean; reason: string | null };
+
+/**
  * 0.11.0 R5 — how long typing pauses before the completer is asked. The menu must never hold, block or
  * slow typing, so a request is never fired per keystroke.
  */
@@ -464,11 +473,16 @@ export default function ThreadScreen() {
    *   4. only then is the turn submitted, on the socket the subscription is already riding (§R7).
    *
    * `captionFor` is untouched: it answers "what did the user type", this answers "what does the model
-   * read". Returns `true` when the turn actually started, so the caller knows whether to clear its
-   * staging strip.
+   * read".
+   *
+   * 0.13.0 W1 — it returns the OUTCOME as data (`TurnResult`), never a bare boolean, and it does NOT
+   * write to the attach-note slot. Before this, a failure wrote the REAL reason into that slot here
+   * and the caller overwrote it one frame later with a generic sentence: two writers, one slot, and
+   * the truth destroyed by the second write. The slot now has exactly one writer — the caller — and
+   * it is handed the reason so it can render it.
    */
   const submitTurn = useCallback(
-    async (input: { text: string; attachments: StagedAttachment[] }): Promise<boolean> => {
+    async (input: { text: string; attachments: StagedAttachment[] }): Promise<TurnResult> => {
       const refs: string[] = [];
       if (input.attachments.length) {
         try {
@@ -483,8 +497,9 @@ export default function ThreadScreen() {
             }
           }
         } catch (error) {
-          setAttachNote(normalizeError(error).message);
-          return false;
+          // 0.13.0 W1 — the reason travels OUT as data, and this function stops writing the note:
+          // the caller owns that slot (one writer per outcome).
+          return { ok: false, reason: normalizeError(error).message };
         }
       }
       setNotice(null);
@@ -516,7 +531,7 @@ export default function ThreadScreen() {
         },
         profile,
       );
-      return true;
+      return { ok: true, reason: null };
     },
     [backend, finishTurn, profile, sessionId],
   );
@@ -604,7 +619,7 @@ export default function ThreadScreen() {
         // The caption typed before recording rides along, and is cleared like any other send.
         const caption = draft.trim();
         if (caption) setDraft('');
-        const accepted = await submitTurn({
+        const turn = await submitTurn({
           text: caption,
           attachments: [
             {
@@ -617,7 +632,16 @@ export default function ThreadScreen() {
             },
           ],
         });
-        if (!accepted) setAttachNote(t.thread.voice.recordFailed('the turn did not start'));
+        if (turn.ok) {
+          // 0.13.0 W1 — CLEAR ON SUCCESS (new code, not a move): the note is reset after a turn that
+          // started, so a previous failure can never be read as the outcome of this one.
+          setAttachNote(null);
+        } else {
+          // 0.13.0 W1 — the REAL reason, rendered as data. The generic sentence below is the FALLBACK
+          // and only fires when the reason is empty — never in place of a reason that IS known.
+          const reason = (turn.reason ?? '').trim();
+          setAttachNote(reason ? t.thread.voice.recordFailed(reason) : t.thread.voice.recordFailed('the turn did not start'));
+        }
       } catch (error) {
         setAttachNote(t.thread.voice.recordFailed(String((error as Error)?.message ?? error)));
       }
@@ -831,8 +855,18 @@ export default function ThreadScreen() {
     }
     setDraft('');
     setAttachNote(null);
-    const accepted = await submitTurn({ text, attachments: staged });
-    if (accepted) setStaged([]);
+    const turn = await submitTurn({ text, attachments: staged });
+    if (turn.ok) {
+      // 0.13.0 W1 — the clear-on-success on the TEXT path as well: a previous failure can never be
+      // read as this turn's outcome (the clear is new code; the five note writes were all failures).
+      setStaged([]);
+      setAttachNote(null);
+    } else if ((turn.reason ?? '').trim()) {
+      // 0.13.0 W1 — the REAL reason, said out loud instead of being dropped: with the write inside
+      // `submitTurn` gone, this is the only writer on this path. An EMPTY reason renders nothing new
+      // (the note was cleared above); no generic sentence is invented for a path that never had one.
+      setAttachNote((turn.reason ?? '').trim());
+    }
   }, [dismissSlash, draft, runCommand, staged, streaming, submitTurn]);
 
   const stop = useCallback(() => {
