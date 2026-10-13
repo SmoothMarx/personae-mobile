@@ -3026,3 +3026,43 @@ arrived as markdown (T1 — bold, a list, a quote, a heading), a long code fence
 the copy button work), and a wide table (T3 — does the table scroll sideways while the thread stays
 still). The one to confirm by eye is the middle one: scroll the thread with a code block in view and
 check the two scrollers do not fight.
+
+
+---
+
+## Voice note fails with "the turn did not start" — root-cause chain
+
+Reproduced on the Pixel 8 over adb (`100.64.0.12:34633`), inside the `Testing voice` thread:
+tap mic `(838, 2248)` → 3 s → tap. Banner read **verbatim** from the `uiautomator` dump:
+
+    The recording failed: the turn did not start
+
+**Capture is not the problem.** Permission granted (`RECORD_AUDIO: granted=true [USER_SET]`),
+`appops --op RECORD_AUDIO` → `allow; duration=+4s567ms` (4.567 s of real audio), logcat shows the
+m4a being written (`MPEG4Writer: Audio track source stopped`, `StagefrightRecorder`, `duration_second: 4`).
+Start ✓, stop ✓, file ✓.
+
+**The failure is after capture — and the app destroys the reason.**
+- `app/thread/[id].tsx:620`: `if (!accepted) setAttachNote(t.thread.voice.recordFailed('the turn did not start'))`
+- `accepted` comes from `submitTurn(...)`, which returns `false` **only** from its own catch — and that
+  catch first calls `setAttachNote(normalizeError(error).message)` with the gateway's real reason.
+- Line 620 then **overwrites** the specific message with the generic label. Two writers, one slot:
+  the true error is on screen for a frame, then clobbered.
+
+**What the attach path needs and does not have:**
+- `tui_gateway/server.py:1229-1245` `_sess_nowait`: `s = _sessions.get(sid)` — the **in-memory** runtime
+  map. Not resident → `_err(rid, 4001, "session not found")` plus a warning the gateway logs (not
+  persisted anywhere reachable — checked journal, `state.db`, `~/.hermes/logs/`).
+- `_sess_building` (`server.py:1253`) calls `_start_agent_build` only **after** `_sess_nowait` succeeds,
+  so an attach can never warm a cold session. The gateway's own log line states the contract:
+  *"client should resume the stored session"*.
+- The **text** path resolves first (`session.activate` on mount → `session.resume` on 4007, `backend.ts:780-810`).
+  `attachFile` (`backend.ts:530`) goes straight at the RPC — no resume, no retry.
+
+=> Same family as the 404 from a new session: the app addresses a session the gateway does not hold
+live, and the UI shows a generic label instead of the reason.
+
+**Not yet proven:** whether the discarded reason is `4001 session not found` (cold session) or a staging
+rejection inside `_stage_session_file_attachment` (`prompt_attachments.py:187-230`: the
+`invalid data_url payload` branch, or `_session_home_dir`). The app destroys the evidence, so the
+diagnostic fix is also the thing that answers this.
