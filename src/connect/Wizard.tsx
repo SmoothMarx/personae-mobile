@@ -55,6 +55,7 @@ import { branchRows, installCheckVisible, tunnelRowVisible, wizardBranches, type
 import { DEFAULT_WIZARD_STATE, dismissPatch, loadWizardState, resumeStep, saveWizardState, stepPatch, type WizardState } from './wizardSession';
 
 import { t, useLanguage } from '../i18n';
+import { PEER_LIST_MAX_HEIGHT, PEER_LIST_SCROLLS } from '../settingsLayout';
 import {
   candidateAddresses,
   CONNECT_LINK,
@@ -601,12 +602,25 @@ export default function ConnectWizard(props: WizardProps = {}) {
           <Btn label={t.settings.wizPeersTitle} secondary disabled={peersBusy} onPress={() => void readPeers()} />
           {/* An unavailable host SAYS WHY (peers.ts's own vocabulary) and falls through to manual
               entry — never an empty picker with no explanation. */}
+          {/* 0.10.1 S1 — the list is a BOUNDED inner scroller, not a second full-height one. The
+              embedded host is deliberately a plain View (`:20-25`: "a ScrollView inside Settings'
+              ScrollView fights it for the gesture"), so the fix is a cap plus
+              `nestedScrollEnabled` — the peers stay reachable without burying the manual-entry
+              field below the fold. The numbers come from the plan, never from a literal here. */}
           {peers && peers.available
-            ? peers.peers.map((peer) => (
-                <Pressable key={peer.ip} onPress={() => pickPeer(peer)} style={({ pressed }) => [styles.chip, pressed && styles.pressed]}>
-                  <Text style={styles.chipText}>{`${peer.name} · ${peerAddress(peer, portOr(port))}`}</Text>
-                </Pressable>
-              ))
+            ? (
+              <ScrollView
+                style={{ maxHeight: PEER_LIST_MAX_HEIGHT }}
+                contentContainerStyle={styles.chipList}
+                nestedScrollEnabled={PEER_LIST_SCROLLS}
+              >
+                {peers.peers.map((peer) => (
+                  <Pressable key={peer.ip} onPress={() => pickPeer(peer)} style={({ pressed }) => [styles.chip, pressed && styles.pressed]}>
+                    <Text style={styles.chipText}>{`${peer.name} · ${peerAddress(peer, portOr(port))}`}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            )
             : peers
               ? <Text style={styles.help}>{`${t.settings.wizPeersUnavailable} (${peers.reason ?? 'unavailable'})`}</Text>
               : null}
@@ -830,6 +844,8 @@ const styles = StyleSheet.create({
     fontSize: font.body,
   },
   chips: { gap: space.xs },
+  /** 0.10.1 S1 — the bounded peer list's own vertical rhythm, inside its ScrollView. */
+  chipList: { gap: space.xs },
   chip: { backgroundColor: colors.panelAlt, borderRadius: radius.pill, paddingHorizontal: space.md, paddingVertical: space.xs, alignSelf: 'flex-start' },
   chipText: { color: colors.accent, fontSize: font.small },
   card: { backgroundColor: colors.panel, borderRadius: radius.md, borderWidth: 1, borderColor: colors.border, padding: space.md, gap: space.sm },

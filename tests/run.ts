@@ -73,6 +73,8 @@ import { peersPort, peerRoute, peersState, normalizePeers, type PeerRow } from '
 import { isInlineWizard, wizardStepIds, wizardSteps, WIZARD_STEP_IDS } from '../src/connect/wizard';
 import {
   ADVANCED_OPEN_BY_DEFAULT,
+  PEER_LIST_MAX_HEIGHT,
+  PEER_LIST_SCROLLS,
   SETTINGS_FIELDS,
   advancedFieldIds,
   connectionRendersWizard,
@@ -6066,6 +6068,82 @@ async function main(): Promise<void> {
     assert.match(code, /deleteRoute\(/);
     assert.match(code, /manualAdd\(/);
     assert.match(code, /connectionLabel\(/, 'and the rows show the renamed label');
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.11.0 (Half A = GOAL-0.10.1.md §S1–S9) — the nine review points the user sent on 2026-10-13
+  // while reading the shipped 0.10.0 on a real screen. `app/settings.tsx` and
+  // `src/connect/Wizard.tsx` cannot be rendered on this host, so every claim about what the
+  // screen DRAWS is a source assertion over a bounded window (the repo's own convention), and
+  // every claim about what it DECIDES goes through the pure module that decides it.
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  test('0.10.1 S1: the peer-list cap is ONE plan value, bounded, and both lists read it', () => {
+    // the user: "The tailscale device list has to be scrollable, in case the user has multiple
+    // devices that surpass the screen view."
+    assert.ok(Number.isFinite(PEER_LIST_MAX_HEIGHT) && PEER_LIST_MAX_HEIGHT > 0);
+    assert.ok(
+      PEER_LIST_MAX_HEIGHT < 400,
+      'bounded well below a phone screen, so the list can never be the whole viewport',
+    );
+    assert.equal(PEER_LIST_SCROLLS, true, 'a bounded list that does not scroll is a clipped list');
+    // ONE source for the numbers: a hand-typed 260 in either file is exactly the drift this guards
+    for (const file of [
+      join(process.cwd(), 'app', 'settings.tsx'),
+      join(process.cwd(), 'src', 'connect', 'Wizard.tsx'),
+    ]) {
+      const src = readFileSync(file, 'utf8');
+      assert.match(src, /PEER_LIST_MAX_HEIGHT/, `${file} reads the plan value`);
+      assert.ok(!/maxHeight:\s*260/.test(src), `${file} must not carry the number itself`);
+    }
+    assert.match(wizardSource(), /nestedScrollEnabled=\{PEER_LIST_SCROLLS\}/);
+  });
+
+  test('0.10.1 S1: the Choose-device sheet scrolls its rows, with the title and actions pinned', () => {
+    // The bug: `styles.sheet` caps itself at 80% and the rows had no scroller inside that cap, so the
+    // devices past the fold were CLIPPED and unreachable while Retry/Close stayed pinned over them.
+    const code = settingsCode();
+    const sheetAt = code.indexOf('styles.sheet}');
+    assert.ok(sheetAt > 0, 'the sheet is still the sheet');
+    const titleAt = code.indexOf('styles.sheetTitle}', sheetAt);
+    const scrollAt = code.indexOf('<ScrollView', titleAt);
+    const mapAt = code.indexOf('(peers?.peers ?? []).map(', scrollAt);
+    const actionsAt = code.indexOf('styles.rowButtons', mapAt);
+    assert.ok(titleAt > sheetAt, 'the sheet title is inside the sheet');
+    assert.ok(scrollAt > titleAt, 'the scroller opens AFTER the title — the title stays pinned');
+    assert.ok(mapAt > scrollAt, 'and the peer rows are inside it — that is the whole fix');
+    assert.ok(actionsAt > mapAt, 'the Retry/Close row is drawn after the rows');
+    // …and it is OUTSIDE the scroller: the action row must not scroll away with the list.
+    const scrollerEnd = code.indexOf('</ScrollView>', mapAt);
+    assert.ok(scrollerEnd > mapAt && scrollerEnd < actionsAt, 'the action row is outside the scroller');
+    // the cap keeps its ceiling: the sheet is still capped, so the scroller lives INSIDE the cap
+    assert.match(code, /sheet:\s*\{[\s\S]*?maxHeight:\s*'80%'/, 'the sheet keeps its 80% ceiling');
+    // THE ORPHANED GAP: the rows used to be the sheet's direct children and took its `gap`. Moving a
+    // `.map` into a ScrollView is exactly how that spacing is lost, so it must be put back ON THE
+    // SCROLLER's content container — a `gap` on the ScrollView's own style would not do it.
+    const tag = code.slice(scrollAt, code.indexOf('>', scrollAt));
+    assert.match(tag, /contentContainerStyle=\{styles\.peerList\}/, 'the rows keep a content container');
+    assert.match(code, /peerList:\s*\{[^}]*gap:[^}]*\}/, 'and that container carries the gap back');
+  });
+
+  test('0.10.1 S1: the wizard\'s peer list is bounded and nested — the manual field stays reachable', () => {
+    const code = wizardCode();
+    const cardAt = code.indexOf("branch === 'remote'");
+    const listAt = code.indexOf('peers.peers.map(', cardAt);
+    const manualAt = code.indexOf('t.settings.wizManualTitle', listAt);
+    assert.ok(cardAt > 0 && listAt > cardAt, 'the remote branch draws the list');
+    assert.ok(manualAt > listAt, 'and the manual-entry field is drawn after it');
+    const scrollAt = code.lastIndexOf('<ScrollView', listAt);
+    assert.ok(scrollAt > cardAt && scrollAt < listAt, 'the list itself is wrapped in the scroller');
+    assert.match(code.slice(scrollAt, listAt), /nestedScrollEnabled/, 'it takes the gesture inside Settings');
+    assert.match(code.slice(scrollAt, listAt), /maxHeight:\s*PEER_LIST_MAX_HEIGHT/, 'and it is capped by the plan');
+    // NOT a second full-height ScrollView: the embedded host is a plain View on purpose
+    // (`Wizard.tsx:20-25` — "a ScrollView inside Settings' ScrollView fights it for the gesture").
+    assert.match(code, /if \(props\.embedded\) \{\s*return <View style=\{styles\.embedded\}>\{body\}<\/View>;/);
+    assert.ok(
+      !/<ScrollView style=\{styles\.embedded\}/.test(code),
+      'the embedded body is still not a scroller',
+    );
   });
 
   // ─────────────────────────────────────────────────────── report ──

@@ -92,3 +92,25 @@ export function isAdvanced(id: SettingsFieldId): boolean {
 export function connectionRendersWizard(): boolean {
   return SETTINGS_FIELDS[0]?.id === 'connection' && WIZARD_STEP_IDS.length === 3;
 }
+
+// ── 0.10.1 S1: both tailnet lists are bounded and scrollable ────────────────────────────────────
+
+/**
+ * the user, 2026-10-13: *"The tailscale device list has to be scrollable, in case the user has
+ * multiple devices that surpass the screen view."*
+ *
+ * TWO call sites draw that list, and they fail in different ways:
+ *
+ *   `app/settings.tsx`  the Choose-device sheet — its rows were **clipped and unreachable**, because
+ *                       `styles.sheet` caps itself at `maxHeight: '80%'` and the body had no scroller
+ *                       inside that cap, while the Retry/Close row stayed pinned over the hidden rows;
+ *   `src/connect/Wizard.tsx`  the remote branch card — it did scroll, but only incidentally (the
+ *                       embedded wizard sits inside Settings' page ScrollView), so a long tailnet
+ *                       buried "Or type the device name" and the port field a screen below the fold.
+ *
+ * Both now read THESE numbers, because a magic `260` inside a `StyleSheet.create` is not a claim the
+ * offline suite can check. `PEER_LIST_SCROLLS` is the flag the wizard's inner list turns into
+ * `nestedScrollEnabled` — a bounded list inside another scroller must be told to take the gesture.
+ */
+export const PEER_LIST_MAX_HEIGHT = 260;
+export const PEER_LIST_SCROLLS = true;

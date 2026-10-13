@@ -25,7 +25,7 @@ import { readGatewayStatus, statusUrl, type GatewayStatus } from '../src/gateway
 import { createDotProbe, dotStateOf, probeDots, type DotRow, type DotState } from '../src/gateway/dots';
 import { peerAddress, peerRoute, peersPort, peersState, type PeerRow, type PeersResult } from '../src/logic/peers';
 import { probeTcp } from '../src/native/tailscale';
-import { ADVANCED_OPEN_BY_DEFAULT } from '../src/settingsLayout';
+import { ADVANCED_OPEN_BY_DEFAULT, PEER_LIST_MAX_HEIGHT } from '../src/settingsLayout';
 import {
   SCOPE_LABEL_KEY,
   backFrom,
@@ -908,26 +908,38 @@ export default function SettingsScreen() {
             ) : peersState(peers ?? { available: false, peers: [] }) === 'empty' ? (
               <Text style={styles.help}>{t.connectivity.devicesEmpty}</Text>
             ) : (
-              (peers?.peers ?? []).map((peer) => (
-                <Pressable
-                  key={peer.ip}
-                  onPress={() => void pickPeer(peer)}
-                  disabled={peersBusy}
-                  accessibilityRole="button"
-                  accessibilityLabel={`${peer.name} — ${peerAddress(peer, peersPort(form))}`}
-                  style={({ pressed }) => [styles.peerRow, pressed && styles.pressed]}
-                >
-                  <Ionicons name="desktop-outline" size={18} color={colors.text} />
-                  <View style={styles.peerText}>
-                    <Text style={styles.peerName} numberOfLines={1}>
-                      {peer.ip === peers?.self?.ip ? `${peer.name} · ${t.connectivity.peerSelf}` : peer.name}
-                    </Text>
-                    <Text style={styles.help} numberOfLines={1}>
-                      {`${peerAddress(peer, peersPort(form))} · ${peer.os || '—'} · ${peer.online ? t.connectivity.peerOnline : t.connectivity.peerOffline}`}
-                    </Text>
-                  </View>
-                </Pressable>
-              ))
+              /* 0.10.1 S1 — the rows SCROLL. `styles.sheet` caps this sheet at 80% of the viewport, so
+                 before this the devices past the fold were not merely off-screen: they were
+                 unreachable, with the Retry/Close row pinned over them. The title and that action row
+                 stay OUTSIDE this scroller (the cap stays the sheet's ceiling, not the list's), and
+                 the parent's `gap` moves onto the scroller's `contentContainerStyle` — rows that
+                 collapse together is the classic regression of moving a `.map` into a ScrollView. */
+              <ScrollView
+                style={{ maxHeight: PEER_LIST_MAX_HEIGHT }}
+                contentContainerStyle={styles.peerList}
+                nestedScrollEnabled
+              >
+                {(peers?.peers ?? []).map((peer) => (
+                  <Pressable
+                    key={peer.ip}
+                    onPress={() => void pickPeer(peer)}
+                    disabled={peersBusy}
+                    accessibilityRole="button"
+                    accessibilityLabel={`${peer.name} — ${peerAddress(peer, peersPort(form))}`}
+                    style={({ pressed }) => [styles.peerRow, pressed && styles.pressed]}
+                  >
+                    <Ionicons name="desktop-outline" size={18} color={colors.text} />
+                    <View style={styles.peerText}>
+                      <Text style={styles.peerName} numberOfLines={1}>
+                        {peer.ip === peers?.self?.ip ? `${peer.name} · ${t.connectivity.peerSelf}` : peer.name}
+                      </Text>
+                      <Text style={styles.help} numberOfLines={1}>
+                        {`${peerAddress(peer, peersPort(form))} · ${peer.os || '—'} · ${peer.online ? t.connectivity.peerOnline : t.connectivity.peerOffline}`}
+                      </Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
             )}
             <View style={styles.rowButtons}>
               <Pressable onPress={() => void readPeers()} style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}>
@@ -1806,6 +1818,9 @@ const styles = StyleSheet.create({
     maxHeight: '80%',
   },
   sheetTitle: { color: colors.text, fontSize: font.body, fontWeight: '700' },
+  /* 0.10.1 S1 — the rows' own gap, now that they live inside a scroller instead of being the
+     sheet's direct children (the sheet's `gap: space.sm` no longer reaches them). */
+  peerList: { gap: space.sm },
   peerRow: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingVertical: space.sm },
   peerText: { flex: 1, gap: 1 },
   peerName: { color: colors.text, fontSize: font.body, fontWeight: '600' },
