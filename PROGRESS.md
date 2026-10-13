@@ -3066,3 +3066,124 @@ live, and the UI shows a generic label instead of the reason.
 rejection inside `_stage_session_file_attachment` (`prompt_attachments.py:187-230`: the
 `invalid data_url payload` branch, or `_session_home_dir`). The app destroys the evidence, so the
 diagnostic fix is also the thing that answers this.
+
+
+---
+
+## 0.13.0 — the voice attach stops failing and starts telling the truth, the 404 tells the truth, and the app resumes on launch (2026-10-13)
+
+**One release, four workstreams, one build.** Baseline `0.12.0` / `versionCode` 15; target `0.13.0` /
+`versionCode` 16, signed with 0.12.0's own release key
+(`bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26`) — **installed straight over the
+shipped build on the Pixel 8: `adb install -r …` → `Success`, versionCode 15 → 16, versionName 0.12.0 →
+0.13.0, nothing re-entered.** Each workstream is its own commit and is revertable alone; the version bump
+is its own commit and touches neither code nor tests.
+
+### W1 — the reason travels as data (`app/thread/[id].tsx`)
+
+`submitTurn` returns `{ ok, reason }` (`TurnResult`) instead of a boolean; the write at `:486` that put the
+real reason into the attach-note slot and the caller's `:620` overwrite that destroyed it one frame later are
+both gone. The slot has ONE writer per outcome, the generic sentence survives exactly once as the
+empty-reason fallback, and a **clear-on-success** (new code) runs on both call sites.
+
+**ON THE DEVICE, the reason the dispatcher could not read is now on screen** — with the gateway's own log
+line beside it (`gui.log`, phone 20:38 = box 19:38):
+
+    The recording failed: Gateway error (4001): session not found
+    WARNING tui_gateway.server: session-scoped RPC rejected: method=file.attach
+      session_id='20261013_115901_414559' not in memory … client should resume the stored session
+
+So the rival hypothesis is settled, and §10's caution can be closed: **the discarded reason IS `4001
+session not found`** — the cold-session branch, not the `invalid data_url payload` staging rejection.
+
+### W2 — the attach learns to resume (`src/api/backend.ts`)
+
+`attachRpc` (one wrapper, both attach RPCs) applies the DESIGN's policy: on the first `4001` /
+`session not found`, `session.resume` **once**, retry the attach **once**, then stop. Nothing else is
+retried. `isColdSessionRpc` reads BOTH halves of the rejection; `4007`/`4009` and the text path are
+untouched (one new `session.resume` call site beside the text path's own, on the same shared socket).
+
+**Measured on the live gateway** (the user's reaped `Testing voice` thread, twice):
+
+    19:38:40,934 file.attach … not in memory   ← attempt 1, refused 4001
+    19:38:40,952 Session … keeps the user id … a client logged in as personae-mobile:personae-mobile
+                 attached                       ← THE RESUME RAN (it is in the log)
+    19:38:41,035 file.attach … not in memory   ← the ONE retry, refused again
+    (and nothing after it — no third attempt, on either run)
+
+**So §4.3.5 did not reproduce and §4.3.6 did.** The policy ran exactly as specified, but the retry could not
+win: the gateway's own code (`tui_gateway/server.py:1253-1259`) does `_sess_nowait` **before** it will warm
+a build, so a reaped session stays un-attachable until something that BUILDS touches it — `session.resume`
+re-attaches the client's transport and does not put the session back in `_sessions`. The honest reading of
+this batch: the attach's failure is now TRUE, visible and diagnosable (W1), and the next batch's lead is
+precise (the warm-up verb has to be one that builds, not `session.resume`). W2 is not described as "fixed".
+The suite proves the policy end-to-end over a real socket (`coldAttachFailures: 1` → 2 attempts, 1 resume,
+success; `99` → 2 attempts, 1 resume, the real reason; a non-cold refusal → 1 attempt, 0 resumes).
+
+### W3 — the new-session 404 (`src/api/backend.ts` + the thread screen)
+
+A module-level draft registry, populated by the mint (`createSession`, both surfaces — the chain is
+`app/index.tsx` → `src/roster/useRoster.ts:481` → `backend`, so the registry follows the mint), consulted on
+a 404 and cleared on the first successful read **or** submit. A 404 for an id the app minted renders an EMPTY
+THREAD; for anything else the error card is unchanged, and no string is filtered anywhere.
+
+**On the device**: a brand-new session rendered `No messages in this session. Write the first one.` with no
+error card — the `Session not found does not exist on the gateway (404) HTTP 404 · Session not found` banner
+(the recon's screenshot) is gone.
+
+### W4 — credential persistence, auto-connect, resume (`src/boot.ts`, the roster, the wizard, Settings)
+
+`src/boot.ts` states the machine (no credential → connect; refused → the login step ONCE with the reason;
+otherwise the profiles screen; an unreachable host is NOT a refused token), the probe is the token-gated
+`GET /api/profiles` (never the unauthenticated health route), `ApiError.isAuth` is reused, and **Disconnect**
+(its own key in both tables — the tunnel's string is not borrowed) clears the token **and** the address.
+
+**A real defect was found by the device and fixed here.** Cold launches kept landing on the connect screen
+for a fully-credentialed phone. A diagnostic build read the truth off the phone (`[boot-diag]`):
+
+    [boot-diag] S3 {"dismissedAt":null,"step":"service","branch":"lan","baseUrl":"","routes":0,"live":true}
+    [boot-diag] stage 'profiles' {"ready":true,"configured":true,"baseUrl":true,"key":true,"probe":"valid"}
+
+The pre-existing first-launch auto-open asked `shouldAutoOpen` of the **not-yet-loaded** `DEFAULT_SETTINGS`
+and raced the load; the boot machine's own decision (profiles) was correct all along. The gate
+(`if (!settingsReady) return undefined;`) makes the race unwinnable by the wrong side, and the suite's W4
+case fails by name when the gate is removed. **After the fix, three consecutive cold launches landed on the
+profiles screen** (`22` profiles, `cody` …), which is §6.7.5.
+
+### Device runs (the user's Pixel 8, wireless ADB — real, not simulated)
+
+| Item | Result |
+|---|---|
+| §14.2 install over 0.12.0 | `Success`, versionCode 15→16, versionName 0.12.0→0.13.0, no uninstall |
+| §6.7.5 cold launch, stored credentials | the PROFILES screen, 3/3 launches: `Personae` … `NO GROUP`, `22`, `cody` |
+| §5.4.4 a brand-new session | `No messages in this session. Write the first one.` — no error card |
+| §3.3.8 the voice banner, cold thread | `The recording failed: Gateway error (4001): session not found` |
+| §4.3.6 a twice-refused attach | two `file.attach` rejections, 101 ms apart, no third attempt |
+| §4.3.5 succeeds on the retry | **NOT reproduced** — refused again; see W2 above |
+| §5.4.5 / §6.7.6 / §6.7.7 / §6.7.8 | **NOT RUN** — they need a session deleted mid-read, or the phone's only credential destroyed (a re-pair needs the user at a dashboard login); the strings and paths are asserted in the suite |
+
+The one test session this batch created on the live dashboard (`W3 -draft -probe 0130,`) and its voice turn
+were **deleted again** (`DELETE /api/sessions/20261013_193648_3f5fae` → `200`, read-back `404`), so nothing
+was left behind. The bearer was read from the env file by name and never printed.
+
+### The artifact and the verifier
+
+`dist/personae-0.13.0.apk` — 131,047,753 bytes, `aapt dump badging`: `versionCode='16'
+versionName='0.13.0'`; signer = 0.12.0's key. Built in the README's own container lane
+(`logs/gradle-0130.log`: `BUILD SUCCESSFUL in 5m 31s`, 605 actionable tasks; the JS-only fix rebuilt in
+`logs/gradle-0130b.log`, 39 s), and the container's root-owned `android/app/build` + `dist` were chowned
+back to the host user.
+
+`logs/verify-0.13.0.sh` (extending 0.12.0's, every older named list kept) — its run is
+`logs/verify-0.13.0.txt`: **237 PASS / 0 FAIL / 12 MANUAL / 6 DEVICE**, suite `316/316 passed, 0 failed`,
+`tsc --noEmit` rc 0, plugin harness 696 green, the signer fingerprint by value, the leak sweep in both
+directions (markers found, values classified, the live bearer's value counted and never printed).
+
+### What could not be verified
+
+- **§4.3.5** (above): the DESIGN's single immediate retry does not revive a reaped session on the live
+  gateway. Reported as measured, not smoothed over.
+- **The W3 different-profile case** (a 404 for a session that exists under another profile): the registry
+  rule covers it by construction; the path itself was not exercised.
+- **iOS parity**: this release was only ever run on Android.
+- **§6.7.6/7/8 and §5.4.5**: not run, for the reasons in the table — nothing about them is claimed.
