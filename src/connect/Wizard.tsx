@@ -24,16 +24,40 @@
  *   * the "key in Settings" link is hidden — the user is already in Settings.
  */
 
+import Constants from 'expo-constants';
 import * as Clipboard from 'expo-clipboard';
 import { CameraView, useCameraPermissions } from 'expo-camera';
+import { File, Paths } from 'expo-file-system';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import * as Sharing from 'expo-sharing';
 import * as WebBrowser from 'expo-web-browser';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+
+import { createBackend } from '../api/backend';
+import { peerAddress, peerRoute, peersPort, type PeerRow, type PeersResult } from '../logic/peers';
+import { isPackageInstalled, probeTcp } from '../native/tailscale';
+import { inferRole, normalizeRouteUrl, orderRoutes } from '../routes';
+import {
+  DEFAULT_PORT,
+  ipInput,
+  isRemoteTarget,
+  lanUrl,
+  portInput,
+  portOr,
+  remoteUrl,
+  splitAddress,
+} from './address';
+import { readStatusBody, stagedConnectionTest, TEST_MESSAGE_KEY, type TestResult } from './connectionTest';
+import { runPairLogin } from './pairflow';
+import { buildSupportBundle, pushTimeline, supportText, type TimelineEntry } from './support';
+import { branchRows, installCheckVisible, tunnelRowVisible, wizardBranches, type WizardBranchId } from './wizard';
+import { DEFAULT_WIZARD_STATE, dismissPatch, loadWizardState, resumeStep, saveWizardState, stepPatch, type WizardState } from './wizardSession';
 
 import { t, useLanguage } from '../i18n';
 import {
   candidateAddresses,
+  CONNECT_LINK,
   dashboardAddressFor,
   pairPageUrl,
   PairingError,
@@ -100,6 +124,206 @@ export default function ConnectWizard(props: WizardProps = {}) {
   const [busy, setBusy] = useState(false);
   const [permission, requestPermission] = useCameraPermissions();
   const scannedRef = useRef(false);
+
+  // ── 0.10.0 S3 — the branch, and the state it needs ────────────────────────────────────────────
+  /**
+   * Which step the wizard is on. It STARTS from what was stored (S3, entry (c)): leaving Settings in
+   * the middle of setup and coming back resumes where the user was.
+   */
+  const [step, setStep] = useState<string>('kind');
+  const [branch, setBranch] = useState<WizardBranchId | null>(null);
+  /** LAN: an IPv4 field and a SEPARATE port field (§2 of the user's spec). `http://` is appended here. */
+  const [ip, setIp] = useState('');
+  const [port, setPort] = useState(String(DEFAULT_PORT));
+  /** Remote: the MagicDNS name, which is the one field that is NOT IPv4-strict. */
+  const [host, setHost] = useState('');
+  /** The remote branch's fast path: the host's own tailnet list (a phone cannot enumerate one). */
+  const [peers, setPeers] = useState<PeersResult | null>(null);
+  const [peersBusy, setPeersBusy] = useState(false);
+  /** Is Tailscale installed HERE? Android only — on iOS there is no honest answer to give. */
+  const [tailscaleInstalled, setTailscaleInstalled] = useState<boolean | null>(null);
+  /** The staged test's result, and the timeline the support bundle carries. */
+  const [test, setTest] = useState<TestResult | null>(null);
+  const [timeline, setTimeline] = useState<TimelineEntry[]>([]);
+
+  /** The branch the user picked, remembered so a resumed wizard comes back to the same path. */
+  const chooseBranch = (id: WizardBranchId) => {
+    setBranch(id);
+    setStep('service');
+    void saveWizardState({ ...storedState, ...stepPatch('service', id) });
+  };
+
+  /** What "done" does, available to the handlers below before the body defines it. */
+  const finish = () => (props.onDone ?? (() => router.replace('/')))();
+
+  /** The stored wizard state (S3 entry (b) and (c)): the dismissed flag and the step to resume on. */
+  const [storedState, setStoredState] = useState<WizardState>({ ...DEFAULT_WIZARD_STATE });
+  useEffect(() => {
+    let live = true;
+    void loadWizardState().then((state) => {
+      if (!live) return;
+      setStoredState(state);
+      setBranch(state.branch);
+      setStep(resumeStep(state));
+    });
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  /** Skip sticks (S3, entry (b)): the flag is written once and never auto-opens the wizard again. */
+  const skip = useCallback(() => {
+    const next = { ...storedState, ...dismissPatch(Date.now()) };
+    setStoredState(next);
+    void saveWizardState(next);
+    finish();
+  }, [storedState]);
+
+  /** One line in the timeline: what was tried, what answered, how long it took (S3.4). */
+  const note = useCallback((what: string, status: number, ms: number) => {
+    setTimeline((prev) => pushTimeline(prev, { at: new Date().toISOString(), what, status, ms }));
+  }, []);
+
+  /**
+   * The LAN manual entry: two fields in, ONE route out — `http://<ipv4>:<port>`, the scheme appended
+   * by the app (§2). The address is written as a route so the rest of the app (and the engine) sees
+   * it exactly like any other connection.
+   */
+  const useLanAddress = useCallback(() => {
+    const url = lanUrl(ip, portOr(port));
+    if (!url) return;
+    setAddress(url);
+    setVerdict(null);
+    const routes = orderRoutes(settings.routes).filter((route) => normalizeRouteUrl(route.url) !== url);
+    update({
+      baseUrl: url,
+      routes: [...routes, { role: inferRole(url), priority: routes.length, url, insecure: true, label: '' }],
+      insecureRouteAck: true,
+    });
+    note(`LAN ${url}`, 0, 0);
+    setStep('service');
+  }, [ip, port, note, settings.routes, update]);
+
+  /** A pasted `1.2.3.4:9119` splits into the two fields instead of filling one with junk. */
+  const pasteAddress = useCallback((raw: string) => {
+    const parts = splitAddress(raw);
+    setIp(ipInput(parts.host));
+    if (parts.port) setPort(parts.port);
+  }, []);
+
+  /** The remote branch's manual entry: a hostname and the same port field. */
+  const useRemoteAddress = useCallback(() => {
+    const url = remoteUrl(host, portOr(port));
+    if (!url) return;
+    setAddress(url);
+    setVerdict(null);
+    note(`Remote ${url}`, 0, 0);
+    setStep('service');
+  }, [host, port, note]);
+
+  /** Read the host's tailnet list through the one route that can answer it (never the phone). */
+  const readPeers = useCallback(async () => {
+    setPeersBusy(true);
+    const backend = createBackend({ ...settings, profiles: settings.profiles });
+    try {
+      const result = await backend.tailscalePeers();
+      setPeers(result);
+      note(`peers ${result.available ? result.peers.length : result.reason ?? 'unavailable'}`, 0, 0);
+    } catch (error) {
+      setPeers({ available: false, peers: [], reason: 'unavailable' });
+      note('peers unavailable', 0, 0);
+    } finally {
+      backend.dispose();
+      setPeersBusy(false);
+    }
+  }, [settings, note]);
+
+  /** Pick a device: `peerRoute()` writes the route and REFUSES a duplicate (S3.2 / S5). */
+  const pickPeer = useCallback(
+    (peer: PeerRow) => {
+      const chosen = peersPort(settings);
+      const route = peerRoute(peer, { port: chosen, routes: settings.routes, insecureAck: settings.insecureRouteAck });
+      if (!route) {
+        note(`peer ${peerAddress(peer, chosen)} already a route`, 0, 0);
+        return;
+      }
+      const url = route.url;
+      setAddress(url);
+      setVerdict(null);
+      update({ baseUrl: url, routes: [...orderRoutes(settings.routes), route], insecureRouteAck: true });
+      note(`peer ${peerAddress(peer, chosen)}`, 0, 0);
+      setStep('service');
+    },
+    [settings, note, update],
+  );
+
+  // The Android-only install check (S3.2). On iOS it is NOT run: `isPackageInstalled` has no iOS half.
+  useEffect(() => {
+    if (branch !== 'remote' || !installCheckVisible(Platform.OS)) return;
+    let live = true;
+    void isPackageInstalled(settings.tailscalePackage).then((installed) => {
+      if (live) setTailscaleInstalled(installed);
+    });
+    return () => {
+      live = false;
+    };
+  }, [branch, settings.tailscalePackage]);
+
+  /** S3.3 — the staged test: reachable, is-this-Hermes, authenticated. */
+  const runTest = useCallback(async () => {
+    const checked = checkBaseUrl(address);
+    if (!checked.ok) {
+      setTest({ verdict: 'bad-address', stages: [], server: null });
+      return;
+    }
+    setTest(null);
+    const started = Date.now();
+    const result = await stagedConnectionTest(checked.value, {
+      tcp: probeTcp,
+      status: readStatusBody,
+      authed: async (url) => {
+        try {
+          const response = await fetch(`${url}/api/profiles`, {
+            headers: settings.apiKey ? { Authorization: `Bearer ${settings.apiKey}` } : {},
+          });
+          return { status: response.status };
+        } catch {
+          return null;
+        }
+      },
+      timeoutMs: settings.probeTimeoutMs,
+    });
+    setTest(result);
+    note(
+      `test ${result.verdict}${isRemoteTarget(checked.value) ? ' (remote target)' : ''}`,
+      result.stages.length ? result.stages[result.stages.length - 1].status : 0,
+      Date.now() - started,
+    );
+  }, [address, settings.apiKey, settings.probeTimeoutMs, note]);
+
+  /**
+   * S3.4 — the support log, SHARED and nothing else (decision §3.7): a redacted file handed to the OS
+   * share sheet. No route, no upload, no server call.
+   */
+  const shareSupport = useCallback(async () => {
+    const bundle = buildSupportBundle({
+      app: { name: 'Personae', version: String(Constants.expoConfig?.version ?? ''), versionCode: Constants.expoConfig?.android?.versionCode ?? null },
+      platform: { os: Platform.OS, osVersion: String(Platform.Version ?? '') },
+      device: { model: Constants.deviceName ?? '' },
+      server: test?.server ?? null,
+      plugins: [],
+      timeline,
+      addresses: [address],
+    });
+    try {
+      const file = new File(Paths.cache, 'personae-support.txt');
+      file.write(supportText(bundle));
+      await Sharing.shareAsync(file.uri);
+      note('support log shared', 200, 0);
+    } catch {
+      note('support log could not be shared', 0, 0);
+    }
+  }, [test, timeline, address, note]);
 
   const [stepService, stepSignIn, stepCheck] = wizardSteps();
   const done = props.onDone ?? (() => router.replace('/'));
@@ -197,6 +421,59 @@ export default function ConnectWizard(props: WizardProps = {}) {
   const dashboardOk = verdict?.kind === 'dashboard';
   const pairingAvailable = verdict?.kind === 'dashboard' && verdict.pairing;
 
+  /**
+   * ── 0.10.0 S3.1 — the LAN "Log in" button ───────────────────────────────────────────────────────
+   *
+   * It opens the dashboard's own login page in the IN-APP browser (`.../login?next=/pair`), and when
+   * the browser returns it polls `pair/status?id=` and redeems through `POST /pair/redeem` — the order
+   * lives in `src/connect/pairflow.ts`, this is the I/O it is given. That is what lets the
+   * same-device case finish itself instead of asking the user to scan a QR code that is on the very
+   * screen they are looking at.
+   */
+  const loginForPairing = useCallback(
+    async (target: string) => {
+      const checked = checkBaseUrl(target);
+      if (!checked.ok) return;
+      setBusy(true);
+      setMessage({ text: t.connect.verifying, tone: 'info' });
+      const started = Date.now();
+      try {
+        const outcome = await runPairLogin({
+          base: checked.value,
+          openBrowser: async (loginUrl) => {
+            const result = await WebBrowser.openAuthSessionAsync(loginUrl, CONNECT_LINK);
+            return { url: result.type === 'success' ? result.url : null, cancelled: result.type !== 'success' };
+          },
+          pollStatus: async (statusUrl) => {
+            try {
+              const response = await fetch(statusUrl, { headers: { Accept: 'application/json' } });
+              note(`pair/status ${response.status}`, response.status, Date.now() - started);
+              return response.ok ? await response.json() : {};
+            } catch {
+              note('pair/status did not answer', 0, Date.now() - started);
+              return {};
+            }
+          },
+          redeem: redeemPairing,
+        });
+        if (outcome.outcome === 'redeemed') {
+          update(settingsAfterPairing(settings, outcome.result));
+          setAddress(outcome.result.baseUrl);
+          setMessage({ text: `${t.connect.deviceLabel(outcome.result.label)} · ${t.settings.wizSaved}`, tone: 'ok' });
+          setStep('check');
+        } else {
+          // Honest fallback: the QR / pasted link path below stays for this case.
+          setMessage({ text: t.connect.noPairing, tone: 'info' });
+        }
+      } catch (error) {
+        setMessage({ text: failureText(error), tone: 'bad' });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [settings, update, note],
+  );
+
   const scanner = (
     <View style={styles.scanWrap}>
       {permission?.granted ? (
@@ -225,9 +502,155 @@ export default function ConnectWizard(props: WizardProps = {}) {
     );
   }
 
+  /**
+   * ── 0.10.0 S3 — STEP 1: LAN or Remote ───────────────────────────────────────────────────────────
+   * Two cards (his §1.1), drawn from `wizardBranches()` so the suite and the screen read one list. The
+   * branch is WHICH SETUP PATH, not a new route model: both branches end in the same three steps.
+   */
+  const branchPicker = (
+    <View style={styles.branchWrap}>
+      <Text style={styles.body}>{t.settings.wizBranchLanIntro}</Text>
+      {wizardBranches().map((option) => (
+        <Pressable
+          key={option.id}
+          onPress={() => chooseBranch(option.id)}
+          accessibilityRole="button"
+          accessibilityLabel={`${option.title} — ${option.help}`}
+          style={({ pressed }) => [styles.branchCard, pressed && styles.pressed]}
+        >
+          <Text style={styles.step}>{option.title}</Text>
+          <Text style={styles.help}>{option.help}</Text>
+        </Pressable>
+      ))}
+      <Btn label={t.settings.wizSkip} secondary onPress={skip} />
+    </View>
+  );
+
+  // The branch step is only shown when it is genuinely the first thing: a deep link that already
+  // carries a code is a pairing, not a setup, and the resume state may say the user is past it.
+  if (step === 'kind' && !branch && !params.code) {
+    return props.embedded ? (
+      <View style={styles.embedded}>{branchPicker}</View>
+    ) : (
+      <ScrollView style={styles.screen} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+        {branchPicker}
+      </ScrollView>
+    );
+  }
+
   const body = (
     <>
       <Text style={styles.body}>{t.connect.intro}</Text>
+
+      {/* ── S3.1 — LAN: an IPv4 field and a SEPARATE port field (§2 of his spec). The field keeps
+          digits and periods (`ipInput`), the value is judged by `octets()` — the same rule the route
+          model uses — and `http://` is appended by the app, never typed. The `personae://` link and the
+          QR flow below are unchanged, and both are offered here. ── */}
+      {branch === 'lan' ? (
+        <View style={styles.card}>
+          <Text style={styles.label}>{t.settings.wizIpLabel}</Text>
+          <TextInput
+            style={styles.input}
+            value={ip}
+            onChangeText={(value) => pasteAddress(value)}
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="numbers-and-punctuation"
+            placeholder="10.0.0.15"
+            placeholderTextColor={colors.faint}
+          />
+          <Text style={styles.help}>{t.settings.wizIpHelp}</Text>
+          <Text style={styles.label}>{t.settings.wizPortLabel}</Text>
+          <TextInput
+            style={styles.input}
+            value={port}
+            onChangeText={(value) => setPort(portInput(value))}
+            keyboardType="number-pad"
+            placeholder={String(DEFAULT_PORT)}
+            placeholderTextColor={colors.faint}
+          />
+          <Text style={styles.help}>{t.settings.wizPortHelp}</Text>
+          <Btn
+            label={t.settings.wizLogin}
+            disabled={!lanUrl(ip, portOr(port)) || busy}
+            onPress={() => {
+              const url = lanUrl(ip, portOr(port));
+              if (url) void loginForPairing(url);
+            }}
+          />
+          <Text style={styles.help}>{t.settings.wizLoginHelp}</Text>
+          <Btn
+            label={t.settings.wizAddConnection}
+            secondary
+            disabled={!lanUrl(ip, portOr(port))}
+            onPress={useLanAddress}
+          />
+        </View>
+      ) : null}
+
+      {/* ── S3.2 — REMOTE: the peer picker FIRST (the host enumerates the tailnet; a phone cannot),
+          then the manual MagicDNS entry, then the Android-only tunnel row. The install check is
+          Android-only for the same reason the broadcast is: there is no iOS half of it. ── */}
+      {branch === 'remote' ? (
+        <View style={styles.card}>
+          {installCheckVisible(Platform.OS) && tailscaleInstalled === false ? (
+            <Text style={styles.help}>{t.connectivity.setupIncomplete}</Text>
+          ) : null}
+          <Text style={styles.label}>{t.settings.wizPeersTitle}</Text>
+          <Text style={styles.help}>{t.settings.wizPeersHelp}</Text>
+          <Btn label={t.settings.wizPeersTitle} secondary disabled={peersBusy} onPress={() => void readPeers()} />
+          {/* An unavailable host SAYS WHY (peers.ts's own vocabulary) and falls through to manual
+              entry — never an empty picker with no explanation. */}
+          {peers && peers.available
+            ? peers.peers.map((peer) => (
+                <Pressable key={peer.ip} onPress={() => pickPeer(peer)} style={({ pressed }) => [styles.chip, pressed && styles.pressed]}>
+                  <Text style={styles.chipText}>{`${peer.name} · ${peerAddress(peer, portOr(port))}`}</Text>
+                </Pressable>
+              ))
+            : peers
+              ? <Text style={styles.help}>{`${t.settings.wizPeersUnavailable} (${peers.reason ?? 'unavailable'})`}</Text>
+              : null}
+
+          <Text style={styles.label}>{t.settings.wizManualTitle}</Text>
+          <TextInput
+            style={styles.input}
+            value={host}
+            onChangeText={setHost}
+            autoCapitalize="none"
+            autoCorrect={false}
+            placeholder="box.tailnet.ts.net"
+            placeholderTextColor={colors.faint}
+          />
+          <Text style={styles.help}>{t.settings.wizHostHelp}</Text>
+          <Text style={styles.label}>{t.settings.wizPortLabel}</Text>
+          <TextInput
+            style={styles.input}
+            value={port}
+            onChangeText={(value) => setPort(portInput(value))}
+            keyboardType="number-pad"
+            placeholder={String(DEFAULT_PORT)}
+            placeholderTextColor={colors.faint}
+          />
+          <Btn
+            label={t.settings.wizAddConnection}
+            disabled={!remoteUrl(host, portOr(port))}
+            onPress={useRemoteAddress}
+          />
+
+          {/* THE TUNNEL ROW IS ANDROID-ONLY, and the plan decides: on iOS `branchRows` does not
+              contain it at all, so nothing is rendered — no disabled switch, no dead row, no help
+              sentence apologising for a platform limit (decision §3.6). ── */}
+          {branchRows('remote', Platform.OS).includes('tunnel') ? (
+            <>
+              <View style={styles.tunnelRow}>
+                <Text style={styles.label}>{t.settings.wizTunnelRow}</Text>
+                <Switch value={settings.autoConnect} onValueChange={(value) => update({ autoConnect: value })} />
+              </View>
+              <Text style={styles.help}>{t.settings.wizTunnelRowHelp}</Text>
+            </>
+          ) : null}
+        </View>
+      ) : null}
 
       <Text style={styles.step}>{stepService.title}</Text>
       <Text style={styles.label}>{t.connect.addressLabel}</Text>
@@ -305,6 +728,26 @@ export default function ConnectWizard(props: WizardProps = {}) {
           )}
         </>
       )}
+
+      {/* ── S3.3 — TEST CONNECTION, both branches, on the last step. Three staged calls, so a failure
+          names itself instead of saying "it did not work": reachable, is-this-Hermes, authenticated. ── */}
+      <Text style={styles.step}>{t.settings.wizTest}</Text>
+      <Btn label={t.settings.wizTest} onPress={() => void runTest()} />
+      {test ? (
+        <View style={[styles.card, test.verdict === 'ok' ? styles.cardOk : styles.cardBad]}>
+          <Text style={styles.body}>{String(t.settings[TEST_MESSAGE_KEY[test.verdict]])}</Text>
+          {test.server ? <Text style={styles.help}>{`${test.server.version} · ${test.server.gatewayState}`}</Text> : null}
+          {test.stages.map((stage) => (
+            <Text key={stage.stage} style={styles.help}>
+              {`${stage.stage}: ${stage.ok ? 'ok' : 'failed'} · HTTP ${stage.status} · ${stage.ms} ms`}
+            </Text>
+          ))}
+          {/* ── S3.4 — the support log, SHARED and nothing else (decision §3.7): a redacted file to
+              the OS share sheet. Addresses masked, credentials never included. ── */}
+          <Btn label={t.settings.wizShare} secondary onPress={() => void shareSupport()} />
+          <Text style={styles.help}>{t.settings.wizShareHelp}</Text>
+        </View>
+      ) : null}
 
       <Text style={styles.label}>{t.connect.pasteLink}</Text>
       <TextInput
@@ -406,4 +849,15 @@ const styles = StyleSheet.create({
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: space.xl, gap: space.md },
   scanBar: { position: 'absolute', left: 0, right: 0, bottom: 0, padding: space.lg, backgroundColor: 'rgba(0,0,0,0.7)', gap: space.sm },
   scanText: { color: '#fff', fontSize: font.body, textAlign: 'center' },
+  // ── 0.10.0 S3 — the branch step, the two address cards and the tunnel row ──
+  branchWrap: { gap: space.md },
+  branchCard: {
+    backgroundColor: colors.panel,
+    borderColor: colors.border,
+    borderWidth: 1,
+    borderRadius: radius.md,
+    padding: space.md,
+    gap: space.xs,
+  },
+  tunnelRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: space.md },
 });

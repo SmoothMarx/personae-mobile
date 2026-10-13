@@ -80,6 +80,7 @@ import {
 } from '../src/roster/menus';
 import { plusMenuEntries, profileFromPickerKey, profilePickerEntries } from '../src/roster/plusMenu';
 import { useSettings } from '../src/SettingsContext';
+import { loadWizardState, shouldAutoOpen } from '../src/connect/wizardSession';
 import { useRoster, type RosterListRow } from '../src/roster/useRoster';
 import { colors, font, radius, space } from '../src/theme';
 
@@ -141,6 +142,30 @@ export default function RosterScreen() {
   const pendingSessionGroup = useRef<{ profile: string; id: string } | null>(null);
 
   const { notice, clearNotice } = roster;
+
+  /**
+   * ── 0.10.0 S3, entry (a) — the wizard opens by itself on a first launch ────────────────────────
+   *
+   * Only when there is NO configured connection (`shouldAutoOpen`: no `baseUrl`, no routes — the same
+   * question `connectionRows()` answers with zero rows), and only while the `personae.wizard.v1`
+   * dismissed flag is unset, so a Skip sticks and this never fires again. A `ref` guard keeps it to
+   * ONE redirect per launch: without it, coming back to the roster mid-setup would bounce the user
+   * straight into the wizard again.
+   */
+  const autoOpened = useRef(false);
+  useEffect(() => {
+    if (autoOpened.current) return undefined;
+    let live = true;
+    void loadWizardState().then((state) => {
+      if (!live || autoOpened.current) return;
+      if (!shouldAutoOpen(state, settings)) return;
+      autoOpened.current = true;
+      router.replace('/connect');
+    });
+    return () => {
+      live = false;
+    };
+  }, [settings, router]);
   useEffect(() => {
     if (!notice) return;
     const timer = setTimeout(clearNotice, 4000);

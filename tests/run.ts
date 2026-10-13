@@ -287,6 +287,12 @@ import {
 } from '../src/gateway/plan';
 import { parseGatewayStatus, readGatewayStatus, statusUrl } from '../src/gateway/status';
 import { DOT_STATES, createDotProbe, dotStateOf, healthUrlFor, initialDots, probeDots } from '../src/gateway/dots';
+import { branchRows, branchSteps, installCheckVisible, tunnelRowVisible, wizardBranchIds, wizardBranches, wizardPlan, WIZARD_BRANCH_STEP_ID } from '../src/connect/wizard';
+import { clampPort, isHostname, isValidIpv4, ipInput, isRemoteTarget, lanUrl, portInput, portOr, remoteUrl, splitAddress } from '../src/connect/address';
+import { PAIR_STATES, pairIdFrom, pairStatusUrl, parsePairState, runPairLogin, wizardLoginUrl } from '../src/connect/pairflow';
+import { readStatusBody, stagedConnectionTest, TEST_MESSAGE_KEY } from '../src/connect/connectionTest';
+import { buildSupportBundle, maskAddress, pushTimeline, supportText, TIMELINE_CAP } from '../src/connect/support';
+import { DEFAULT_WIZARD_STATE, dismissPatch, normalizeWizardState, resumeStep, shouldAutoOpen, stepPatch, WIZARD_STATE_KEY } from '../src/connect/wizardSession';
 
 // Most assertions below were written against the Portuguese copy, so the suite runs in PT
 // explicitly. The language tests switch on purpose and always restore 'pt' afterwards.
@@ -5591,6 +5597,342 @@ async function main(): Promise<void> {
     assert.ok(!/setInterval|setTimeout\(.*probe/.test(dotsSource), 'no repeating timer in the module');
     assert.match(dotsSource, /Promise\.all/, 'and the fan-out is parallel by construction');
     assert.ok(!/connectThrough|poll/i.test(dotsSource.replace(/\/\*[\s\S]*?\*\//g, '')), 'the dots are not a polling engine');
+  });
+
+
+  // ────────────────────────────────────────────────────────────────────────────────────────────────
+  // 0.10.0 S3 — the connection wizard. `src/connect/Wizard.tsx` and `app/index.tsx` cannot be rendered
+  // on this host, so the parts the suite cannot execute are asserted as SOURCE facts (the repo's own
+  // convention), and every decision the wizard makes is asserted through the pure modules it calls.
+  // ────────────────────────────────────────────────────────────────────────────────────────────────
+  const wizardSource = () => readFileSync(join(process.cwd(), 'src', 'connect', 'Wizard.tsx'), 'utf8');
+  const wizardCode = () => codeOnly(wizardSource());
+  const rosterSource = () => readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+
+  test('0.10.0 S3: the wizard asks LAN or Remote, and either branch keeps the three 0.7.0 steps', async () => {
+    await inLanguage('en', () => {
+      // the 0.7.0 three are UNTOUCHED — the branch is drawn on top of them, never instead of them
+      assert.deepEqual(wizardStepIds(), ['service', 'sign-in', 'check']);
+      assert.deepEqual(wizardBranchIds(), ['lan', 'remote']);
+      const branches = wizardBranches();
+      assert.deepEqual(branches.map((branch) => branch.title), [t.settings.wizBranchLan, t.settings.wizBranchRemote]);
+      assert.ok(branches.every((branch) => branch.help.trim().length > 0), 'each card says what the path is for');
+      // STEP 1 is the question, and the three steps follow it
+      const plan = wizardPlan();
+      assert.equal(plan[0].id, WIZARD_BRANCH_STEP_ID, 'the LAN/Remote question is step 1');
+      assert.equal(plan[0].title, t.settings.wizBranchTitle);
+      assert.deepEqual(plan.slice(1).map((step) => step.id), ['service', 'sign-in', 'check']);
+      assert.ok(plan.every((step) => step.inline), 'no step hides behind a navigation');
+      // both branches reach the SAME three steps
+      for (const branch of wizardBranchIds()) {
+        assert.deepEqual(branchSteps(branch).map((step) => step.id), wizardStepIds(), `${branch} keeps the three steps`);
+      }
+      assert.ok(isInlineWizard());
+    });
+    // and the screen draws the cards from that list (source inspection: no renderer here)
+    const code = wizardCode();
+    assert.match(code, /wizardBranches\(\)/, 'the two cards come from the plan');
+    assert.match(code, /step === 'kind'/, 'step 1 is drawn before the rest');
+    assert.match(code, /branch === 'lan'/, 'and each branch has its own body');
+  });
+
+  test('0.10.0 S3: the LAN fields — IPv4 strict, a separate port, and a pasted address splits', () => {
+    // The IPv4 field keeps digits and periods only…
+    assert.equal(ipInput('10.0.0.15abc'), '10.0.0.15');
+    assert.equal(ipInput('1.2.3.4:9119'), '1.2.3.49119');
+    // …and the rule that decides is `octets()` — 4 parts, each <= 255 (stricter than "numbers and dots")
+    assert.equal(isValidIpv4('10.0.0.15'), true);
+    assert.equal(isValidIpv4('10.0.0'), false, 'a 3-part address is not an address');
+    assert.equal(isValidIpv4('10.0.0.256'), false, '255 is the ceiling');
+    assert.equal(isValidIpv4('10.0.0.'), false);
+    assert.equal(isValidIpv4('10.0.0.15.7'), false);
+    assert.equal(isValidIpv4(''), false);
+    // the port is its OWN field, and it clamps
+    assert.equal(portInput('91a19'), '9119');
+    assert.equal(clampPort('9119'), 9119);
+    assert.equal(clampPort('0'), null, 'zero is not a port, and it is not silently rewritten into one');
+    assert.equal(clampPort('70000'), 65535, 'and above 65535 becomes 65535');
+    assert.equal(clampPort(''), null, 'an empty port field is "not typed", not zero');
+    assert.equal(portOr(''), 9119, 'and the app then uses the dashboard port');
+    assert.equal(portOr('10443'), 10443);
+    // a PASTED address splits into the two fields; the scheme is dropped, because the app appends it
+    assert.deepEqual(splitAddress('1.2.3.4:9119'), { host: '1.2.3.4', port: '9119' });
+    assert.deepEqual(splitAddress('http://1.2.3.4:9119'), { host: '1.2.3.4', port: '9119' });
+    assert.deepEqual(splitAddress('10.0.0.15'), { host: '10.0.0.15', port: '' });
+    assert.deepEqual(splitAddress('1.2.3.4:'), { host: '1.2.3.4', port: '' });
+    // …and the app builds the URL with http:// itself, only for a real IPv4
+    assert.equal(lanUrl('10.0.0.15', 9119), 'http://10.0.0.15:9119');
+    assert.equal(lanUrl('10.0.0.15', portOr('')), 'http://10.0.0.15:9119');
+    assert.equal(lanUrl('10.0.0', 9119), null, 'a bad address produces no URL at all');
+    assert.equal(lanUrl('10.0.0.15', 0), 'http://10.0.0.15:9119', 'a port that is not a port falls back to the dashboard port');
+    // the screen uses those functions rather than re-deriving the rules
+    const code = wizardCode();
+    assert.match(code, /ipInput\(/);
+    assert.match(code, /portInput\(/);
+    assert.match(code, /splitAddress\(/);
+    assert.match(code, /lanUrl\(/);
+    assert.match(code, /t\.settings\.wizPortLabel/, 'the port is its own field with its own label');
+  });
+
+  test('0.10.0 S3: the LAN login opens the dashboard at next=/pair, THEN polls, THEN redeems', async () => {
+    // the URL the in-app browser opens, and its next= parameter
+    assert.equal(wizardLoginUrl('http://10.0.0.15:9119'), 'http://10.0.0.15:9119/login?next=%2Fpair');
+    assert.match(wizardLoginUrl('http://10.0.0.15:9119/'), /\/login\?next=%2Fpair$/);
+    assert.equal(pairStatusUrl('http://box.test:9119', 'abc123').replace(/\?.*/, '?id=…'), 'http://box.test:9119/api/plugins/personae-mobile-auth/pair/status?id=…');
+    assert.match(pairStatusUrl('http://box.test:9119', 'abc123'), /\?id=abc123$/);
+    assert.deepEqual([...PAIR_STATES], ['pending', 'redeemed', 'expired']);
+    assert.equal(parsePairState({ state: 'redeemed' }), 'redeemed');
+    assert.equal(parsePairState({ state: 'nonsense' }), 'pending', 'an unknown state is "still waiting", never a guess');
+    assert.equal(parsePairState(null), 'pending');
+    assert.equal(pairIdFrom('http://box.test:9119/pair?id=abc123'), 'abc123');
+    assert.equal(pairIdFrom('personae://connect?base=x'), '', 'a deep link carries no pair id');
+
+    // THE ORDER: browser first, poll second, redeem last — asserted on the call log itself
+    const calls: string[] = [];
+    const link = parseConnectLink(LINK)!;
+    const outcome = await runPairLogin({
+      base: 'http://10.0.0.15:9119',
+      openBrowser: async (url) => {
+        calls.push(`browser:${url}`);
+        // A deep link (the same payload the QR carries) WITH the dashboard's pair id on it: that is
+        // the shape the in-app browser can return, and it exercises poll-then-redeem.
+        return { url: `personae://connect?base=http%3A%2F%2F10.0.0.15%3A9119&code=${link.code}&label=Pixel&id=pair-7` };
+      },
+      pollStatus: async (url) => {
+        calls.push(`poll:${url}`);
+        return { state: 'redeemed' };
+      },
+      redeem: async (redeemed) => {
+        calls.push(`redeem:${redeemed.code}`);
+        return { baseUrl: 'http://10.0.0.15:9119', token: 'tok', deviceId: 'dev_1', label: 'Pixel', createdAt: '' };
+      },
+      wait: async () => undefined,
+    });
+    assert.deepEqual(calls.map((entry) => entry.split(':')[0]), ['browser', 'poll', 'redeem'], 'the order IS the flow');
+    assert.match(calls[0], /next=%2Fpair/);
+    assert.match(calls[1], /pair\/status\?id=pair-7/);
+    assert.equal(outcome.outcome, 'redeemed');
+    assert.equal(outcome.outcome === 'redeemed' ? outcome.result.token : '', 'tok');
+    assert.equal(outcome.outcome === 'redeemed' ? outcome.polled : false, true, 'the poll really ran');
+
+    // a pairing the app cannot finish alone falls through to the QR/link path, and SAYS which case
+    const noLink = await runPairLogin({
+      base: 'http://10.0.0.15:9119',
+      openBrowser: async () => ({ url: 'http://10.0.0.15:9119/pair?id=pair-9' }),
+      pollStatus: async () => ({}),
+      redeem: async () => {
+        throw new Error('must not be called without a code');
+      },
+      wait: async () => undefined,
+      attempts: 2,
+    });
+    assert.deepEqual(noLink, { outcome: 'needs-qr', reason: 'no-code' });
+    const expired = await runPairLogin({
+      base: 'http://10.0.0.15:9119',
+      openBrowser: async () => ({ url: 'http://10.0.0.15:9119/pair?id=pair-9' }),
+      pollStatus: async () => ({ state: 'expired' }),
+      redeem: async () => {
+        throw new Error('must not be called when the code expired');
+      },
+    });
+    assert.deepEqual(expired, { outcome: 'needs-qr', reason: 'expired' });
+
+    // and the screen runs that flow with the in-app browser and a real poll
+    const code = wizardCode();
+    assert.match(code, /runPairLogin\(/);
+    assert.match(code, /WebBrowser\.openAuthSessionAsync/);
+    assert.match(code, /pair\/status/);
+  });
+
+  test('0.10.0 S3: remote — a MagicDNS name is legal, the tunnel row is Android-only, a 100.x timeout blames Tailscale', () => {
+    // a hostname is the ONE field that is not IPv4-strict
+    assert.equal(isHostname('box.tailnet.ts.net'), true);
+    assert.equal(isHostname('Personae-DS.tail1a2b.ts.net'), true);
+    assert.equal(isHostname('host.example.com'), true);
+    assert.equal(isHostname('1.2.3.4'), false, 'a bare IPv4 is not a hostname');
+    assert.equal(isHostname('1.2.3.4:9119'), false, 'the port has its own field');
+    assert.equal(isHostname('http://x.ts.net'), false, 'the scheme is appended by the app');
+    assert.equal(isHostname('box'), false, 'a single label is not a MagicDNS name');
+    assert.equal(isHostname(''), false);
+    assert.equal(remoteUrl('box.tailnet.ts.net', 9119), 'http://box.tailnet.ts.net:9119');
+    assert.equal(remoteUrl('nope', 9119), null);
+
+    // remote targets: the CGNAT range and the tailnet suffix
+    assert.equal(isRemoteTarget('http://100.64.0.2:9119'), true);
+    assert.equal(isRemoteTarget('http://100.127.0.1:9119'), true);
+    assert.equal(isRemoteTarget('http://100.128.0.1:9119'), false, '100.128 is outside 100.64/10');
+    assert.equal(isRemoteTarget('http://box.tailnet.ts.net:9119'), true);
+    assert.equal(isRemoteTarget('http://10.0.0.15:9119'), false);
+
+    // THE TUNNEL ROW — rendered on Android, ABSENT on iOS (not disabled: absent)
+    assert.equal(tunnelRowVisible('android'), true);
+    assert.equal(tunnelRowVisible('ios'), false);
+    assert.equal(tunnelRowVisible('web'), false);
+    assert.equal(installCheckVisible('android'), true);
+    assert.equal(installCheckVisible('ios'), false, 'the install check has no iOS half');
+    assert.deepEqual(branchRows('remote', 'android'), ['peers', 'manual', 'tunnel', 'test']);
+    assert.deepEqual(branchRows('remote', 'ios'), ['peers', 'manual', 'test'], 'the iOS branch has no tunnel row at all');
+    assert.deepEqual(branchRows('lan', 'ios'), branchRows('lan', 'android'), 'the LAN branch is the same on both');
+    // the screen lets the PLAN decide, and has no "not available here" line for iOS
+    const code = wizardCode();
+    assert.match(code, /branchRows\('remote', Platform\.OS\)\.includes\('tunnel'\)/);
+    assert.match(code, /installCheckVisible\(Platform\.OS\)/);
+    assert.ok(!/iosNote/.test(code), 'no help sentence apologising for a platform limit');
+    assert.ok(!/disabled=\{Platform\.OS !== 'android'\}/.test(code), 'and no dead, disabled row');
+
+    // the help text says "asks", never "connects" — the broadcast is fire-and-forget
+    assert.match(stringsFor('en').settings.wizTunnelRowHelp, /[Aa]sks Tailscale to connect/);
+    assert.ok(!/connects the tunnel/i.test(stringsFor('en').settings.wizTunnelRowHelp));
+  });
+
+  test('0.10.0 S3: the test is three staged calls, and a 401 means sign in', async () => {
+    const stages: string[] = [];
+    const deps = (over: Partial<Parameters<typeof stagedConnectionTest>[1]> = {}) => ({
+      tcp: async () => {
+        stages.push('reachable');
+        return true;
+      },
+      status: async () => {
+        stages.push('hermes');
+        return { status: 200, body: { version: '0.21.5', gateway_state: 'ready' } };
+      },
+      authed: async () => {
+        stages.push('authenticated');
+        return { status: 200 };
+      },
+      timeoutMs: 1500,
+      ...over,
+    });
+
+    let result = await stagedConnectionTest('http://10.0.0.15:9119', deps());
+    assert.deepEqual(stages, ['reachable', 'hermes', 'authenticated'], 'three stages, in that order');
+    assert.deepEqual(result.stages.map((stage) => stage.stage), ['reachable', 'hermes', 'authenticated']);
+    assert.equal(result.verdict, 'ok');
+    assert.deepEqual(result.server, { version: '0.21.5', gatewayState: 'ready' }, 'the success panel gets the version and the state');
+
+    // a 401 is "sign in", NOT "bad address" — stages 1 and 2 already proved the address
+    stages.length = 0;
+    result = await stagedConnectionTest('http://10.0.0.15:9119', deps({ authed: async () => ({ status: 401 }) }));
+    assert.equal(result.verdict, 'sign-in');
+    assert.equal(result.stages.length, 3, 'the address stages still ran and still passed');
+    assert.notEqual(result.verdict, 'unreachable');
+    result = await stagedConnectionTest('http://10.0.0.15:9119', deps({ authed: async () => ({ status: 403 }) }));
+    assert.equal(result.verdict, 'sign-in');
+
+    // nothing answered at a tailnet address: the TUNNEL is the suspect, not the address
+    result = await stagedConnectionTest('http://100.64.0.2:9119', deps({ tcp: async () => false }));
+    assert.equal(result.verdict, 'tailscale-off');
+    assert.equal(result.stages.length, 1, 'the test stops at the first failure');
+    assert.match(String(stringsFor('en').settings[TEST_MESSAGE_KEY['tailscale-off']]), /Tailscale may be off/);
+    // and the same silence at a LAN address is an address/network problem
+    result = await stagedConnectionTest('http://10.0.0.15:9119', deps({ tcp: async () => false }));
+    assert.equal(result.verdict, 'unreachable');
+    assert.match(String(stringsFor('en').settings[TEST_MESSAGE_KEY.unreachable]), /address and the port/);
+    assert.notEqual(stringsFor('en').settings[TEST_MESSAGE_KEY.unreachable], stringsFor('en').settings[TEST_MESSAGE_KEY['tailscale-off']], 'the two silences say different things');
+
+    // something is listening, but it is not Hermes
+    result = await stagedConnectionTest('http://10.0.0.15:9119', deps({ status: async () => ({ status: 200, body: { hello: 'world' } }) }));
+    assert.equal(result.verdict, 'not-hermes');
+    // an unusable address never reaches the network
+    let touched = false;
+    result = await stagedConnectionTest('ftp://nope', deps({ tcp: async () => { touched = true; return true; } }));
+    assert.equal(result.verdict, 'bad-address');
+    assert.equal(touched, false);
+
+    // every verdict has words
+    for (const verdict of ['ok', 'tailscale-off', 'unreachable', 'not-hermes', 'sign-in', 'bad-address'] as const) {
+      assert.ok(String(stringsFor('en').settings[TEST_MESSAGE_KEY[verdict]]).trim().length > 0, `${verdict} has a sentence`);
+    }
+    const code = wizardCode();
+    assert.match(code, /stagedConnectionTest\(/);
+    assert.match(code, /probeTcp/, 'stage 1 is the existing native probe');
+    assert.match(code, /readStatusBody/);
+    assert.match(code, /timeoutMs: settings\.probeTimeoutMs/);
+  });
+
+  test('0.10.0 S3: the support bundle is masked and redacted, and the wizard remembers a skip', async () => {
+    // masking: the last IPv4 octet, and the middle of an IPv6 address
+    assert.equal(maskAddress('http://10.0.0.15:9119'), 'http://10.0.0.*:9119');
+    assert.equal(maskAddress('100.64.0.2 and 192.168.1.50'), '100.64.0.* and 192.168.1.*');
+    assert.equal(maskAddress('10.0.0.15'), '10.0.0.*');
+    assert.match(maskAddress('fd7a:115c:a1e0:ab12:1:2:3:4'), /^fd7a:(\*:)*4$/, 'the hextets in the middle are masked');
+
+    // the bundle: a bounded timeline, and NO credential anywhere in the text
+    const token = 'device-token-xyz0123456789';
+    const code = 'pair-code-abcdefghijklmnop';
+    let timeline: ReturnType<typeof pushTimeline> = [];
+    for (let index = 0; index < TIMELINE_CAP + 5; index += 1) {
+      timeline = pushTimeline(timeline, { at: '2026-10-13T00:00:00Z', what: `probe ${index} http://10.0.0.15:9119`, status: 200, ms: 12 });
+    }
+    assert.equal(timeline.length, TIMELINE_CAP, 'the ring buffer is capped');
+    assert.match(timeline[0].what, /probe 5/, 'and the OLDEST entries are the ones that fell off');
+    const bundle = buildSupportBundle(
+      {
+        app: { name: 'Personae', version: '0.10.0', versionCode: 12 },
+        platform: { os: 'android', osVersion: '36' },
+        device: { model: 'Pixel 8' },
+        server: { version: '0.21.5', gatewayState: 'ready' },
+        plugins: ['personae-mobile-auth'],
+        timeline: [
+          { at: '2026-10-13T00:00:00Z', what: `login ${token}`, status: 401, ms: 30 },
+          { at: '2026-10-13T00:00:01Z', what: `redeem ${code}`, status: 200, ms: 40 },
+        ],
+        addresses: ['http://10.0.0.15:9119', 'http://100.64.0.2:9119'],
+      },
+      1_700_000_000_000,
+    );
+    const text = supportText(bundle);
+    assert.ok(!text.includes(token), 'a token cannot appear in the bundle, even if it reached the timeline');
+    assert.ok(!text.includes(code), 'nor a pairing code');
+    assert.ok(!text.includes('10.0.0.15'), 'the full IPv4 address is not published');
+    assert.ok(!text.includes('100.64.0.2'));
+    assert.ok(text.includes('10.0.0.*') && text.includes('100.64.0.*'), 'but the masked form is there to compare with');
+    assert.match(text, /0\.21\.5 · ready/, 'the server version is what the bundle is for');
+    assert.ok(!/apiKey|Bearer|cookie/i.test(text));
+    assert.equal(bundle.timeline.length, 2);
+
+    // SHARE, never upload: no server route for a support bundle exists anywhere in the app
+    const wizard = wizardCode();
+    assert.match(wizard, /Sharing\.shareAsync/, 'the bundle goes to the OS share sheet');
+    assert.ok(!/support.*api\/plugins/i.test(wizard), 'and nowhere near a server route');
+    const src = wizardSource();
+    assert.match(src, /S3\.4/);
+
+    // ── the entry rules: a skip sticks, and the wizard resumes ──
+    assert.equal(WIZARD_STATE_KEY, 'personae.wizard.v1');
+    assert.deepEqual(normalizeWizardState(null), { dismissedAt: null, step: null, branch: null });
+    assert.deepEqual(normalizeWizardState({ dismissedAt: 1, step: 'check', branch: 'remote' }), { dismissedAt: 1, step: 'check', branch: 'remote' });
+    assert.deepEqual(normalizeWizardState({ dismissedAt: 'nope', step: 7, branch: 'nope' }), DEFAULT_WIZARD_STATE, 'junk is "nothing stored"');
+    assert.equal(resumeStep(DEFAULT_WIZARD_STATE), 'kind', 'a fresh wizard starts at the branch question');
+    assert.equal(resumeStep({ ...DEFAULT_WIZARD_STATE, step: 'sign-in' }), 'sign-in', 'a part-completed wizard resumes where it was');
+    assert.deepEqual(stepPatch('sign-in', 'remote'), { step: 'sign-in', branch: 'remote' });
+    assert.deepEqual(dismissPatch(1_700_000_000_000), { dismissedAt: 1_700_000_000_000 });
+
+    // auto-open: only when there is NO configured connection, and never after a skip
+    const unconfigured = { ...DEFAULT_SETTINGS, baseUrl: '', routes: [] } as Settings;
+    assert.equal(shouldAutoOpen(DEFAULT_WIZARD_STATE, unconfigured), true, 'first launch opens the wizard');
+    assert.equal(shouldAutoOpen({ ...DEFAULT_WIZARD_STATE, ...dismissPatch(1) }, unconfigured), false, 'and a Skip sticks');
+    assert.equal(
+      shouldAutoOpen(DEFAULT_WIZARD_STATE, { ...DEFAULT_SETTINGS, baseUrl: 'http://10.0.0.15:9119', routes: [] } as Settings),
+      false,
+      'a legacy baseUrl install is configured — it is never interrupted',
+    );
+    assert.equal(
+      shouldAutoOpen(DEFAULT_WIZARD_STATE, { ...DEFAULT_SETTINGS, baseUrl: '', routes: [{ role: 'lan', priority: 0, url: 'http://10.0.0.15:9119', insecure: true }] } as Settings),
+      false,
+      'and so is a route-only install',
+    );
+    // the roster opens it, once per launch, through the same decision
+    const roster = rosterSource();
+    assert.match(roster, /shouldAutoOpen\(/);
+    assert.match(roster, /router\.replace\('\/connect'\)/);
+    assert.match(roster, /autoOpened/, 'and only once per launch');
+    // the wizard writes the flag and resumes, through the module
+    assert.match(wizard, /saveWizardState\(/);
+    assert.match(wizard, /loadWizardState\(/);
+    assert.match(wizard, /resumeStep\(/);
+    assert.match(wizard, /dismissPatch\(/);
+    assert.match(wizard, /t\.settings\.wizSkip/);
   });
 
   // ─────────────────────────────────────────────────────── report ──

@@ -83,7 +83,12 @@ export function portOf(url: string): number | null {
   }
 }
 
-function octets(host: string): number[] | null {
+/**
+ * The strict IPv4 reader (4 parts, each 1-3 digits and <= 255). Exported since 0.10.0 S3.1: the
+ * wizard's IPv4 field uses THIS function, so "a valid address" means one thing in the app — the user's
+ * "numbers and periods" is stricter here, and the stricter rule is the one already tested.
+ */
+export function octets(host: string): number[] | null {
   const parts = host.split('.');
   if (parts.length !== 4) return null;
   const out: number[] = [];
