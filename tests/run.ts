@@ -256,6 +256,9 @@ import {
   PORTABLE_PREFERENCE_KEY,
   PORTABLE_SETTING_IDS,
   SCOPE_LABEL_KEY,
+  keysAreGeometricallyPlain,
+  pageRowStyleKeys,
+  rowIsGeometricallyPlain,
   scopeOfRow,
   scopeOfSetting,
   settingsRows,
@@ -4880,6 +4883,51 @@ async function main(): Promise<void> {
       ['api/client.ts'],
       'the prefix is a constant, not a string copied into every call site',
     );
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.9.1 — the settings page: the user's four corrections (2026-10-13)
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  /** `app/settings.tsx`, for the checks that are about what the screen derives. There is no renderer. */
+  const settingsSource = () => readFileSync(join(process.cwd(), 'app', 'settings.tsx'), 'utf8');
+
+  test('0.9.1 S1: every index row is geometrically identical — the Notifications indent cannot come back', () => {
+    // The plan owns a row's style modifiers, and it offers NONE — for any row, sibling or not.
+    const rows = settingsRows();
+    assert.ok(rows.length >= 3, 'the index still has its rows');
+    for (const row of rows) {
+      assert.deepEqual(pageRowStyleKeys(row), [], `${row.id} must contribute no style modifier`);
+      assert.ok(rowIsGeometricallyPlain(row), `${row.id} must be laid out like its neighbours`);
+    }
+    // …and the row that WAS indented is still the sibling row, so the loop above is not vacuous:
+    // the adjacency the user described is still stated and still asserted, it is simply not a modifier.
+    assert.equal(siblingBelow('notifications'), 'agent', 'the adjacency survives the indent');
+    assert.equal(rows.filter((row) => row.sibling).length, 1, 'exactly one row carries the flag — the one 0.9.0 indented');
+    // The guard can fail, so "plain" is a claim and not a tautology.
+    assert.equal(keysAreGeometricallyPlain(['pageRowSibling']), false, 'the 0.9.0 indent is recognised as an offset');
+    assert.equal(keysAreGeometricallyPlain(['marginLeft']), false);
+    assert.equal(keysAreGeometricallyPlain(['marginTop']), false);
+    assert.equal(keysAreGeometricallyPlain(['paddingLeft']), false);
+    assert.equal(keysAreGeometricallyPlain(['backgroundColor']), true, 'a non-positional modifier is fine');
+    assert.equal(keysAreGeometricallyPlain([]), true);
+    // The screen APPLIES what the plan returns and computes no geometry of its own…
+    const src = settingsSource();
+    assert.match(src, /\[styles\.pageRow, \.\.\.rowModifiers\(row\), pressed && styles\.pressed\]/);
+    assert.match(src, /pageRowStyleKeys\(row\)/, 'the modifiers come from the plan, not from the row here');
+    // …and the 0.9.0 indent is deleted, style and all — not merely unapplied. The check is on CODE: the
+    // comment that records WHY it was removed names the removed identifiers, which is documentation in
+    // this repo's convention (0.8.0 D's classifier test strips comments for the same reason).
+    const code = src
+      .split('\n')
+      .filter((line) => {
+        const trimmed = line.trim();
+        return !trimmed.startsWith('*') && !trimmed.startsWith('//') && !trimmed.startsWith('/*');
+      })
+      .join('\n');
+    assert.ok(!/pageRowSibling/.test(code), 'the style and every code reference to it are gone, not shadowed');
+    assert.ok(!/marginLeft: space\.lg/.test(code), 'the 0.9.0 indent literal is gone from the stylesheet');
+    assert.ok(!/siblingBelow/.test(code), 'the screen can no longer ask which row is a sibling, so it cannot indent one');
+    assert.ok(/pageRowSibling/.test(src), 'and the reason it went is written down where the style lived');
   });
 
   // ─────────────────────────────────────────────────────── report ──

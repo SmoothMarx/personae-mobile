@@ -32,7 +32,15 @@ export type SettingsPageRow = {
   title: string;
   /** One sentence saying what is inside. Never a bare noun. */
   help: string;
-  /** Whether the row sits UNDER the previous row (the user's "sibling row under Agent Preferences"). */
+  /**
+   * Whether the row sits UNDER the previous row (the user's "sibling row under Agent Preferences").
+   *
+   * **ADJACENCY METADATA ONLY (changed in 0.9.1 S1).** It says *where the row belongs in the reading
+   * order*; it is read by `siblingBelow` and asserted by the suite. It is **not** a visual modifier any
+   * more: until 0.9.1 it also indented the row and pulled it up, which is the offset the user saw on
+   * Notifications. See `pageRowStyleKeys` — a row's style modifiers come from there, and that function
+   * returns none for every row. **Do not reintroduce the indent.**
+   */
   sibling: boolean;
   scope: PreferenceScope;
   /** The row renders only when this is true, so the Advanced row can be gated (it always is, today). */
@@ -168,10 +176,56 @@ export function visiblePageIds(): Exclude<SettingsPageId, 'index'>[] {
   return settingsRows().map((row) => row.id);
 }
 
-/** The row that sits under another one — used by the screen to indent, and asserted by the suite. */
+/**
+ * The row that sits under another one. **Adjacency only** (0.9.1 S1): the screen no longer indents
+ * anything from this, and must not — see `pageRowStyleKeys`. What it still states, as a fact the suite
+ * checks, is the reading order: Notifications sits directly under Agent Preferences.
+ */
 export function siblingBelow(id: Exclude<SettingsPageId, 'index'>): Exclude<SettingsPageId, 'index'> | null {
   const index = SETTINGS_PAGE_ROWS.findIndex((row) => row.id === id);
   if (index <= 0) return null;
   const row = SETTINGS_PAGE_ROWS[index];
   return row.sibling ? SETTINGS_PAGE_ROWS[index - 1].id : null;
 }
+
+// ─────────────────────────────── S1 (0.9.1): every index row looks the same ──
+
+/**
+ * the user, 2026-10-13: *"Notifications is offset from the rest of the rows. Fix it."* The offset was
+ * real and had one cause: 0.9.0 applied `styles.pageRowSibling`
+ * (`{ marginLeft: space.lg, marginTop: -space.sm + 2 }`) to the single row whose `sibling` flag is
+ * true, so Notifications was indented and pulled up while the other rows were not.
+ *
+ * The fix is a MOVE, not a new flag: the style modifiers a row contributes are decided HERE, by the
+ * plan, and this function returns **none for every row** — so the rows are geometrically identical and
+ * the screen has nothing to derive an indent from.
+ *
+ * `sibling` and `siblingBelow` are deliberately KEPT (see both docstrings): the adjacency they state is
+ * still true and still asserted. It simply stopped being a visual modifier. **A future reader must not
+ * move that indent back in here** — the suite names this function and fails if a row's modifiers can
+ * move a row off its neighbours' geometry (`keysAreGeometricallyPlain` below).
+ */
+export function pageRowStyleKeys(_row: SettingsPageRow): string[] {
+  return [];
+}
+
+/** A style key that would move a row off its neighbours' geometry. The guard, as a predicate. */
+const OFFSET_STYLE_KEY = /margin|padding|left|right|indent|offset|translate/i;
+
+/**
+ * The exact modifier 0.9.0 used to indent Notifications, kept by NAME so a re-introduction is caught
+ * even if it is renamed out of the positional vocabulary (`pageRowSibling` carries no `margin`, so the
+ * regex above would not see it). This list is the regression, written down.
+ */
+export const BANNED_ROW_STYLE_KEYS: readonly string[] = ['pageRowSibling'];
+
+/** Would these modifier keys break the "every row is laid out identically" promise? */
+export function keysAreGeometricallyPlain(keys: readonly string[]): boolean {
+  return !keys.some((key) => OFFSET_STYLE_KEY.test(key) || BANNED_ROW_STYLE_KEYS.includes(key));
+}
+
+/** The whole S1 claim for one row, as a question a test can ask. */
+export function rowIsGeometricallyPlain(row: SettingsPageRow): boolean {
+  return keysAreGeometricallyPlain(pageRowStyleKeys(row));
+}
+

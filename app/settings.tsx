@@ -12,7 +12,7 @@ import { File, Paths } from 'expo-file-system';
 import { Ionicons } from '@expo/vector-icons';
 import * as Sharing from 'expo-sharing';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View } from 'react-native';
+import { Alert, Modal, Platform, Pressable, ScrollView, Share, StyleSheet, Switch, Text, TextInput, View, type StyleProp, type ViewStyle } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { createBackend } from '../src/api/backend';
@@ -23,11 +23,12 @@ import { probeTcp } from '../src/native/tailscale';
 import { ADVANCED_OPEN_BY_DEFAULT } from '../src/settingsLayout';
 import {
   SCOPE_LABEL_KEY,
+  pageRowStyleKeys,
   scopeOfRow,
   settingsRows,
-  siblingBelow,
   type PreferenceScope,
   type SettingsPageId,
+  type SettingsPageRow,
 } from '../src/settingsPages';
 import { buildLogDocument, log } from '../src/logging';
 import { parseErrorForDisplay } from '../src/api/display';
@@ -473,6 +474,16 @@ export default function SettingsScreen() {
   const scopeLabel = (scope: PreferenceScope): string =>
     scope === 'portable' ? t.settings.scopePortable : scope === 'mixed' ? t.settings.scopeMixed : t.settings.scopeDeviceLocal;
 
+  /**
+   * 0.9.1 S1 — the style modifiers a row may add, looked up from the plan's own keys. Today the plan
+   * returns NONE for every row, and that is the point of routing it through here: if a row ever
+   * legitimately needs a modifier it must be declared in `src/settingsPages.ts`, where a test can see
+   * it, instead of being re-derived in this file from the row's shape. The indent that made
+   * Notifications look offset to the user lived in exactly that gap.
+   */
+  const rowModifiers = (row: SettingsPageRow): StyleProp<ViewStyle>[] =>
+    pageRowStyleKeys(row).map((key) => (styles as unknown as Record<string, StyleProp<ViewStyle>>)[key]);
+
   if (page === 'index') {
     return (
       <ScrollView
@@ -482,27 +493,27 @@ export default function SettingsScreen() {
       >
         <Text style={styles.pageTitle}>{t.settings.pagesTitle}</Text>
         <Text style={styles.help}>{t.settings.pagesHelp}</Text>
-        {settingsRows().map((row) => {
-          const parent = siblingBelow(row.id);
-          return (
-            <Pressable
-              key={row.id}
-              onPress={() => setPage(row.id)}
-              accessibilityRole="button"
-              accessibilityLabel={`${t.settings.pages[SETTINGS_PAGE_TITLE_KEY[row.id]]} — ${t.settings.pages[SETTINGS_PAGE_HELP_KEY[row.id]]}`}
-              style={({ pressed }) => [styles.pageRow, parent ? styles.pageRowSibling : null, pressed && styles.pressed]}
-            >
-              <View style={styles.pageRowText}>
-                <Text style={styles.label}>{t.settings.pages[SETTINGS_PAGE_TITLE_KEY[row.id]]}</Text>
-                <Text style={styles.help}>{t.settings.pages[SETTINGS_PAGE_HELP_KEY[row.id]]}</Text>
-              </View>
-              <View style={styles.scopeChip}>
-                <Text style={styles.scopeChipText}>{scopeLabel(row.scope)}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={16} color={colors.muted} />
-            </Pressable>
-          );
-        })}
+        {settingsRows().map((row) => (
+          <Pressable
+            key={row.id}
+            onPress={() => setPage(row.id)}
+            accessibilityRole="button"
+            accessibilityLabel={`${t.settings.pages[SETTINGS_PAGE_TITLE_KEY[row.id]]} — ${t.settings.pages[SETTINGS_PAGE_HELP_KEY[row.id]]}`}
+            // 0.9.1 S1 — every row gets the SAME style array. The modifiers come from the plan
+            // (`pageRowStyleKeys`, empty for all rows), so no row can be indented again: 0.9.0 applied
+            // `styles.pageRowSibling` to the one sibling row, and that indent was the user's "offset".
+            style={({ pressed }) => [styles.pageRow, ...rowModifiers(row), pressed && styles.pressed]}
+          >
+            <View style={styles.pageRowText}>
+              <Text style={styles.label}>{t.settings.pages[SETTINGS_PAGE_TITLE_KEY[row.id]]}</Text>
+              <Text style={styles.help}>{t.settings.pages[SETTINGS_PAGE_HELP_KEY[row.id]]}</Text>
+            </View>
+            <View style={styles.scopeChip}>
+              <Text style={styles.scopeChipText}>{scopeLabel(row.scope)}</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+          </Pressable>
+        ))}
         {/* The split, said out loud once, on the page where it matters. */}
         <Text style={styles.help}>{t.settings.scopeHelp}</Text>
       </ScrollView>
@@ -1332,8 +1343,10 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     padding: space.md,
   },
-  /** the user's "sibling row under Agent Preferences": the same row, indented, so it reads as part of it. */
-  pageRowSibling: { marginLeft: space.lg, marginTop: -space.sm + 2 },
+  // 0.9.1 S1: `pageRowSibling: { marginLeft: space.lg, marginTop: -space.sm + 2 }` lived here. It was
+  // applied to the one sibling row and was the user's "Notifications is offset". Deleted, not shadowed:
+  // every index row now gets `pageRow` and nothing else. Do not bring it back — the plan no longer
+  // offers a modifier to apply (`pageRowStyleKeys` returns none) and a test names the absence.
   pageRowText: { flex: 1, gap: 2 },
   scopeChip: {
     borderWidth: 1,
