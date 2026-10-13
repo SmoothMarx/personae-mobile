@@ -1709,6 +1709,13 @@ core file, no existing plugin — which is why `hermes update` cannot undo it. T
 **dormant** until `hermes-serve` next starts; rule §3 forbids restarting it from inside this run, and
 the app is explicitly built to be unharmed while it is dormant.
 
+**CORRECTION (2026-10-13, 0.9.1 S0).** The deployment described in the paragraph above was found
+**MISSING** on 2026-10-13: `server/install.sh --check` reported all five `personae-mobile-state` files
+absent and `~/.hermes/config.yaml` enabled only `personae-mobile-auth`. The plugin had never been
+installed, so the app ran 0.8.0's fallback throughout 0.9.0. It is now really deployed — `--check`
+reports **no drift** and the five files exist under `~/.hermes/plugins/personae-mobile-state/` (see the
+0.9.1 section below for the pasted output). The *effect* still waits on a `hermes-serve` restart.
+
 ## B — Settings as a page of rows
 
 `src/settingsPages.ts` is the plan (rows, order, and the scope of each); `app/settings.tsx` derives its

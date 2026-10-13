@@ -1,0 +1,12 @@
+no drift: deployed plugins match server/
+EXIT=0
+~/.hermes/plugins/personae-mobile-state/:
+dashboard
+__init__.py
+plugin.yaml
+__pycache__
+
+~/.hermes/plugins/personae-mobile-state/dashboard/:
+manifest.json
+plugin_api.py
+preferences.py
