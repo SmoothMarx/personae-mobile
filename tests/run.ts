@@ -5935,6 +5935,36 @@ async function main(): Promise<void> {
     assert.match(wizard, /t\.settings\.wizSkip/);
   });
 
+
+  test('0.10.0 S4: iOS gets local networking and a usage description, and Android keeps ONE mechanism', () => {
+    const appJson = JSON.parse(readFileSync(join(process.cwd(), 'app.json'), 'utf8')) as {
+      expo: {
+        ios: { infoPlist: Record<string, unknown> };
+        android: Record<string, unknown>;
+        plugins: unknown[];
+      };
+    };
+    const ats = appJson.expo.ios.infoPlist.NSAppTransportSecurity as Record<string, unknown> | undefined;
+    assert.ok(ats, 'the iOS ATS key is declared');
+    assert.equal(ats.NSAllowsLocalNetworking, true, 'a LAN request over http:// is allowed');
+    assert.equal('NSAllowsArbitraryLoads' in ats, false, 'and this is NOT an arbitrary-loads blanket');
+    // Without this string the Local Network prompt fires and the request dies — which the test button
+    // would then report as a bad address, the exact wrong conclusion.
+    const usage = appJson.expo.ios.infoPlist.NSLocalNetworkUsageDescription;
+    assert.equal(typeof usage, 'string');
+    assert.ok(String(usage).trim().length > 20, `the usage description is a real sentence: ${String(usage)}`);
+
+    // Android is untouched: cleartext is ALREADY on through expo-build-properties,
+    // and a second mechanism is exactly what §1.11 forbids.
+    const buildProps = (appJson.expo.plugins as unknown[]).filter(
+      (entry) => Array.isArray(entry) && (entry as unknown[])[0] === 'expo-build-properties',
+    ) as [string, { android?: Record<string, unknown> }][];
+    assert.equal(buildProps.length, 1, 'exactly one expo-build-properties entry');
+    assert.equal(buildProps[0][1].android?.usesCleartextTraffic, true, 'Android cleartext is unchanged');
+    assert.equal('networkSecurityConfig' in (buildProps[0][1].android ?? {}), false, 'no second Android mechanism');
+    assert.equal('usesCleartextTraffic' in appJson.expo.android, false, 'and none on the android block either');
+  });
+
   // ─────────────────────────────────────────────────────── report ──
   let index = 0;
   for (const item of tests) {

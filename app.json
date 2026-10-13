@@ -11,8 +11,9 @@
       "bundleIdentifier": "com.personae.mobile",
       "infoPlist": {
         "NSAppTransportSecurity": {
-          "NSAllowsArbitraryLoads": true
-        }
+          "NSAllowsLocalNetworking": true
+        },
+        "NSLocalNetworkUsageDescription": "Personae connects to the Hermes gateway on your own network, so it needs permission to reach devices on your local network."
       }
     },
     "android": {
