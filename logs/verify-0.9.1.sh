@@ -52,10 +52,10 @@ export LIVE_BEARER
 WANT_V="$(node -p "require('./app.json').expo.version" 2>/dev/null)"
 WANT_C="$(node -p "require('./app.json').expo.android.versionCode" 2>/dev/null)"
 DASH="http://127.0.0.1:9119"
-# The floors: 196 was the count before any 0.9.0 change, 241 the 0.9.0 count; the live count is
-# printed beside it.
-TEST_FLOOR=241
-SERVER_FLOOR=75
+# The floors: 196 before any 0.9.0 change, 241 at 0.9.0, 250 at 0.9.1 (the ten 0.9.1 tests joined the
+# suite); the live count is printed beside it.
+TEST_FLOOR=250
+SERVER_FLOOR=77
 fail=0
 ok()   { printf 'PASS  %s\n' "$1"; }
 bad()  { printf 'FAIL  %s\n' "$1"; fail=1; }
@@ -68,7 +68,7 @@ echo "--- app ---"
 if line=$(npm test 2>&1 | tail -3 | grep -E '^[0-9]+/[0-9]+ passed' | tail -1); then
   n=${line%%/*}; n=${n//[!0-9]/}
   if [ "${n:-0}" -ge "$TEST_FLOOR" ] && printf '%s' "$line" | grep -q ', 0 failed'; then
-    ok "app tests: $line (floor $TEST_FLOOR, measured before any 0.9.0 change)"
+    ok "app tests: $line (floor $TEST_FLOOR — the 0.9.0 count of 241 plus the ten 0.9.1 tests)"
   else
     bad "app tests: ${line:-no tally}"
   fi
@@ -131,6 +131,34 @@ for spec in \
 done
 
 echo
+echo "--- 0.9.1 §2 items: each one has a test that NAMES it (\`0.9.1 S<n>: …\`) ---"
+# A heredoc, not a backslash-continued list: several of these names contain double quotes (they quote
+# the user's own words), and escaping them inside `"item|name"` strings is how a name silently stops
+# matching. A quoted heredoc passes every character through literally.
+while IFS='|' read -r item name; do
+  [ -n "${item:-}" ] || continue
+  if grep -qF "$name" tests/run.ts; then ok "item $item: test present — \"$name\""; else bad "item $item: test MISSING — \"$name\""; fi
+done <<'SPECS091'
+S1|0.9.1 S1: every index row is geometrically identical — the Notifications indent cannot come back
+S2|0.9.1 S2: ONE back control in the header — it walks the plan, never straight to the index
+S3|0.9.1 S3: Advanced moved INSIDE Gateway Settings — it did not vanish
+S4.1|0.9.1 S4.1: the Agent Preferences page offers no control that changes the language — English, always
+S4.1|0.9.1 S4.1: a stored {language: "pt"} still renders English
+S4.2|0.9.1 S4.2: "Display session types" — four checkboxes, one per kind, each filtering on its own
+S4.2|0.9.1 S4.2: a legacy two-boolean blob loads as the three run types it meant
+S4.2|0.9.1 S4.2: the portable round-trip carries four booleans (and no server change was needed)
+S4.2|0.9.1 S4.2: the list and the checkpoint watcher still consult ONE classifier
+SPECS091
+# S0 is deliberately NOT in that list, and the brief says why: "this item's proof is not a test". Its
+# evidence is the `install.sh --check` block ABOVE (the five deployed files and the config line), plus the
+# 0.9.0 correction it forced. So the check here is that the run SAYS so rather than inventing a test name.
+if grep -qF "its proof is a command, not a test" PROGRESS.md; then
+  ok "S0 is recorded with the reason its proof is a command and not a test (the brief's own rule)"
+else
+  bad "S0 does not say why it has no named test"
+fi
+
+echo
 echo "--- §4 item 12 (push): PARKED by the user, and recorded as parked ---"
 if grep -qi 'push' PROGRESS.md && grep -qi 'Firebase project is the user' PROGRESS.md; then
   ok "PROGRESS.md records the push deferral and its reason (the Firebase project is the user's to create)"
@@ -178,11 +206,17 @@ for f in __init__.py plugin.yaml dashboard/manifest.json dashboard/plugin_api.py
     bad "NOT deployed: personae-mobile-state/$f"
   fi
 done
-if grep -qE '^[[:space:]]+- personae-mobile-state[[:space:]]*$' "${HERMES_HOME:-$HOME/.hermes}/config.yaml" 2>/dev/null; then
+if grep -qE '^[[:space:]]+- personae-mobile-state[[:space:]]*$' "${HERMES_HOME_DIR:-$HOME/.hermes}/config.yaml" 2>/dev/null; then
   ok "config.yaml enables personae-mobile-state"
 else
   bad "config.yaml does not enable personae-mobile-state"
 fi
+# NOTE the variable, and why it is NOT $HERMES_HOME: `server/install.sh` targets
+# `${HERMES_HOME_DIR:-$HOME/.hermes}` — the DEFAULT profile home, which is where the live dashboard reads
+# its plugins from. $HERMES_HOME is a different thing: it is the ACTIVE PROFILE's home, and in the agent's
+# own CLI session it points at `~/.hermes/profiles/<agent>/`. Reading the config through $HERMES_HOME
+# would check a file the dashboard never loads and would report "not enabled" for a plugin that is
+# enabled — which is exactly the class of mistake S0 exists to stop.
 
 echo
 echo "--- the live dashboard answers what 0.9.0 needs ---"
@@ -257,6 +291,9 @@ if [ ! -f "$APK" ]; then bad "$APK missing"; echo; echo "RESULT: FAIL"; exit 1; 
 note "path: $APK"
 note "bytes: $(stat -c %s "$APK")"
 note "sha256: $(sha256sum "$APK" | cut -d' ' -f1)"
+# 0.9.0's own artifact, printed beside it so the two can be compared at a glance (it is NOT an assertion:
+# a corrections release legitimately changes both, and pinning a byte count would fail on a rebuild).
+note "0.9.0 was: 117547098 bytes / sha256 047da9e25092510bebbc606330586de528190b8ca07ad0d2a18cd75a51f5a131"
 
 docker run --rm -e LIVE_BEARER -v "$ROOT:/work" -w /work "$IMAGE" bash -lc '
   set -u
@@ -274,7 +311,7 @@ docker run --rm -e LIVE_BEARER -v "$ROOT:/work" -w /work "$IMAGE" bash -lc '
   done
   echo
   echo "application-id: $(apkanalyzer manifest application-id "$APK")"
-  printf "0.9.0 feature strings (want >=1 each): "
+  printf "0.9.1 feature strings (want >=1 each): ": 
   while IFS= read -r s; do printf "[%s]=%s " "$s" "$(unzip -p "$APK" assets/index.android.bundle | grep -ac "$s")"; done <<'"'"'STRINGS'"'"'
 session-groups-v1
 Select all
@@ -286,6 +323,10 @@ file.attach
 Add an attachment
 Agent Preferences
 This phone only
+Display session types
+One-shots
+Webhooks
+Advanced lives inside this page
 STRINGS
   echo
   printf "env facts (want 0): "
@@ -337,12 +378,12 @@ else
 fi
 # every 0.9.0 feature string the release claims must be IN the artifact
 missing=0
-for s in session-groups-v1 "Select all" "This cannot be undone" "Hold to record a voice note" "image.attach_bytes" "Add an attachment" "Agent Preferences"; do
+for s in session-groups-v1 "Select all" "This cannot be undone" "Hold to record a voice note" "image.attach_bytes" "Add an attachment" "Agent Preferences" "Display session types" "One-shots" "Webhooks" "Advanced lives inside this page"; do
   if ! grep -qF "[$s]=" /tmp/v091-apk.txt; then continue; fi
   n="$(sed -n "s/.*\[$s\]=\([0-9]*\).*/\1/p" /tmp/v091-apk.txt | head -1)"
-  if [ "${n:-0}" -lt 1 ]; then bad "0.9.0 feature string is NOT in the bundle: \"$s\""; missing=1; fi
+  if [ "${n:-0}" -lt 1 ]; then bad "feature string is NOT in the bundle: \"$s\""; missing=1; fi
 done
-[ "$missing" = 0 ] && ok "every 0.9.0 feature string is inside the shipped bundle"
+[ "$missing" = 0 ] && ok "every 0.9.0 AND 0.9.1 feature string is inside the shipped bundle"
 
 echo
 if [ "$fail" = 0 ]; then echo "RESULT: PASS — 0.9.1 verified"; else echo "RESULT: FAIL"; fi

@@ -1939,3 +1939,302 @@ Two things the verifier prints as notes rather than failures, because both are t
 than a defect: Phase A's plugin is deployed but **dormant** (404) until `hermes-serve` restarts, which
 rule §3 forbids this run from forcing; and the literal `~/.hermes/hermes-agent/venv/bin/python -m
 pytest server/tests -q` command still fails on this host by design, beside the runner of record.
+
+## 0.9.1 — the settings page: the user's four corrections (2026-10-13)
+
+A corrections batch, not a feature batch. One commit per item:
+
+| item | commit | what it closed |
+|---|---|---|
+| S0 | `3f440cf` | the deployment 0.9.0 documented and never performed |
+| S1 | `96b8b96` | "Notifications is offset from the rest of the rows. Fix it." |
+| S2 | `8fa2ac4` | "the back arrow should be the top, the UI should not introduce a new one" |
+| S3 | `6df2798` | "The 'advanced' page should be inside the 'Gateway Settings'." |
+| S4.1 | `f6a0a75` | "remove language and English is default" |
+| S4.2 | `259b311` | "Display Session Types" + four checkboxes (sessions, cron, webhook, one-shots) |
+
+## Floors, measured
+
+| suite | 0.9.0 | now |
+|---|---|---|
+| app (`npm test`) | **241/241, 0 failed** | **250/250, 0 failed** |
+| typecheck (`tsc --noEmit`) | rc 0 | rc 0 |
+| server (`server/run-tests.sh tests`) | **75 passed** | **77 passed** |
+| verifier | 47 named tests, `RESULT: PASS` | **88 PASS / 0 FAIL**, `RESULT: PASS — 0.9.1 verified` |
+
+Ten new app tests — the four items' acceptance, every one named `0.9.1 S<n>: …` — and two new server
+tests (S4.2's four-boolean round trip through the real `preferences.py` document). No test was deleted:
+eight 0.8.0/0.9.0 assertions that pinned the corrected behaviour were **superseded in place**, each with
+the old value kept in a comment beside the new one.
+
+## Every item's test FAILS before its change (the RED proofs)
+
+`logs/red-0.9.1-S<n>.txt`. The harness is the honest one: `git archive HEAD` taken **before** the item's
+commit (so `app/`, `src/` and `server/` are the state the user asked to correct) with `tests/` as they are
+now, then `npx tsx tests/run.ts` in that tree. Measured:
+
+| file | exit | failing tests |
+|---|---|---|
+| `logs/red-0.9.1-S1.txt` | 1 | 241/242 — the S1 test, and nothing else |
+| `logs/red-0.9.1-S2.txt` | 1 | 242/243 — the S2 test, and nothing else |
+| `logs/red-0.9.1-S3.txt` | 1 | 241/244 — the S3 test + the two 0.9.0-B assertions it supersedes |
+| `logs/red-0.9.1-S4.1.txt` | 1 | 238/246 — both S4.1 tests + the six legacy assertions they supersede |
+| `logs/red-0.9.1-S4.2.txt` | 1 | 238/250 — all four S4.2 tests + the eight assertions they supersede |
+
+S0 is the exception and the brief says so: **its proof is a command, not a test.** No test can express
+"this file is on that disk", so the evidence is `server/install.sh --check` itself, and the verifier now
+runs it (see below) so a future run cannot repeat 0.9.0's claim without doing the work.
+
+## S0 — deploy what 0.9.0 documented but never deployed
+
+**Measured before the change**, on 2026-10-13:
+
+```
+missing: personae-mobile-state/__init__.py
+missing: personae-mobile-state/plugin.yaml
+missing: personae-mobile-state/dashboard/manifest.json
+missing: personae-mobile-state/dashboard/plugin_api.py
+missing: personae-mobile-state/dashboard/preferences.py
+rc=1
+```
+
+`~/.hermes/plugins/` held `personae-mobile-auth` and **no** `personae-mobile-state`, and
+`~/.hermes/config.yaml` enabled only the former. Phase A's surface had never been installed; the app had
+been running 0.8.0's fallback the whole time.
+
+**After `bash server/install.sh`** (full transcript: `logs/s0-install-0.9.1.txt`):
+
+```
+✓ Plugin personae-mobile-state enabled. Takes effect on next session.
+Gateway reloaded plugins; nothing of this plugin needs a session or restart.
+deployed. New routes / the /pair page mount at dashboard start. ...
+```
+
+and re-checking, which is the acceptance:
+
+```
+$ bash server/install.sh --check; echo rc=$?
+no drift: deployed plugins match server/
+rc=0
+$ ls -1 ~/.hermes/plugins/personae-mobile-state/ ~/.hermes/plugins/personae-mobile-state/dashboard/
+dashboard  __init__.py  plugin.yaml
+manifest.json  plugin_api.py  preferences.py
+```
+
+**A CORRECTION TO THE BRIEF'S OWN EXPECTATION, measured, and stated because it differs.** The brief says
+to record that "the deployment is now real and the *effect* is still waiting on a restart". The effect is
+**not** waiting. With the plugin installed, and with `hermes-serve` untouched — never restarted, rule §3 —
+the live dashboard answers:
+
+```
+$ systemctl --user show hermes-serve.service -p ActiveEnterTimestamp -p MainPID
+ActiveEnterTimestamp=Tue 2026-10-13 05:06:32 UTC     # 05:06; the install ran at 10:18
+MainPID=55155
+
+$ curl -s --oauth2-bearer "$…" http://127.0.0.1:9119/api/plugins/personae-mobile-state/health
+{"ok":true,"plugin":"personae-mobile-state","verbs":["archive","delete"],"preferences":true}
+$ curl -s --oauth2-bearer "$…" http://127.0.0.1:9119/api/plugins/personae-mobile-state/preferences/keys
+{"portable":["display-order","notifications","session-types"], …}
+```
+
+`hermes plugins enable` reloads the plugin set in place ("Gateway reloaded plugins"), so the routes the
+plugin declares are **mounted now**. Nothing was restarted to achieve this. The remaining caveat is only
+that **I did not exercise archive/delete against a live session** — the app-side proof of "one behaviour,
+two doors" is still the mock (`0.9.0 A:` tests), and the live surface is proven by its two routes above.
+
+The 0.9.0 Phase A section now carries the correction line (see it in place); the rest of it is untouched.
+
+## S1 — Notifications is no longer offset
+
+The cause was exactly as the brief describes: `SETTINGS_PAGE_ROWS` marks the Notifications row
+`sibling: true`, `siblingBelow('notifications')` returned `'agent'`, and the screen applied
+`styles.pageRowSibling` (`{ marginLeft: space.lg, marginTop: -space.sm + 2 }`) to that one row. One row
+indented and pulled up; three not.
+
+* The indent is **deleted**, style and all. The index row's style array is now
+  `[styles.pageRow, ...rowModifiers(row), pressed && styles.pressed]`, and the modifiers come from the
+  plan: `pageRowStyleKeys(row)` in `src/settingsPages.ts` returns `[]` for **every** row.
+* `sibling: true` and `siblingBelow()` are **kept** — the adjacency ("Notifications is the row directly
+  under Agent Preferences") is still true, still data, still asserted — and the docstring on both now says
+  it is adjacency metadata only and must not become a visual modifier again.
+* The screen no longer imports `siblingBelow` at all, so it *cannot* re-derive an indent.
+* The guard is a predicate, not a comment: `keysAreGeometricallyPlain()` fails on a positional key
+  (`marginLeft`, `paddingLeft`, `translateX`…) **and** on the historical name `pageRowSibling`
+  (`BANNED_ROW_STYLE_KEYS`) — the first draft missed that one, because `pageRowSibling` carries no
+  `margin`, and the test's positive control caught it.
+
+Asserted by `0.9.1 S1` (RED: 241/242). The 0.9.0-B ordering/adjacency assertions are untouched and green.
+
+## S2 — one back control, in the header, and it walks the plan
+
+0.9.0 drew two: the Stack header's arrow, and a `backRow` in the body of every sub-page hard-wired to
+`setPage('index')`.
+
+* `backRow` is gone, with `pageBack`/`pageBackText` and the body's duplicated page heading. The body now
+  starts with its own content.
+* `SETTINGS_PAGE_PARENT` + `parentPage()` + `backFrom()` live in `src/settingsPages.ts`, as data:
+  `advanced → gateway`, `agent | notifications | gateway → index`, `index → null` ("leave Settings — the
+  roster is behind this route", unchanged behaviour).
+* One `headerLeft`, driven by `backFrom(page)`, so the arrow and the plan cannot disagree; the header
+  **title** is the current page's (`pageTitle(id)` is plan-derived, and the two duplicate
+  `SETTINGS_PAGE_TITLE_KEY`/`SETTINGS_PAGE_HELP_KEY` maps in the screen are deleted).
+* Android hardware back calls the **same** `goBack` while a sub-page is on screen, and returns `false` on
+  the index so the router's own handling stays in charge.
+* `pageTitle()` resolves through `t`, live, so the bar follows the language.
+
+Asserted by `0.9.1 S2` (RED: 242/243), including the four acceptance clauses (a)–(d).
+
+## S3 — Advanced moved inside Gateway Settings
+
+A move, not a rewrite. `SETTINGS_PAGE_ROWS` lost the `advanced` row; `SUBPAGE_ROWS.gateway` holds exactly
+one row of the **same `SettingsPageRow` shape**, rendered by the same `styles.pageRow` token, opening the
+same page. The advanced contents — connection type, address, key, routes, tailnet internals, status, log —
+are untouched, still behind 0.7.0's closed disclosure, and `scopeOfRow('advanced')` is still
+`device-local` (now resolved through `findPageRow`, so the scope is data wherever the row is drawn).
+
+`pages.gatewayHelp` (EN) gained one clause: "Advanced lives inside this page."
+
+Asserted by `0.9.1 S3` (RED: 241/244), and by the two 0.9.0-B assertions updated in place — the proof it
+moved is that every advanced-content assertion (the 0.7.0 field plan, `ADVANCED_OPEN_BY_DEFAULT`,
+`advancedFieldIds()`) still passes **unchanged**.
+
+## S4.1 — no language setting; English, always
+
+* The field, the EN/PT segment control and its two labels are deleted from Agent Preferences;
+  `pages.agentHelp` (EN) no longer promises a language.
+* `language` is removed from the `Settings` type, from `DEFAULT_SETTINGS`, from
+  `DEVICE_LOCAL_SETTING_IDS` and from `src/settingsLayout.ts`'s field plan. A device-local setting that
+  can no longer be set is a lie on a page whose whole job is saying which settings exist.
+* **Nothing reads a stored language.** `loadSettings` ignores the key (and no longer switches the language
+  for the heal note); `SettingsContext` no longer calls `setLanguage`. The app is
+  `DEFAULT_LANGUAGE` ('en') for its whole life.
+* The i18n plumbing compiles and the PT table stays (§1.4). The **PT entries for the new S4.2 strings are
+  not written** (§3.3) — see the asymmetry note below.
+* The two legacy tests that pinned the switch were **superseded in place and renamed** ("a stored language
+  is IGNORED"), rather than left pinned to deleted behaviour.
+
+Asserted by `0.9.1 S4.1` — both tests (RED: 238/246): the page offers no control, and a stored
+`{language: "pt"}` still renders English.
+
+## S4.2 — "Display session types", four checkboxes
+
+* **Label** `sessionTypes` → `'Display session types'`, and the help sentence says plainly that this is
+  what the list *shows* — a display filter, not a capability.
+* **Model** `SessionTypes` is `{ sessions, cron, webhook, oneshot }`;
+  `DEFAULT_SESSION_TYPES = { sessions: true, cron: false, webhook: false, oneshot: false }`.
+* **Migration, in one place.** `normalizeSessionTypes` reads a legacy `automatic: true` as
+  cron + webhook + oneshot **all true**, and a legacy `automatic: false` (or an absent key) as all three
+  false; an explicit new key wins per field. The docstring states the rule, and a test asserts the legacy
+  key is read nowhere else in the module. Without it, a desktop still writing the two-boolean shape would
+  silently switch the phone's runs off — and the sync would look broken in one direction only.
+* **Classifier.** `sessionTypeOf()` returns one of the four ids, derived from one table —
+  `RUN_SOURCES = { cron: 'cron', cron_output: 'cron', webhook: 'webhook', oneshot: 'oneshot' }` — from
+  which `NON_CONVERSATION_SOURCES` is itself derived, so the four-way split cannot drift from "is this a
+  run" and a new job-run source is still one line. The **fail-open rule is unchanged** and is now pinned
+  against a genuinely unknown source (`brand-new-source`); `oneshot` graduated from "the unknown source we
+  tolerate" to a bucket the user asked for by name.
+* **Choices** are four, in the user's order, and each box filters independently; all four off still shows the
+  empty state with its reason. Per-bucket filtering in `buildRoster` means `automaticHidden` counts
+  exactly the runs the filter hid.
+* **The checkpoint watcher still agrees**: it imports and calls the same `sessionVisible`, so the phone
+  cannot hide a run and then announce it — asserted by behaviour (one setting object, both features, and
+  they name the same hidden run) as well as by the one-reader walk.
+* **Sync needs no server change.** The portable key stays `session-types`, the byte-cap/key-name validation
+  in `preferences.py` never inspects the value's shape, and a four-boolean object round-trips as-is —
+  **asserted twice**: in the app suite against the mock document, and in the server suite against the real
+  `preferences.py` (`test_9_1_S42_…`, two new tests that also prove a legacy two-boolean value is stored
+  verbatim).
+
+Asserted by four `0.9.1 S4.2` tests (RED: 238/250).
+
+**Note for the record (the desktop pane is NOT touched, §1.9):** when the pane becomes a *reader* of
+`session-types`, it must adopt the four-key shape and treat a legacy `automatic` as the three run types.
+
+## Decisions taken on the user's behalf (§3, one line each)
+
+1. **S2's reading of "the back arrow should be the top"**: exactly one back control — the header's —
+   popping one level, with the header title naming the current page; the body's `backRow` and its
+   duplicated heading are gone. *If the user meant "keep the body row and hide the header arrow", that is a
+   one-line swap inside S2 and nothing else moves.*
+2. **S4.2's labels** are his nouns in title case (`Sessions`, `Cron`, `Webhooks`, `One-shots`), matching
+   the other rows on the screen. I do not disagree with the brief's suggestion.
+3. **The PT string table stays** (§1.4), and the PT entries for the four new labels are **not** written
+   (§3.3). Consequence, stated plainly: `en` and `pt` are no longer key-identical, for the first time. The
+   asymmetry is declared in ONE place (`EN_ONLY_SETTINGS_KEYS` in `src/i18n.ts`) and the suite pins it
+   exactly — EN may lead PT by those six leaves and by nothing else, and PT may never lead.
+4. **Version 0.9.1 / versionCode 11** — corrections to 0.9.0, not a feature release.
+5. **The desktop pane plugin is out of scope** (§1.9) even though it renders session-type filtering of its
+   own; the note above is the record, not a change.
+
+Two smaller calls, recorded so they are not mistaken for oversights: the `language` field was removed
+from the `Settings` **type** rather than merely ignored (the brief's "the setting does not exist any
+more"); and on sub-pages the body's page heading was dropped, because the header now names the page and
+two copies of the same title is what the top-bar change was for.
+
+## What could not be verified, and why
+
+* **Nothing was verified on a phone.** There is still **no `adb` on this host** and no renderer for
+  `app/*.tsx`, so every item above is a static proof. Specifically:
+  * the four index rows being *visually* flush is asserted as a style-array fact
+    (`pageRowStyleKeys` → `[]` for every row, no positional key, the 0.9.0 style deleted) — **nobody has
+    looked at the screen**;
+  * the header back arrow and Android's hardware back are asserted as one plan function read twice, plus
+    the documented `BackHandler` idiom. Whether the native stack yields the press to JS on a real device is
+    **not measured here**; the fallback if it does not would be the arrow alone, and the two would not
+    disagree about the destination — only about who gets the press first;
+  * four checkboxes fit the Agent Preferences page: **not seen**.
+* **The advanced-page move is a data/inspection proof.** The row is drawn by the same code path as an
+  index row (`{subPageRows('gateway').map(...)}` with the same style token), but its *position* on the
+  page is a claim about JSX order, not a screenshot.
+* **The live archive/delete verbs have still never run against a real session** (unchanged from 0.9.0's
+  honest note). The state surface is now mounted and answers — measured above — but no session was
+  archived from the phone.
+* **S4.2's desktop half does not exist**, by design (§1.9): nothing on this side has ever talked to the
+  pane's own reader/writer for `session-types`.
+* **Push stays parked** (§1.8): no `google-services.json`, no sender, no Firebase scaffolding, nothing
+  device-side called "push". The verifier still asserts the absence of those credential files.
+* **No new dependency, native or JS** was added in this batch: `package.json` is unchanged apart from its
+  version string.
+
+## The artifact, and the verifier that judged it
+
+| thing | 0.9.0 | 0.9.1 |
+|---|---|---|
+| apk | `dist/personae-0.9.0.apk` | **`dist/personae-0.9.1.apk`** |
+| bytes | 117547098 | **116926234** |
+| sha256 | `047da9e25092510bebbc606330586de528190b8ca07ad0d2a18cd75a51f5a131` | **`757c536e648210fac589c5a00dae008d57d0e6463218ba95acef97f3b9c77cc6`** |
+| apk summary | `com.personae.mobile / 10 / 0.9.0` | **`com.personae.mobile / 11 / 0.9.1`** |
+| min-sdk / target-sdk | 24 / 36 | 24 / 36 |
+| signer | `CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT` | the same |
+| signer SHA-256 | `bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26` | **the same key** — it installs straight over 0.9.0 |
+| host/credential literals in the bundle | 0 | 0 (and 0 live-bearer occurrences) |
+| build | `BUILD SUCCESSFUL in 5m 4s` | **`BUILD SUCCESSFUL in 3m 38s`** — `:app:assembleRelease`, `--max-workers=4`, `--no-daemon`, `logs/gradle-v091.log` |
+
+`app.json` (`0.9.1` / `11`) is compared to the APK's own summary, and the release signer's SHA-256 to the
+0.1.0-0.8.0 digest. The verifier's bundle check now greps for the 0.9.0 strings **and** the 0.9.1 ones
+(`Display session types`, `One-shots`, `Webhooks`, `Advanced lives inside this page`), with
+`personae://connect` as the positive control, because a grep that finds nothing proves nothing.
+
+Two build-lane notes worth keeping. **`npx expo prebuild -p android` resets the release-signing patch**
+(the generated `build.gradle` signs `release` with the DEBUG keystore); `bash scripts/patch-android-signing.sh`
+put it back, and the build log's `Personae: release build signed with /signing/personae-release.keystore`
+plus the signer digest above are the proof it was re-applied *before* the build rather than after. And the
+leash worked: `--max-workers=4 --no-daemon` held load average under 11 on this 12-core box, against the
+319 the previous run reported.
+
+`logs/verify-0.9.1.sh` + `logs/verify-0.9.1.txt`: **88 PASS, 0 FAIL, `RESULT: PASS — 0.9.1 verified`.**
+Two verifier checks were added for this batch and both earned their place immediately: the **S0 block**
+(`install.sh --check` plus the five files plus the config line) and the **0.9.1 named-test list**. The S0
+block caught a real mistake within the hour: its config check originally read
+`${HERMES_HOME}/config.yaml`, and this session's `HERMES_HOME` is the **cody profile's** home, not
+`~/.hermes` — so it reported "not enabled" for a plugin that was enabled. It now uses
+`${HERMES_HOME_DIR:-$HOME/.hermes}`, the same variable `server/install.sh` deploys to, with the reason
+written beside it.
+
+The same first run of the verifier caught one more thing worth recording: the **S2 test name** contained an
+escaped apostrophe in the source (`header\'s`), which the verifier's `grep -F` against `tests/run.ts` could
+not match however the contract was written. Rather than put a backslash into the contract, the test was
+renamed to "ONE back control in the header — it walks the plan, never straight to the index" and the
+verifier's list follows it. That rename is the only change in the final commit beyond the version bump and
+this record.
+

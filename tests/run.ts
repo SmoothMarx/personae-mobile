@@ -5027,7 +5027,7 @@ async function main(): Promise<void> {
     assert.ok(/pageRowSibling/.test(src), 'and the reason it went is written down where the style lived');
   });
 
-  test('0.9.1 S2: ONE back control — the header\'s — and it walks the plan, never straight to the index', () => {
+  test('0.9.1 S2: ONE back control in the header — it walks the plan, never straight to the index', () => {
     // (b) the parent map, as data
     assert.deepEqual(
       SETTINGS_PAGE_PARENT,

@@ -1,0 +1,130 @@
+=== 0.9.1 release check — 2026-10-13T10:45:09Z ===
+
+--- app ---
+PASS  app tests: 250/250 passed, 0 failed (floor 250 — the 0.9.0 count of 241 plus the ten 0.9.1 tests)
+PASS  typecheck: tsc --noEmit rc 0
+
+--- §4 items: each one has a test that names it ---
+PASS  item 1: test present — "0.9.0 F: the search bar is 25% taller and rounded at the side, both DERIVED"
+PASS  item 2: test present — "0.9.0 F: the routine connection strip is gone; the FAILURE disclosure stays"
+PASS  item 3: test present — "0.9.0 F: the trailing "51 automatic…" line is gone and the honesty line is not"
+PASS  item 4: test present — "0.9.0 G: the staging strip stages, sizes, and removes ONE item at a time"
+PASS  item 4: test present — "0.9.0 G: the phone SENDS the bytes to the session before it submits the turn"
+PASS  item 4: test present — "0.9.0 G: a message that CARRIED something reads back as attachments plus a caption"
+PASS  item 4: test present — "0.9.0 G: what the RPC carries is the base64 PAYLOAD, never the whole data URL"
+PASS  item 4: test present — "0.9.0 G: the legacy surface refuses the attach verbs WITH a reason, as it does for the rest"
+PASS  item 5: test present — "0.9.0 H: hold to record, slide left to cancel, release to stage"
+PASS  item 5: test present — "0.9.0 H: a note too short to be a message is refused, WITH the reason"
+PASS  item 5: test present — "0.9.0 H: a voice note LEAVES the phone as a file the agent on the box can read"
+PASS  item 5: test present — "0.9.0 H: "receive" covers BOTH meanings — the agent sending one, and the phone playing it"
+PASS  item 5: test present — "0.9.0 H: the ONE new dependency is expo-audio, from the SDK, and the mic is declared"
+PASS  item 6: test present — "0.9.0 D: the session menu is the desktop shape — flat verbs plus one-noun submenus"
+PASS  item 6: test present — "0.9.0 D: every verb the phone cannot run carries a REASON, and none is silently absent"
+PASS  item 6: test present — "0.9.0 D: the sheet DRILLS INTO a submenu and back, and a submenu opener is not a verb"
+PASS  item 7: test present — "0.9.0 E: holding a row ticks it IMMEDIATELY and opens the mode (the WhatsApp model)"
+PASS  item 7: test present — "0.9.0 E: emptying the set leaves the mode (the user, 2026-10-10)"
+PASS  item 7: test present — "0.9.0 E: the batch resolves against what is ON SCREEN, not the raw roster"
+PASS  item 7: test present — "0.9.0 E: ONE delete path, and the confirm carries the COUNT"
+PASS  item 7: test present — "0.9.0 E: batch verbs once more than one row is ticked; single-object when exactly one"
+PASS  item 8: test present — "0.9.0 F: the Expand/collapse-all button is gone from the top bar, the ability is not"
+PASS  item 9: test present — "0.9.0 F: the "+" and Settings are bigger and their background is transparent"
+PASS  item 10: test present — "0.9.0 F: the routine connection strip is gone; the FAILURE disclosure stays"
+PASS  item 11: test present — "0.9.0 F (landscape): the app rotates, and every screen honours the SIDE insets"
+PASS  item 11: test present — "0.9.0 F (landscape): the sheets use MORE of a short viewport, not less"
+PASS  item 11: test present — "0.9.0 F (landscape): the roster geometry is dp-based, so a wide short canvas does not break it"
+PASS  item A: test present — "0.9.0 A: archive and delete ride the state verbs when the host mounts the plugin"
+PASS  item A: test present — "0.9.0 A: a PINNED session is refused with a machine-readable code, never silently archived"
+PASS  item A: test present — "0.9.0 A: without the plugin the same verbs FALL BACK to the dashboard verbs"
+PASS  item A: test present — "0.9.0 A: the legacy surface ATTEMPTS the verb and reports it; the 501 stub is gone"
+PASS  item A: test present — "0.9.0 A: the portable-preference document round-trips; a device-local key is refused"
+PASS  item A: test present — "0.9.0 A: the state surface has exactly ONE prefix, written in exactly one file"
+PASS  item B: test present — "0.9.0 B: Settings is a page of rows, and Notifications is a SIBLING of Agent Preferences"
+PASS  item B: test present — "0.9.0 B: the portable/device-local split is visible, and matches the SERVER key list"
+PASS  item B: test present — "0.9.0 B: promoting Settings to a page deleted nothing"
+PASS  item C: test present — "0.9.0 C: the model is the desktop document, shape for shape"
+PASS  item C: test present — "0.9.0 C: create, rename, file, unfile, collapse, move — and delete NEVER deletes a session"
+PASS  item C: test present — "0.9.0 C: no groups at all renders exactly the flat list it always was"
+PASS  item C: test present — "0.9.0 C: the phone syncs the same key the desktop writes, through the same merge"
+PASS  item C: test present — "0.9.0 C: the heading is its own row kind, and GROUP is not SECTION"
+PASS  item C: test present — "0.9.0 C: a 0.8.0 install has no groups key and loads as "no groups""
+PASS  item I: test present — "0.9.0 I: what syncs is an ALLOWLIST, and a gateway address can never be in it"
+PASS  item I: test present — "0.9.0 I: the server is the source of truth, and a stale revision is never a clobber"
+PASS  item I: test present — "0.9.0 I: only a GENUINE difference is pushed, so an applied value cannot echo back"
+PASS  item I: test present — "0.9.0 I: the phone writes through the document the desktop pane reads"
+
+--- 0.9.1 §2 items: each one has a test that NAMES it (`0.9.1 S<n>: …`) ---
+PASS  item S1: test present — "0.9.1 S1: every index row is geometrically identical — the Notifications indent cannot come back"
+PASS  item S2: test present — "0.9.1 S2: ONE back control in the header — it walks the plan, never straight to the index"
+PASS  item S3: test present — "0.9.1 S3: Advanced moved INSIDE Gateway Settings — it did not vanish"
+PASS  item S4.1: test present — "0.9.1 S4.1: the Agent Preferences page offers no control that changes the language — English, always"
+PASS  item S4.1: test present — "0.9.1 S4.1: a stored {language: "pt"} still renders English"
+PASS  item S4.2: test present — "0.9.1 S4.2: "Display session types" — four checkboxes, one per kind, each filtering on its own"
+PASS  item S4.2: test present — "0.9.1 S4.2: a legacy two-boolean blob loads as the three run types it meant"
+PASS  item S4.2: test present — "0.9.1 S4.2: the portable round-trip carries four booleans (and no server change was needed)"
+PASS  item S4.2: test present — "0.9.1 S4.2: the list and the checkpoint watcher still consult ONE classifier"
+PASS  S0 is recorded with the reason its proof is a command and not a test (the brief's own rule)
+
+--- §4 item 12 (push): PARKED by the user, and recorded as parked ---
+PASS  PROGRESS.md records the push deferral and its reason (the Firebase project is the user's to create)
+PASS  no google-services.json / GoogleService-Info.plist in the repo (nothing to leak)
+
+--- server plugins ---
+PASS  server tests: 77 passed in 1.60s (floor 77)
+      literal '~/.hermes/hermes-agent/venv/bin/python -m pytest server/tests -q' fails on this host
+        (ImportError while importing test module '~/Projects/personae-mobile/server/); server/run-tests.sh is the runner of record
+PASS  hermes-serve.service active (never restarted by this run)
+
+--- S0: the state plugin is really deployed, not merely documented (measured, not asserted) ---
+PASS  server/install.sh --check: no drift: deployed plugins match server/
+PASS  deployed: personae-mobile-state/__init__.py
+PASS  deployed: personae-mobile-state/plugin.yaml
+PASS  deployed: personae-mobile-state/dashboard/manifest.json
+PASS  deployed: personae-mobile-state/dashboard/plugin_api.py
+PASS  deployed: personae-mobile-state/dashboard/preferences.py
+PASS  config.yaml enables personae-mobile-state
+
+--- the live dashboard answers what 0.9.0 needs ---
+      credential read from ~/.hermes/.env (the value is never printed; only the file name is)
+PASS  GET /api/profiles/sessions/sidebar → the batched slices the roster still rides
+PASS  the surface serves 'archived' → Phase A's archive verb has a real flag to write
+PASS  /pair still renders (the pairing page survived the 0.9.0 build)
+PASS  personae-mobile-state is MOUNTED: /health answers (the dashboard has restarted into it)
+PASS  GET /preferences/keys publishes the portable/device-local split
+
+--- app.json declares the release ---
+PASS  app.json: 0.9.1 / versionCode 11
+PASS  app.json allows BOTH orientations (item 11: the app rotates)
+PASS  app.json declares RECORD_AUDIO (item 5: voice notes)
+PASS  app.json still declares POST_NOTIFICATIONS (0.8.0's device-side checkpoints)
+PASS  no gesture/reanimated dependency (0.8.0's swipe still rides PanResponder)
+PASS  the recorder is expo-audio, NOT expo-av (item 5's one new dependency)
+
+--- the artifact ---
+      path: dist/personae-0.9.1.apk
+      bytes: 116926234
+      sha256: 757c536e648210fac589c5a00dae008d57d0e6463218ba95acef97f3b9c77cc6
+      0.9.0 was: 117547098 bytes / sha256 047da9e25092510bebbc606330586de528190b8ca07ad0d2a18cd75a51f5a131
+summary: com.personae.mobile	11	0.9.1
+min-sdk: 24  target-sdk: 36
+camera permission: 1
+post-notifications permission: 1
+record-audio permission: 1
+deep-link scheme personae: 12
+markers: personae://connect=1 api/profiles=1 api/plugins/messenger/state=1 api/plugins/personae-mobile-state=1 expo-camera=1 expo-audio=1 checkpoints=2 
+application-id: com.personae.mobile
+0.9.1 feature strings (want >=1 each): :[session-groups-v1]=1 [Select all]=1 [This cannot be undone]=1 [Hold to record a voice note]=1 [Slide left to cancel]=1 [image.attach_bytes]=1 [file.attach]=1 [Add an attachment]=1 [Agent Preferences]=1 [This phone only]=1 [Display session types]=1 [One-shots]=1 [Webhooks]=1 [Advanced lives inside this page]=1 
+env facts (want 0): 100.64.0.11=0 personae=0 10.0.0.15=0 API_SERVER_KEY==0 
+positive control personae://connect: 1
+live bearer occurrences (want 0): 0
+Signer #1 certificate DN: CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT
+Signer #1 certificate SHA-256 digest: bd40e00544d6249c90419ac05736c5b988221ab43b2eecf093978ccf6dd37f26
+PASS  APK is 0.9.1 / versionCode 11 (matches app.json)
+PASS  signed with the SAME Personae release key as 0.1.0-0.8.0 (installs straight over 0.8.0)
+PASS  the APK carries RECORD_AUDIO (item 5 is in the ARTIFACT, not merely in app.json)
+PASS  the bundle knows the state surface's prefix (Phase A/I ship in the app)
+PASS  positive control: personae://connect IS in the bundle (an empty grep is not a proof)
+PASS  zero live-bearer occurrences in the shipped bundle
+PASS  zero host/credential literals in the shipped bundle
+PASS  every 0.9.0 AND 0.9.1 feature string is inside the shipped bundle
+
+RESULT: PASS — 0.9.1 verified
