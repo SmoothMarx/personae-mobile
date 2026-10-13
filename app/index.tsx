@@ -29,6 +29,13 @@ import * as Clipboard from 'expo-clipboard';
 import { ConnectivityBanner } from '../src/ConnectivityBanner';
 import type { Diagnostic } from '../src/ConnectivityContext';
 import { normalizeError } from '../src/api/errors';
+import {
+  LOGIN_STEP,
+  bootStage,
+  hasStoredCredentials,
+  probeCredentials,
+  type ProbeResult,
+} from '../src/boot';
 import { t, useLanguage } from '../src/i18n';
 import { monogramFor } from '../src/logic/avatars';
 import { headerMetrics } from '../src/roster/geometry';
@@ -82,6 +89,7 @@ import { plusMenuEntries, profileFromPickerKey, profilePickerEntries } from '../
 import { useSettings } from '../src/SettingsContext';
 import { loadWizardState, shouldAutoOpen } from '../src/connect/wizardSession';
 import { useRoster, type RosterListRow } from '../src/roster/useRoster';
+import { useBackend } from '../src/useBackend';
 import { colors, font, radius, space } from '../src/theme';
 
 type MenuState =
@@ -110,7 +118,8 @@ export default function RosterScreen() {
   // Re-render (and refresh the list cells) when the interface language changes.
   const language = useLanguage();
 
-  const { settings } = useSettings();
+  const { settings, ready: settingsReady } = useSettings();
+  const { backend } = useBackend();
   const [menu, setMenu] = useState<MenuState>({ kind: 'none' });
   /** 0.7.0: the single "+" at the top — its dropdown, and the profile picker it can open. */
   const [plusOpen, setPlusOpen] = useState(false);
@@ -171,6 +180,59 @@ export default function RosterScreen() {
     const timer = setTimeout(clearNotice, 4000);
     return () => clearTimeout(timer);
   }, [notice, clearNotice]);
+
+  /**
+   * ── 0.13.0 W4 — THE BOOT MACHINE ───────────────────────────────────────────────────────────────
+   *
+   * `src/boot.ts` states the decision; this is only where it is APPLIED. Three states, one fallback:
+   *
+   *   no stored credential       → the connect screen  (`app/connect.tsx`, which hosts the wizard)
+   *   stored, and the probe says the token is refused → the login screen, ONCE, with the reason
+   *   stored, and the probe is valid (or could not run) → this screen, the profiles list
+   *
+   * "Resume" means landing HERE — the main screen with every profile — never the last thread. The
+   * probe is `GET /api/profiles` (token-gated; an unauthenticated health/status route cannot prove a
+   * token and is deliberately not used — see `src/boot.ts`).
+   *
+   * `landed` makes the redirect happen ONCE PER STAGE: a re-render cannot bounce the user out twice,
+   * and a refused credential is never retried — the login screen is the end of the automatic path.
+   */
+  const [bootProbe, setBootProbe] = useState<ProbeResult | null>(null);
+  const probed = useRef(false);
+  const landed = useRef<string>('');
+  const refusalReason = useRef<string>('');
+
+  const configured = hasStoredCredentials(settings);
+
+  useEffect(() => {
+    if (!settingsReady || !configured || probed.current) return undefined;
+    probed.current = true;
+    let live = true;
+    void probeCredentials(backend).then((result) => {
+      if (!live) return;
+      if (result.kind === 'refused') refusalReason.current = result.reason;
+      setBootProbe(result);
+    });
+    return () => {
+      live = false;
+    };
+  }, [backend, configured, settingsReady]);
+
+  useEffect(() => {
+    const stage = bootStage({ ready: settingsReady, configured, probe: bootProbe });
+    if (stage === 'wait' || stage === 'profiles') return;
+    if (landed.current === stage) return;
+    landed.current = stage;
+    if (stage === 'connect') {
+      router.replace('/connect');
+      return;
+    }
+    // The refused case: the login STEP of the wizard, carrying the reason the gateway gave.
+    router.replace({
+      pathname: '/connect',
+      params: { step: LOGIN_STEP, reason: refusalReason.current },
+    });
+  }, [bootProbe, configured, router, settingsReady]);
 
   /** One resolver for every verb key the menus emit — no string is ever shown raw. */
   const menuLabel = useCallback((key: string): string => {

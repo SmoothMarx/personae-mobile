@@ -39,6 +39,7 @@ import {
 } from '../src/settingsPages';
 import { buildLogDocument, log } from '../src/logging';
 import { parseErrorForDisplay } from '../src/api/display';
+import { disconnectPatch } from '../src/boot';
 import { xhrTransport } from '../src/api/transport';
 import { useConnectivity } from '../src/ConnectivityContext';
 import { screenInsets } from '../src/insets';
@@ -803,6 +804,24 @@ export default function SettingsScreen() {
             <Text style={[styles.secondaryText, styles.dangerText]}>{t.routes.remove}</Text>
           </Pressable>
         ) : null}
+
+        {/* ── 0.13.0 W4 — DISCONNECT: the LOCAL half of "leave this connection". `Revoke this device`
+            above acts on the SERVER (it asks the dashboard to drop this phone's paired credential, and
+            only a paired device has one); this clears what THIS PHONE stores — the token in the Keystore
+            / Keychain and the base URL — so a cold launch lands on the connect screen. Nothing is sent
+            anywhere, and the dashboard password is never stored in the first place. The patch itself
+            lives in `src/boot.ts`, beside the boot decision that reads it. ── */}
+        <Pressable
+          onPress={() => {
+            update(disconnectPatch());
+            Alert.alert(t.connect.disconnected);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={t.connect.disconnect}
+          style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
+        >
+          <Text style={[styles.secondaryText, styles.dangerText]}>{t.connect.disconnect}</Text>
+        </Pressable>
       </View>
 
       {/* ── 0.10.1 S6: the CONNECTIONS dropdown comes SECOND now (it was first).

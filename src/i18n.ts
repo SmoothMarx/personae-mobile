@@ -739,6 +739,13 @@ const en = {
     dismiss: 'OK',
     syncOn: 'Groups, sort and colours sync with the desktop.',
     syncOff: 'This dashboard has no shared-layout store; groups stay on this phone.',
+    // ── 0.13.0 W4 — the boot machine's own words ────────────────────────────────────────────────
+    // NOT `connectivity.tunnelDown` ('Disconnected'): that is the TUNNEL's string, and borrowing it
+    // would say a Tailscale state when the meaning is "the stored credential is gone".
+    disconnect: 'Disconnect',
+    disconnected: 'Disconnected — the token and the address were removed from this phone.',
+    /** The login screen's reason line: the gateway refused the stored token, so say why we are here. */
+    loginRequired: (reason: string) => `The stored connection was refused. Sign in again. (${reason})`,
   },
 
   // ── notifications (0.8.0 H): device-side, and never called "push" ──────
@@ -1504,6 +1511,10 @@ const pt: PtStrings = {
     dismiss: 'OK',
     syncOn: 'Grupos, ordenação e cores sincronizam com o computador.',
     syncOff: 'Este dashboard não tem arquivo partilhado de layout; os grupos ficam neste telefone.',
+    // ── 0.13.0 W4 — as palavras da máquina de arranque ──────────────────────────────────────────
+    disconnect: 'Desligar',
+    disconnected: 'Ligação removida — o token e o endereço foram apagados deste telefone.',
+    loginRequired: (reason: string) => `A ligação guardada foi recusada. Entra de novo. (${reason})`,
   },
 
   // ── notificações (0.8.0 H): locais, nunca chamadas "push" ────────────

@@ -324,6 +324,8 @@ import { readStatusBody, stagedConnectionTest, TEST_MESSAGE_KEY } from '../src/c
 import { buildSupportBundle, maskAddress, pushTimeline, supportText, TIMELINE_CAP } from '../src/connect/support';
 import { DEFAULT_WIZARD_STATE, dismissPatch, normalizeWizardState, resumeStep, shouldAutoOpen, stepPatch, WIZARD_STATE_KEY } from '../src/connect/wizardSession';
 import { deleteRoute, manualAdd, renameRoute, routeAt } from '../src/gateway/manage';
+// 0.13.0 W4 — the boot state machine, its probe, and the Disconnect patch.
+import { LOGIN_STEP, bootStage, disconnectPatch, hasStoredCredentials, probeCredentials } from '../src/boot';
 
 // Most assertions below were written against the Portuguese copy, so the suite runs in PT
 // explicitly. The language tests switch on purpose and always restore 'pt' afterwards.
@@ -7868,6 +7870,112 @@ async function main(): Promise<void> {
       'Session not found does not exist on the gateway (404).',
     );
     __resetDraftSessions();
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.13.0 W4 — boot: a stored credential connects by itself, a refused one falls back ONCE, and
+  // "resume" means the profiles screen. The decision is pure (`src/boot.ts`); the socket work is real.
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  test('0.13.0 W4: the boot machine - credentials present connects, a refused token falls back ONCE, a dead host is not a refusal', async () => {
+    // (a) BOTH halves are the connection, and only those two
+    assert.equal(hasStoredCredentials({ baseUrl: '', apiKey: '' }), false, 'nothing stored');
+    assert.equal(hasStoredCredentials({ baseUrl: 'http://10.0.0.9:9119', apiKey: '' }), false, 'an address with no token is not a connection');
+    assert.equal(hasStoredCredentials({ baseUrl: '', apiKey: 'k' }), false, 'a token with no address is not one either');
+    assert.equal(hasStoredCredentials({ baseUrl: '  http://10.0.0.9:9119 ', apiKey: 'k' }), true, 'both present, whitespace ignored');
+
+    // (b) the truth table — and the case that must NOT become a login screen
+    assert.equal(bootStage({ ready: false, configured: true, probe: null }), 'wait', 'nothing is decided before the settings load');
+    assert.equal(bootStage({ ready: true, configured: false, probe: null }), 'connect');
+    assert.equal(bootStage({ ready: true, configured: true, probe: null }), 'profiles', 'the probe is still running: this screen, which owns its own loading state');
+    assert.equal(bootStage({ ready: true, configured: true, probe: { kind: 'valid' } }), 'profiles');
+    assert.equal(bootStage({ ready: true, configured: true, probe: { kind: 'refused', reason: 'r' } }), 'login');
+    assert.equal(
+      bootStage({ ready: true, configured: true, probe: { kind: 'unreachable', reason: 'r' } }),
+      'profiles',
+      'an unreachable host is NOT an invalid token — it keeps its connectivity banner',
+    );
+    assert.equal(LOGIN_STEP, 'sign-in', 'the fallback opens the wizard on its Sign-in step');
+
+    // (c) the probe is the TOKEN-GATED route, driven live: good bearer → valid
+    const ok = createMockDashboard({ port: 0, bearer: DASH_BEARER });
+    await ok.listen();
+    try {
+      const backend = createBackend(settingsFor(ok.url, { apiKey: DASH_BEARER }));
+      assert.deepEqual(await probeCredentials(backend), { kind: 'valid' });
+      const paths = ok.calls.map((call) => call.path);
+      assert.ok(paths.includes('/api/profiles'), `the probe asks /api/profiles — saw ${JSON.stringify(paths)}`);
+      assert.ok(
+        !paths.some((path) => /health|status/.test(path)),
+        'and opens no unauthenticated health/status route to pretend it checked the token',
+      );
+      backend.dispose();
+    } finally {
+      await ok.close();
+    }
+
+    // (d) a REFUSED token is the login case, classified by the EXISTING classifier
+    const refused = createMockDashboard({ port: 0, bearer: 'a-different-bearer-entirely' });
+    await refused.listen();
+    try {
+      const backend = createBackend(settingsFor(refused.url, { apiKey: DASH_BEARER }));
+      const verdict = await probeCredentials(backend);
+      assert.equal(verdict.kind, 'refused', 'a 401 on the stored token is a refusal');
+      assert.equal(verdict.kind === 'refused' && verdict.reason, t.errors.unauthorized, 'and it carries the reason the app shows');
+      backend.dispose();
+    } finally {
+      await refused.close();
+    }
+
+    // (e) a DEAD host is not a refusal — the same credential must not be thrown away
+    const dead = createMockDashboard({ port: 0 });
+    await dead.listen();
+    const deadUrl = dead.url;
+    await dead.close();
+    const deadBackend = createBackend(settingsFor(deadUrl, { apiKey: DASH_BEARER }));
+    assert.equal((await probeCredentials(deadBackend)).kind, 'unreachable', 'no route is not a bad credential');
+    deadBackend.dispose();
+
+    // (f) DISCONNECT clears both halves IN THE SECURE STORE, not just in memory
+    __resetStoreProbe();
+    await saveSettings({ ...DEFAULT_SETTINGS, baseUrl: 'http://10.0.0.9:9119', apiKey: 'stored-token', routes: [] });
+    const before = await loadSettings();
+    assert.equal(before.apiKey.length > 0, true, 'the token really was persisted');
+    assert.equal(before.baseUrl, 'http://10.0.0.9:9119');
+    const patch = disconnectPatch();
+    await saveSettings({ ...before, ...patch });
+    const after = await loadSettings();
+    assert.equal(after.apiKey, '', 'the token is gone from the secure store');
+    assert.equal(after.baseUrl, '', 'and so is the address');
+    assert.equal(hasStoredCredentials(after), false, 'so the next cold launch is the connect screen');
+    __resetStoreProbe();
+
+    // (g) the words: a DEDICATED disconnect key (never the tunnel's), and the login reason line
+    assert.equal(stringsFor('en').connect.disconnect, 'Disconnect');
+    assert.equal(stringsFor('en').connect.disconnected, 'Disconnected — the token and the address were removed from this phone.');
+    assert.equal(stringsFor('pt').connect.disconnect, 'Desligar');
+    assert.equal(stringsFor('pt').connect.disconnected, 'Ligação removida — o token e o endereço foram apagados deste telefone.');
+    assert.ok(
+      stringsFor('en').connect.disconnect !== stringsFor('en').connectivity.tunnelDown,
+      'the tunnel string (Disconnected) is NOT borrowed as the action',
+    );
+    assert.equal(
+      stringsFor('en').connect.loginRequired('X'),
+      'The stored connection was refused. Sign in again. (X)',
+      'the login screen says why it is here',
+    );
+    assert.ok(stringsFor('pt').connect.loginRequired('X').includes('X'), 'both tables carry it');
+
+    // (h) the wiring: the machine is applied in ONE place, and the probe is a route, not a guess
+    const indexSrc = readFileSync(join(process.cwd(), 'app', 'index.tsx'), 'utf8');
+    assert.match(indexSrc, /bootStage\(\{ ready: settingsReady, configured, probe: bootProbe \}\)/, 'the screen ASKS the machine');
+    assert.match(indexSrc, /void probeCredentials\(backend\)/, 'and the probe is the token-gated call');
+    assert.ok(!/api\/health/.test(indexSrc), 'no health route anywhere on the boot path');
+    const bootSrc = readFileSync(join(process.cwd(), 'src', 'boot.ts'), 'utf8');
+    assert.ok(!/api\/health/.test(bootSrc), 'and none in the machine itself');
+    assert.match(bootSrc, /normalized\.isAuth/, 'the refusal is the EXISTING classifier, not a second one');
+    const settingsSrc = readFileSync(join(process.cwd(), 'app', 'settings.tsx'), 'utf8');
+    assert.match(settingsSrc, /update\(disconnectPatch\(\)\)/, 'the Disconnect action applies the ONE patch');
   });
 
   // ─────────────────────────────────────────────────────── report ──

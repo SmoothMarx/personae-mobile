@@ -81,7 +81,7 @@ import {
 import { checkBaseUrl } from '../settings';
 import { useSettings } from '../SettingsContext';
 import { colors, font, radius, space } from '../theme';
-import { wizardSteps } from './wizard';
+import { wizardStepIds, wizardSteps } from './wizard';
 
 /** A code is redeemable once; the auth-session result AND the OS deep link may both deliver it. */
 const handledCodes = new Set<string>();
@@ -128,7 +128,15 @@ export type WizardProps = {
 export default function ConnectWizard(props: WizardProps = {}) {
   useLanguage();
   const router = useRouter();
-  const params = useLocalSearchParams<{ base?: string; code?: string; label?: string; expires?: string }>();
+  const params = useLocalSearchParams<{
+    base?: string;
+    code?: string;
+    label?: string;
+    expires?: string;
+    /** 0.13.0 W4 — the boot machine's login fallback: which step to open on, and WHY it is here. */
+    step?: string;
+    reason?: string;
+  }>();
   const { settings, update, ready } = useSettings();
   /**
    * 0.10.1 S3 — the probe is INJECTABLE (`props.probe`): the suite has no renderer and never opens a
@@ -187,7 +195,16 @@ export default function ConnectWizard(props: WizardProps = {}) {
   };
 
   /** What "done" does, available to the handlers below before the body defines it. */
-  const finish = () => (props.onDone ?? (() => router.replace('/')))();
+  const finish = () => (props.onDone ?? (() => router.replace('/'))());
+
+  /**
+   * 0.13.0 W4 — the login screen's reason line, composed once and rendered in the body. `null` on
+   * every entry that is not the boot machine's 401 fallback (a fresh setup, a skip, a deep link).
+   */
+  const refusal =
+    typeof params.reason === 'string' && params.reason.trim()
+      ? t.connect.loginRequired(params.reason.trim())
+      : null;
 
   /** The stored wizard state (S3 entry (b) and (c)): the dismissed flag and the step to resume on. */
   const [storedState, setStoredState] = useState<WizardState>({ ...DEFAULT_WIZARD_STATE });
@@ -197,12 +214,22 @@ export default function ConnectWizard(props: WizardProps = {}) {
       if (!live) return;
       setStoredState(state);
       setBranch(state.branch);
-      setStep(resumeStep(state));
+      /**
+       * 0.13.0 W4 — a route param WINS over the stored step: the boot machine just refused the stored
+       * credential, which is the more recent fact about where the user needs to be. Anything that is
+       * not a real step id is ignored (the stored step is the fallback), so a hand-made link cannot put
+       * the wizard on a screen that does not exist.
+       */
+      const requested =
+        typeof params.step === 'string' && (wizardStepIds() as readonly string[]).includes(params.step)
+          ? params.step
+          : null;
+      setStep(requested ?? resumeStep(state));
     });
     return () => {
       live = false;
     };
-  }, []);
+  }, [params.step]);
 
   /** Skip sticks (S3, entry (b)): the flag is written once and never auto-opens the wizard again. */
   const skip = useCallback(() => {
@@ -597,6 +624,15 @@ export default function ConnectWizard(props: WizardProps = {}) {
   const body = (
     <>
       <Text style={styles.body}>{t.connect.intro}</Text>
+
+      {/* 0.13.0 W4 — WHY this screen opened. The boot machine refused nothing itself: `GET /api/profiles`
+          refused the STORED credential (401), and the reason travels here as a route param so the login
+          step says it out loud instead of showing a bare form. Absent on every other entry. */}
+      {refusal ? (
+        <View style={[styles.card, styles.cardBad]}>
+          <Text style={styles.body}>{refusal}</Text>
+        </View>
+      ) : null}
 
       {/* ── S3.1 — LAN: an IPv4 field and a SEPARATE port field (§2 of his spec). The field keeps
           digits and periods (`ipInput`), the value is judged by `octets()` — the same rule the route
