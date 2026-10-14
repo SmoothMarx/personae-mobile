@@ -85,6 +85,7 @@ import {
 import { buildItems, type ThreadItem } from '../../src/logic/thread';
 import { horizontalInset } from '../../src/insets';
 import { threadTitle } from '../../src/logic/roster';
+import { isPinned, scrollIntentFor } from '../../src/logic/scrollPin';
 import { useBackend } from '../../src/useBackend';
 import { useSettings } from '../../src/SettingsContext';
 import { colors, font, radius, space } from '../../src/theme';
@@ -242,6 +243,25 @@ export default function ThreadScreen() {
   const errorRef = useRef<ApiError | null>(null);
   const listRef = useRef<FlatList<ThreadItem>>(null);
 
+  /**
+   * 0.14.0 W3 — where the reader IS, and whether this screen just APPENDED a turn.
+   *
+   * The scroll used to be unconditional, so any content-size change moved the reader — including the
+   * one an expanded tool-call block causes. The decision now has these two inputs and no others
+   * (`src/logic/scrollPin.ts`): `pinned` comes from the list's own scroll events, `appended` from the
+   * turn-append path. Initial value: pinned, because a thread opens at its end.
+   */
+  const scrollState = useRef<{ pinned: boolean; appended: boolean }>({ pinned: true, appended: false });
+
+  /**
+   * 0.14.0 W3 — THE intent's only writer. Called where a turn is APPENDED (the send/stream path, and
+   * the load that completes a thread) and nowhere else: expanding a block is a layout change, and a
+   * layout change never asks for a scroll.
+   */
+  const markTurnAppended = useCallback(() => {
+    scrollState.current = { ...scrollState.current, appended: true };
+  }, []);
+
   const header = threadTitle({ param: paramTitle, loaded: loadedTitle, id: sessionId });
 
   const toggle = useCallback((key: string) => {
@@ -263,6 +283,9 @@ export default function ThreadScreen() {
           backend.sessionTitle(sessionId, profile).catch(() => null),
         ]);
         setMessages(Array.isArray(rows) ? rows : []);
+        // 0.14.0 W3 — the load is a scroll-to-the-end intent, set where the thread is filled in (and
+        // NOT by a layout change): a thread that opens at its end still opens at its end.
+        markTurnAppended();
         if (title) setLoadedTitle(title);
         setLoadError(null);
         setStatus('ready');
@@ -322,6 +345,9 @@ export default function ThreadScreen() {
       if (error) {
         setNotice(error.message);
         if (text) {
+          // 0.14.0 W3 — a message appended to the list is a scroll-to-the-end intent (when the reader
+          // is pinned; `onContentSizeChange` decides).
+          markTurnAppended();
           setMessages((prev) => [...prev, { id: `local_${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now() / 1000 }]);
         }
         return;
@@ -329,6 +355,7 @@ export default function ThreadScreen() {
       if (aborted) {
         setNotice(t.thread.stopped);
         if (text) {
+          markTurnAppended();
           setMessages((prev) => [...prev, { id: `local_${Date.now()}`, role: 'assistant', content: text, timestamp: Date.now() / 1000 }]);
         }
         return;
@@ -365,6 +392,8 @@ export default function ThreadScreen() {
           {
             onDelta: (delta) => {
               liveTextRef.current += delta;
+              // 0.14.0 W3 — the streaming turn IS an append, so a pinned reader still follows it.
+              markTurnAppended();
               setLive((prev) =>
                 prev ? { ...prev, text: liveTextRef.current } : { user: '', text: liveTextRef.current },
               );
@@ -372,6 +401,7 @@ export default function ThreadScreen() {
             onFinal: (content) => {
               if (content) {
                 liveTextRef.current = content;
+                markTurnAppended();
                 setLive((prev) => (prev ? { ...prev, text: content } : { user: '', text: content }));
               }
               // `message.complete` ends the turn — for a turn started HERE and for one started on
@@ -423,7 +453,7 @@ export default function ThreadScreen() {
         watchRef.current?.close();
         watchRef.current = null;
       };
-    }, [backend, finishTurn, loadThread, profile, ready, sessionId]),
+    }, [backend, finishTurn, loadThread, markTurnAppended, profile, ready, sessionId]),
   );
 
   /**
@@ -532,6 +562,9 @@ export default function ThreadScreen() {
       inFlight.current = true;
       setStreaming(true);
 
+      // 0.14.0 W3 — this screen just started a turn: the intent to follow it to the end is set HERE,
+      // where the turn is appended, and nowhere else on this path.
+      markTurnAppended();
       handleRef.current = backend.chatStream(
         sessionId,
         wireTextFor(input.text, refs),
@@ -556,7 +589,7 @@ export default function ThreadScreen() {
       clearDraftSession(sessionId);
       return { ok: true, reason: null };
     },
-    [backend, finishTurn, profile, sessionId],
+    [backend, finishTurn, markTurnAppended, profile, sessionId],
   );
 
   const beginVoice = useCallback(async () => {
@@ -1134,7 +1167,29 @@ export default function ThreadScreen() {
             tintColor={colors.accent}
           />
         }
-        onContentSizeChange={() => listRef.current?.scrollToEnd({ animated: true })}
+        /**
+         * 0.14.0 W3 — the ONE consumer. `scrollIntentFor` answers 'end' only when a turn this screen
+         * appended meets a reader who is pinned, so a content-size change with no append behind it (an
+         * expanded tool-call block, a re-layout, a rotated row) asks for NOTHING. The intent is spent
+         * here — one scroll per append — and the pin itself is measured from the list's own events.
+         */
+        onContentSizeChange={() => {
+          const intent = scrollIntentFor(scrollState.current);
+          scrollState.current = { ...scrollState.current, appended: false };
+          if (intent === 'end') listRef.current?.scrollToEnd({ animated: true });
+        }}
+        onScroll={(event) => {
+          const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+          scrollState.current = {
+            ...scrollState.current,
+            pinned: isPinned({
+              offsetY: contentOffset.y,
+              contentHeight: contentSize.height,
+              layoutHeight: layoutMeasurement.height,
+            }),
+          };
+        }}
+        scrollEventThrottle={16}
         ListEmptyComponent={
           status === 'loading' ? (
             <View style={styles.centered}>

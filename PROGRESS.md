@@ -3282,3 +3282,36 @@ ONCE each`*. RED, measured: the refresh check fails by name against the pre-fix 
 **322/322 passed, 0 failed**, with every pre-existing roster/group/search check unchanged.
 
 ### W3 — opening a box stops yanking the thread to the bottom (`src/logic/scrollPin.ts` (new), `app/thread/[id].tsx`)
+
+`onContentSizeChange` scrolled to the end **unconditionally**, so every content-size change moved the
+reader — including a layout change INSIDE an item, which is exactly what expanding a long AI-generated
+block is. The scroll is now a decision with two inputs, and it is a pure module so the rule is testable
+without a device:
+
+- **the reader's position** (`isPinned`, threshold **48px**) comes from the list's own scroll events
+  (`scrollEventThrottle={16}`); its initial value is pinned, because a thread opens at its end;
+- **the intent** (`scrollIntentFor`) answers `'end'` only when a turn this screen just APPENDED meets a
+  reader who is pinned. A layout change appends nothing, so it can never produce `'end'`, whatever the
+  pin state is. `appended` is set on the append paths only (`markTurnAppended`: the load, the turn the
+  composer starts, each stream delta, the final text, the two local appends on error/stop) and spent by
+  `onContentSizeChange` after ONE scroll. Expanding a block writes neither.
+
+The list's own behaviour is untouched where it was wanted: a pinned reader still follows the stream.
+
+**Checks** (two new): *`0.14.0 W3: the pure rule - the pin is measured, and a layout change never asks
+for a scroll`* and *`0.14.0 W3: the intent has ONE writer and ONE consumer, and the expand path writes
+neither`* (a bare `scrollToEnd` is asserted **absent** from the screen, exactly one `appended: true`
+write exists, and each of the six append call sites is asserted *inside its own named region* — the
+load, the two local appends, the stream, the submit — with the four regions accounting for all six).
+
+**Mutation campaign on the pure rule** (the check must be able to go RED for the right reason): 4
+mutants, **4 caught by the name of the case written for them**, 323 cases still green each time —
+`PIN_THRESHOLD_PX 48→0` (*the threshold the brief fixes*), `isPinned <= 0` (*40px from the end ⇒
+pinned*), `scrollIntentFor` without the `appended` input (*a content GROWTH with no appended turn ⇒ none,
+whatever the pin state*), `distanceFromEnd` without its clamp (*never negative*). RED against the pre-fix
+screen: `323/324, 1 failed`, the screen check by name (`and it is not the old unconditional one-liner`).
+
+**NOT VERIFIED ON A DEVICE.** No device was attached to this machine this session (`adb devices` empty),
+so §5.3.3 — "open a thread, scroll up, expand a long tool-call block ⇒ the list does not move; scroll
+back to the end, wait for the next turn ⇒ the list follows the stream" — was **not run**. The pure checks
+prove the rule, not the device, and nothing about the device is claimed.

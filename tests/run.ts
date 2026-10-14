@@ -80,6 +80,7 @@ import {
   shouldProbeAvatar,
 } from '../src/logic/avatars';
 import { threadTitle } from '../src/logic/roster';
+import { PIN_THRESHOLD_PX, distanceFromEnd, isPinned, scrollIntentFor } from '../src/logic/scrollPin';
 import { peersPort, peerRoute, peersState, normalizePeers, type PeerRow } from '../src/logic/peers';
 import { isInlineWizard, wizardStepIds, wizardSteps, WIZARD_STEP_IDS } from '../src/connect/wizard';
 import { SERVICE_ENTRY_WITH_ADDRESS, addressFieldOpen, autoProbeTarget } from '../src/connect/wizard';
@@ -7776,6 +7777,96 @@ async function main(): Promise<void> {
         `the mdast mirror disagrees with the stripper about: ${JSON.stringify(sample)}`,
       );
     }
+  });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.14.0 W3 — OPENING A BOX STOPS SCROLLING THE THREAD. `onContentSizeChange` scrolled to the end
+  // UNCONDITIONALLY, so every layout change moved the reader — and expanding a long tool-call block
+  // is exactly a layout change inside an item. The rule is now pure (`src/logic/scrollPin.ts`):
+  // scroll only for a turn this screen APPENDED, and only when the reader is already pinned.
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  test('0.14.0 W3: the pure rule - the pin is measured, and a layout change never asks for a scroll', () => {
+    assert.equal(PIN_THRESHOLD_PX, 48, 'the threshold the brief fixes');
+    /** contentHeight 1000, a 500px viewport: offsetY 500 IS the end. */
+    const at = (offsetY: number) => ({ contentHeight: 1000, offsetY, layoutHeight: 500 });
+    assert.equal(isPinned(at(500)), true, 'at the end ⇒ pinned');
+    assert.equal(isPinned(at(460)), true, '40px from the end ⇒ pinned');
+    assert.equal(isPinned(at(452)), true, 'exactly the 48px threshold ⇒ still pinned');
+    assert.equal(isPinned(at(451)), false, 'one pixel further ⇒ not pinned');
+    assert.equal(isPinned({ contentHeight: 2000, offsetY: 0, layoutHeight: 600 }), false, 'a screen up ⇒ not pinned');
+    assert.equal(isPinned({ contentHeight: 400, offsetY: 0, layoutHeight: 600 }), true, 'a list shorter than its viewport is at its end');
+
+    assert.equal(distanceFromEnd(at(500)), 0);
+    assert.equal(distanceFromEnd(at(400)), 100);
+    assert.equal(distanceFromEnd({ contentHeight: 100, offsetY: 900, layoutHeight: 600 }), 0, 'never negative');
+    assert.equal(
+      isPinned({ contentHeight: Number.NaN, offsetY: 0, layoutHeight: 0 }),
+      false,
+      'a metric that is not a number is NOT "at the end" — an unknown position must not drag the reader',
+    );
+
+    // the intent — two inputs, and the layout case is the one that must never scroll
+    assert.equal(scrollIntentFor({ pinned: true, appended: true }), 'end', 'an appended turn while pinned ⇒ end');
+    assert.equal(scrollIntentFor({ pinned: false, appended: true }), 'none', 'an appended turn while NOT pinned ⇒ none');
+    assert.equal(
+      scrollIntentFor({ pinned: true, appended: false }),
+      'none',
+      'a content GROWTH with no appended turn ⇒ none, whatever the pin state',
+    );
+    assert.equal(scrollIntentFor({ pinned: false, appended: false }), 'none');
+  });
+
+  test('0.14.0 W3: the intent has ONE writer and ONE consumer, and the expand path writes neither', () => {
+    const src = threadSource();
+
+    // (a) the consumer no longer scrolls unconditionally — the bare call is GONE
+    assert.equal((src.match(/scrollToEnd/g) ?? []).length, 1, 'exactly ONE scrollToEnd in the whole screen');
+    assert.ok(
+      !/onContentSizeChange=\{\(\) => listRef\.current\?\.scrollToEnd/.test(src),
+      'and it is not the old unconditional one-liner',
+    );
+    const consumer = src.slice(src.indexOf('onContentSizeChange={'), src.indexOf('onScroll={'));
+    assert.match(consumer, /scrollIntentFor\(scrollState\.current\)/, 'the consumer ASKS the rule');
+    assert.match(consumer, /appended: false/, 'and SPENDS the intent — one scroll per append');
+    assert.ok(!consumer.includes('markTurnAppended'), 'the consumer never sets the intent it consumes');
+
+    // (b) the pin is MEASURED from the list's own events, at the list's own throttle
+    const scroller = src.slice(src.indexOf('onScroll={'), src.indexOf('scrollEventThrottle={16}'));
+    assert.match(scroller, /isPinned\(\{/, 'the scroll handler measures the pin');
+    assert.match(scroller, /contentSize\.height/, 'from the content height…');
+    assert.match(scroller, /layoutMeasurement\.height/, '…and the viewport');
+    assert.match(src, /scrollEventThrottle=\{16\}/, 'the throttle the brief fixes');
+
+    // (c) the intent has ONE writer, and it is the only place `appended` becomes true
+    assert.equal((src.match(/appended: true/g) ?? []).length, 1, 'ONE writer of the intent');
+    assert.match(src, /const markTurnAppended = useCallback\(\(\) => \{/, 'named, so the call sites can be reviewed');
+    assert.equal((src.match(/markTurnAppended\(\)/g) ?? []).length, 6, 'and six call sites — all on append paths');
+
+    // (d) EVERY one of them is inside a turn-append region, and no other region has one
+    const regions: [string, string, number, string][] = [
+      ['const loadThread = useCallback', 'const finishTurn = useCallback', 1, 'the load that fills the thread'],
+      ['const finishTurn = useCallback', 'useFocusEffect(', 2, 'a message appended on error / on stop'],
+      ['onDelta: (delta) => {', 'onError: (error) => {', 2, 'the stream: each delta and the final text'],
+      ['const submitTurn = useCallback', 'const send = useCallback', 1, 'the turn this screen starts'],
+    ];
+    let total = 0;
+    for (const [from, to, expected, what] of regions) {
+      const start = src.indexOf(from);
+      const end = src.indexOf(to, start);
+      assert.ok(start > 0 && end > start, `${what}: the region is still there`);
+      const region = src.slice(start, end);
+      const calls = (region.match(/markTurnAppended\(\)/g) ?? []).length;
+      assert.equal(calls, expected, `${what} carries ${expected} append mark(s)`);
+      total += calls;
+    }
+    assert.equal(total, 6, 'and the regions account for every call site — none outside them');
+
+    // (e) a layout change NEVER asks for a scroll: the expand handler writes nothing
+    const expander = src.slice(src.indexOf('const toggle = useCallback'), src.indexOf('const loadThread = useCallback'));
+    assert.ok(expander.includes('setExpanded'), 'the expand handler is the one under test');
+    assert.ok(!expander.includes('markTurnAppended'), 'expanding a block does not set the intent');
+    assert.ok(!expander.includes('scrollToEnd'), 'and does not scroll');
   });
 
   // ════════════════════════════════════════════════════════════════════════════════════════
