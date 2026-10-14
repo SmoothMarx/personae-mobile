@@ -89,8 +89,8 @@ def test_the_blob_becomes_the_apps_shape_with_ipv4_peers_sorted_by_name():
     assert body["self"] == {"name": "personae-sk", "ip": "100.64.0.11", "os": "linux", "online": True}
     assert body["peers"] == [
         {"name": "alpha-box", "ip": "100.70.3.4", "os": "windows", "online": True},
-        {"name": "pixel-8", "ip": "100.90.1.2", "os": "android", "online": False},
         {"name": "Personae-DS", "ip": "100.64.0.13", "os": "linux", "online": True},
+        {"name": "pixel-8", "ip": "100.90.1.2", "os": "android", "online": False},
     ]
     # the IPv6-only peer is gone, and every remaining row is an IPv4 the app can dial
     assert all("." in row["ip"] for row in body["peers"])
@@ -176,7 +176,7 @@ def test_peers_present_shape_through_the_endpoint(auth_state_dir, monkeypatch):
     body = r.json()
     assert body["available"] is True
     assert body["self"]["name"] == "personae-sk"
-    assert [row["name"] for row in body["peers"]] == ["alpha-box", "pixel-8", "Personae-DS"]
+    assert [row["name"] for row in body["peers"]] == ["alpha-box", "Personae-DS", "pixel-8"]
     assert r.headers["cache-control"] == "no-store"
     # the browser session (the owner) may read it too
     assert c.get(PEERS, headers=H(BROWSER)).json()["available"] is True

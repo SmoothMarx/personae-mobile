@@ -197,11 +197,15 @@ kept because "verified" without a record is just a claim.
 npm install
 npm test                 # 324 offline checks against the mock gateway — no key needed
 npm run typecheck        # tsc --noEmit
+bash server/run-tests.sh # 77 pytest checks on the QR / pairing / tailscale / state server helpers
 npm run mock             # mock gateway on 127.0.0.1:8791, key "test-key-123"
 npx expo start           # Expo Go, or `npx expo run:android`
 ```
 
 Tested on **Node 22**. Written in strict TypeScript; `npm run typecheck` is expected to be silent.
+
+The server suite is a separate runner and needs no install: `server/run-tests.sh` borrows `pytest` from a
+sibling venv and puts it on a throwaway `sys.path`, so nothing is added to any environment.
 
 Three rules worth keeping if you fork:
 
