@@ -4,16 +4,7 @@
 
 # Personae Mobile — Hermes Agent client for Android & (coming soon!) iOS
 
-**Your profiles as contacts. Their sessions as threads. Replies streaming token by token.**
-
-Personae Mobile is a native client — React Native + Expo, TypeScript, `expo-router` — for the HTTP API a
-**Hermes Agent** gateway already serves. It reads the same endpoint family the bundled web UI reads and
-renders it the way a phone wants: profiles as a contact list with a live status dot, one profile's
-sessions grouped by day, and a thread you can answer from the sofa instead of the desk. Replies arrive
-as they are generated, and **Stop** actually stops them.
-
-No browser. No relay server. No analytics. The phone talks to your gateway directly, over your LAN or
-over Tailscale, and holds its own device credential rather than your API key.
+Just a simple Telegram-like Messenger that shows your profiles in a list. When you click, it expands to show all your sessions with that profile, so you can have multiple sessions with different bots, all still cleanly organised.
 
 ---
 
@@ -21,15 +12,14 @@ over Tailscale, and holds its own device credential rather than your API key.
 
 | | |
 | --- | --- |
-| 🟢 **Roster** | Every profile is a contact cell with a face, a live status dot, and a "new since last visit" count. Avatars are fetched once per profile per size and cached; a monogram stands in when there is no picture and a broken fetch is never an error. |
-| 💬 **Thread** | History from the sessions endpoint, a composer, and a reply streamed in as it is written. Markdown is really rendered — prose, lists, blockquotes, rules, tables as a horizontal-scroll grid, fenced code with a copy button. |
-| 🔧 **Tool runs** | Each tool call is joined to its result by `tool_call_id`, so a run reads as one item. Reasoning shows as its own item. Long arguments and results truncate behind a marker you can open. |
-| 🔌 **Connecting** | A wizard that asks **LAN** or **Remote** up front, validates IPv4 and port strictly, splits a pasted `host:port` for you, and probes every route in parallel to paint one status dot per row. Tailscale peers are listed by their MagicDNS name. |
-| 🔑 **Pairing** | The app opens your dashboard at `next=/pair`, polls, then redeems a single-use code. The phone ends up with its **own device token** — revocable on its own, never your bearer. |
-| ⚙️ **Settings** | Gateway URL, API key in the OS secure store, extra profiles via `/p/<profile>/`, and a model override. Every field saves itself and always shows the value actually in use. |
-| 🧠 **Session state** | One lease per session, held by one writer and read by one reader. A cold second message resumes exactly once, and the retry carries the lease that came back. |
-| 🔍 **Support bundle** | A shareable diagnostic with addresses masked to their first three octets and headers, tickets and tokens redacted **by pattern** — so the bundle you send is safe to send. |
-| 🌍 **Language** | English and Portuguese. Every user-visible string lives in one table, `src/i18n.ts`. |
+| 🟢 **Profile List** | Just like your favorite messenger app, Every profile is a contact cell with a face, a live status dot, and a "new since last visit" count. |
+| 💬 **Sessions** | Upon clicking the profile you want to talk to, it expands to show all your active sessions with that profile. It has status dot to let you know their status.|
+| 🔌 **Welcome Wizard** | A wizard that asks **LAN** or **Remote** up front, validates IPv4 and port strictly, splits a pasted `host:port` for you, and probes every route in parallel to paint one status dot per row. Tailscale peers are listed by their MagicDNS name. |
+| 🔑 ** EasyPairing** | The app opens your dashboard at `next=/pair`, polls, then redeems a single-use code. The phone ends up with its **own device token** — revocable on its own, never your bearer. |
+| 🗂️ **Groups** | Named sections shared by both panes; an empty one explains how to fill it |
+| 🌱 **Apropos** *(beta)* | A fresh session that already knows the background of the ones you picked |
+
+
 
 ---
 
