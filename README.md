@@ -2,7 +2,7 @@
   <img src="assets/icon.png" width="128" height="128" alt="Personae — the mark: a blue face in profile with a white eye">
 </p>
 
-# Personae Mobile — Hermes Agent client for Android & iOS
+# Personae Mobile — Hermes Agent client for Android & (coming soon!) iOS
 
 **Your profiles as contacts. Their sessions as threads. Replies streaming token by token.**
 
