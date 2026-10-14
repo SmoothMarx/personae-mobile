@@ -30,3 +30,6 @@ api-key.txt
 
 # Python bytecode (server/ plugin sources)
 __pycache__/
+
+# Agent-local working files (Hermes plans and scratch). Never part of the app.
+.hermes/
