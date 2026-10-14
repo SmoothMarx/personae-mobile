@@ -1,0 +1,4 @@
+
+> personae-mobile@0.14.0 typecheck
+> tsc --noEmit
+

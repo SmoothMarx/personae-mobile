@@ -3315,3 +3315,115 @@ screen: `323/324, 1 failed`, the screen check by name (`and it is not the old un
 so §5.3.3 — "open a thread, scroll up, expand a long tool-call block ⇒ the list does not move; scroll
 back to the end, wait for the next turn ⇒ the list follows the stream" — was **not run**. The pure checks
 prove the rule, not the device, and nothing about the device is claimed.
+
+### The build, the artifact, and the leak sweep
+
+The documented lane, in order: `npx expo prebuild -p android --no-install` (rc 0, `android/app/build.gradle`
+reads `versionCode 17 / versionName "0.14.0"`) → `scripts/patch-android-signing.sh` (rc 0) →
+`scripts/patch-android-branding.sh` (rc 0) → the README's container build
+(`docker run --rm --env-file ~/.personae-android/build.env -v "$PWD":/work … personae-android:1 bash -lc
+'./gradlew :app:assembleRelease --no-daemon --console=plain'`, `logs/gradle-0140.log`):
+**BUILD SUCCESSFUL in 6m 18s, 605 actionable tasks**. The release signing configuration is the one in use,
+said out loud at configuration time: `Personae: release build signed with
+/signing/personae-release.keystore` (`logs/gradle-0140.log:71`) — the debug fallback that would have made
+the APK un-installable never fired.
+
+| | 0.13.0 (shipped) | 0.14.0 (this build) |
+|---|---|---|
+| artifact | `dist/personae-0.13.0.apk` — 131,047,753 B | `dist/personae-0.14.0.apk` — **131,681,049 B** |
+| `aapt dump badging` | `versionCode='16' versionName='0.13.0'` | `versionCode='17' versionName='0.14.0'` |
+| signer SHA-256 (`apksigner verify --print-certs`) | `bd40e005…dd37f26` | `bd40e005…dd37f26` — **the same key**, so it installs straight over 0.13.0 with nothing to re-enter |
+| signature schemes | — | `Verifies`; v2 true, 1 signer, `CN=Personae Mobile, OU=Mobile, O=Personae, L=Lisboa, C=PT` |
+
+**Leak sweep, both directions** (shipped `assets/index.android.bundle`, 3,626,056 B). Every secret was read
+BY NAME and counted, never printed: store password **0**, key password **0**, keystore path **0**,
+`API_SERVER_KEY=` **0**, the mock's bearer **0**, the test gateway key **0**, the host user name **0**,
+`~` **0**; and the same terms searched across the WHOLE APK in both encodings, because a byte
+grep under-reads what lives in a UTF-16 string table — utf8 0 / utf-16le 0 for each. Positive controls:
+`Personae` appears 6 times in the bundle and 11 / 10 in the APK's bytes, and a nonsense string 0 — so the
+probe can find things, and the zeros mean something. The one value that DOES appear is the key ALIAS, 22
+times: it is the app's own name, which is the app being called Personae, not a credential. The bundle is a
+fresh build of this tree (`assets/app.config` reads `version 0.14.0 / versionCode 17`; the bundle differs
+from 0.13.0's, 3,626,056 vs 3,617,244 bytes) — the JS is minified, so there is no per-change string to grep
+for, and the behaviour is what the 324 checks prove.
+
+### Revert discipline, measured (§6)
+
+`git revert --no-commit <sha>` against the final tip, one at a time. "Changed" is what the revert rewrote; a
+file it could not resolve is named as a conflict instead:
+
+| reverted | changed | conflict | suite on the reverted tree |
+|---|---|---|---|
+| `cebefb6` (W3) | `app/thread/[id].tsx`, `src/logic/scrollPin.ts`, `tests/run.ts` | `PROGRESS.md` | **322/322 passed, 0 failed** |
+| `07cafd6` (W2) | `src/logic/rosterFeed.ts`, `src/roster/useRoster.ts`, `tests/run.ts`, `PROGRESS.md`, `logs/prefix-w2-probe.ts` | **none** | **322/322 passed, 0 failed** |
+| `c2eb27a` (W1) | `src/api/backend.ts`, `app/thread/[id].tsx`, `mock/dashboard.mjs`, `tests/run.ts`, `logs/wire-0.14.0.*` | `PROGRESS.md` | **320/320 passed, 0 failed** |
+
+So reverting W2 leaves W1's behaviour intact and W3 untouched — §6's own requirement — and **every
+workstream's source and tests revert cleanly**, with the suite green on the reverted tree: 322/322 for W2 and
+W3 (the 324 minus that workstream's two checks) and 320/320 for W1 (minus its four). The only file that needs
+a hand is the running log, and the reason is structural rather than a dependency: `PROGRESS.md` is ONE file
+written in order, each workstream appends its own section, and the record's sections follow the last of them —
+so deleting an earlier section runs into text appended after it. Measured at the moment each workstream was
+the tip (before the version and record commits) W3's and W2's reverts were fully clean; the table above is the
+final tip, because that is the state a reader actually has. Each workstream's checks also live in their own
+region of `tests/run.ts` (W2's by the roster chapter, W3's by the thread chapter, W1's at the end) for the
+same reason.
+
+### What could not be verified
+
+- **The device runs (the brief's §8.2/§8.3, and §5.3.3's end-to-end case): NOT RUN.** `adb devices` was
+  empty on this machine this session — no phone was attached — so "send one message, wait, send a second ⇒
+  no 4001 and the sentence survives the box", "open a profile row ⇒ the sessions are not doubled, pull to
+  refresh ⇒ they are not thinned either", and "scroll up, expand a long tool-call block ⇒ the list does not
+  move; back at the end, the next turn follows" have NOT been watched happen. The rule (the suite) and the
+  response (the wire log) are proven; the device is not, and nothing about it is claimed.
+- **The live gateway's own reject line was not captured.** `logs/wire-0.14.0.txt` is a run against
+  `mock/dashboard.mjs`, whose dispatch mirrors `_sess_nowait` and a MINTING `session.resume`; the gateway's
+  shapes are read from its source today, but the failing run is the mock's, not the box's. The box's own
+  `session-scoped RPC rejected: …` line is the missing half and stays open.
+- **Why the session goes cold is still UNVERIFIED.** The 20 s orphan-reap grace (`server.py:143`) remains a
+  hypothesis; nothing about it was written into a code comment as if it had been measured.
+- **iOS parity**: only Android was built here.
+- **The `maintainVisibleContentPosition` fallback (§5.2.5)**: not needed and not added. No dependency was
+  added to any of the three workstreams.
+
+### The brief's UNVERIFIED list, item by item
+
+1. **Why the session is cold** — still UNVERIFIED, and still a hypothesis: the 20 s orphan-reap grace
+   (`server.py:143`) is a plausible trigger and was NOT measured. No device and no live gateway were
+   reachable, and nothing about it was written into a code comment as though it had been.
+2. **"`session.resume` is not sufficient by itself"** — CONFIRMED from the gateway source, and it is the
+   whole of W1: `_resume_response` (`methods_session.py:894-905`) answers a NEW `session_id`, and the one
+   the client sent is dead. Whether the LIVE gateway accepts the retry on the returned lease for
+   `prompt.submit` specifically is **still not confirmed on the wire** — the fake gateway does
+   (`logs/wire-0.14.0.txt`); the box was not reachable. If it ever refuses the retry ON the returned
+   lease, that is the different bug the brief says to report rather than work around.
+3. **Whether the user's failing run went through `activate`** — unchanged: the `4001` branch is now there
+   and its behaviour is proven on the fake socket (`session.activate` → one `session.resume` →
+   `session.activate` on the lease); the `4007` branch's ADOPTION is proven the same way
+   (`activate` → `4007` → one resume → the NEXT session-scoped RPC rides the minted lease, with no second
+   resume: `0.14.0 W1: the WATCHER asks the registry too`). But which entry point the phone's failing turn
+   actually hit is not measurable without the phone's log.
+4. **Whether anything ELSE re-renders the list on box expansion** — READ, and the answer is NO. An item's
+   key is `tools-<runIndex>` / `reasoning-<runIndex>` / the message id (`src/logic/thread.ts:234,273,304`),
+   all derived from the run and the message, never from the expansion state;
+   `expanded.has(item.key)` only decides whether the body is rendered (`app/thread/[id].tsx:966,988`), and
+   `keyExtractor` is `(item) => item.key`. So expanding a box adds height INSIDE an existing item and
+   changes no key: the content-size change is the only mechanism that could have moved the reader, and it
+   is now gated on the intent.
+5. **Whether a 0.14.0 narrative already existed** — checked: `grep -rn '0\.14\.0'` matched only
+   `GOAL-0.14.0.md` itself and two `react-refresh` entries in `package-lock.json`. This section is the
+   first 0.14.0 narrative.
+
+### Deviations from the brief, named
+
+1. **`package.json`'s `version` was bumped in step with `app.json`** (0.13.0's precedent, same commit
+   shape). `app.json` is the one that reaches the build; `package.json` is cosmetic, and no `versionName`
+   key was added anywhere.
+2. **W1's "render-level check" (§3.3.7) is a positional source assertion**, not a render: this harness has
+   no screen renderer (`app/*.tsx` is asserted against its own bytes — the 0.13.0 W1/W3 checks do the same).
+   The assertion is positional, not a keyword grep: the ONE clear on the send path must come after
+   `await submitTurn(` and inside the `if (turn.ok)` branch.
+3. **`scripts/patch-android-branding.sh` is part of the release lane but the README's lane (§52-60) does
+   not list it** — it was run here (rc 0) so the launch screen matches the shipped 0.13.0. The README is
+   the one place the lane is written down and it is one line out of date.
