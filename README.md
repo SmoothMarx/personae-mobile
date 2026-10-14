@@ -64,41 +64,7 @@ usually wants the dashboard's `/pair` flow.
 
 ## 🧠 The story
 
-Your agent lives on a machine at home. The web UI is genuinely good — at a desk, with two monitors and
-your hands on a keyboard. In a corridor, holding a coffee, it is a browser tab you cannot reach.
-
-The thing you actually want is small and constant: **is anything waiting for me, and can I answer it
-from here?** So the roster is a contact list. A dot goes amber when a session is blocked on you, and the
-count is the number of things you can act on — answer one and the number drops, because it was never
-counting anything you could not fix. Tap the cell and you are in a thread that reads like a
-conversation, because the reply arrives as it is being written and the code the agent pastes at you
-looks like code.
-
-None of this needed a server in the middle. The gateway on the box is already serving it.
-
----
-
-## 🟢 The roster
-
-One cell per profile: face, name, status dot, unread count. Sessions group under day headings and page
-25 at a time. A profile's sessions and the cross-profile recents slice are de-duplicated by key, so a
-session that both would list is drawn once.
-
-The dot is bound to that profile's stored session and re-derived from the live surface — it is not a
-cached colour that goes stale while you look at it.
-
----
-
-## 💬 The thread
-
-Messages stream over SSE from the chat endpoint. The composer is cleared **only on success**: a failed
-turn leaves your sentence in the box, because retyping it is the tax you should not pay. A pinned
-scroll position survives new content arriving; a layout change never yanks you to the bottom.
-
-Markdown goes through one text policy with no second stripper in the tree — the plan module and the
-renderer agree, and the vendored `markdown-text.js` is pinned byte-for-byte to the plugin copy so the
-two cannot drift.
-
+Just a simple Telegram-like Messenger that shows your profiles in a list. When you click, it expands to show all your sessions with that profile, so you can have multiple sessions with different bots, all still cleanly organised.
 ---
 
 ## 🔌 Connecting
