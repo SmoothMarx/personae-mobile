@@ -7992,6 +7992,277 @@ async function main(): Promise<void> {
     assert.match(indexSrc, /\}, \[settings, settingsReady, router\]\);/, 'and the gate is in the effect deps, so it re-decides once they arrive');
   });
 
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.14.0 W1 — THE SECOND MESSAGE. The gateway resolves every session-scoped RPC out of an
+  // in-memory map (`_sess_nowait`, server.py:1228-1244) and a miss is `4001 session not found`; no
+  // RPC can warm one (`prompt.submit` is gated on the same lookup, methods_prompt.py:756). Only
+  // `session.resume` mints a resident session, and it mints a NEW runtime id (methods_session.py
+  // :894-905, `ctx.mint()` at :970). So the retry must carry the LEASE the resume returned: 0.13.0's
+  // step resumed, retried on the id the gateway had just replaced, and the second message failed.
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  /** ONE `chatStream` turn, resolved when the client reports the turn closed. */
+  const turnOnce = (
+    backend: ReturnType<typeof createBackend>,
+    sessionId: string,
+    text: string,
+  ): Promise<ApiError | null> =>
+    new Promise((resolve) => {
+      let seen: ApiError | null = null;
+      backend.chatStream(
+        sessionId,
+        text,
+        {
+          onError: (error) => {
+            seen = error;
+          },
+          onClose: () => resolve(seen),
+        },
+        '',
+      );
+    });
+
+  test('0.14.0 W1: a cold second message resumes ONCE, the retry carries the returned lease, and the next send carries it too', async () => {
+    // (a) the predicate is unchanged: the CODE is the discriminator, and only cold is cold
+    assert.equal(isColdSessionRpc(new ApiError('cold', { kind: 'http', status: 4001 })), true);
+    assert.equal(isColdSessionRpc(new ApiError('settling', { kind: 'http', status: 4009 })), false);
+
+    /**
+     * The MINTING resume — the live gateway's own shape. `sess-1` is NOT resident (`_sess_nowait`
+     * answers 4001), and the resume answers with a runtime id that is not the one it was called with.
+     */
+    const lease = 'sess-1-lease-1';
+    const cold = createMockDashboard({ port: 0, bearer: DASH_BEARER, coldSessions: ['sess-1'], resumeMint: true });
+    await cold.listen();
+    const backend = createBackend(settingsFor(cold.url, { apiKey: DASH_BEARER }));
+    try {
+      const failed = await turnOnce(backend, 'sess-1', 'segunda mensagem');
+      assert.equal(failed, null, 'the SECOND message goes through — a cold session is not the user\'s error');
+
+      const sent = cold.rpcCalls.map((call) => ({ method: call.method, session_id: String(call.params.session_id ?? '') }));
+      assert.deepEqual(
+        sent.map((call) => call.method),
+        ['prompt.submit', 'session.resume', 'prompt.submit'],
+        'the wire order is exact: submit, ONE resume, ONE retry — three calls, no fourth',
+      );
+      assert.equal(sent[0].session_id, 'sess-1', 'the first attempt names the STORED key');
+      assert.equal(sent[1].session_id, 'sess-1', 'and so does the resume — the stored key is what it resumes');
+      assert.equal(
+        sent[2].session_id,
+        lease,
+        'the RETRY carries the lease the resume RETURNED, not the id it was called with',
+      );
+
+      // (b) the NEXT sentence: same session, the adopted lease, no second resume
+      const third = await turnOnce(backend, 'sess-1', 'terceira mensagem');
+      assert.equal(third, null, 'the next send goes through as well');
+      const submits = cold.rpcCalls.filter((call) => call.method === 'prompt.submit');
+      assert.equal(submits.length, 3, 'two turns: attempt + retry, then ONE more call');
+      assert.equal(String(submits[2].params.session_id), lease, 'and it names the ADOPTED lease');
+      assert.equal(cold.rpcCalls.filter((call) => call.method === 'session.resume').length, 1, 'still exactly ONE resume');
+    } finally {
+      backend.dispose();
+      await cold.close();
+    }
+
+    // (c) a SECOND cold answer STOPS: no fourth call, no second resume, and the reason reaches the caller
+    const stubborn = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      coldSessions: ['sess-1'],
+      resumeMint: true,
+      coldAfterResume: true,
+    });
+    await stubborn.listen();
+    const stubbornBackend = createBackend(settingsFor(stubborn.url, { apiKey: DASH_BEARER }));
+    try {
+      const refused = await turnOnce(stubbornBackend, 'sess-1', 'olá');
+      assert.ok(refused, 'a retry that is refused again is reported, never painted as a finished turn');
+      assert.equal(refused.status, 4001, 'with the registry\'s own status');
+      assert.match(refused.message, /session not found/, 'and the registry\'s own sentence');
+      assert.deepEqual(
+        stubborn.rpcCalls.map((call) => call.method),
+        ['prompt.submit', 'session.resume', 'prompt.submit'],
+        'THREE calls — no fourth, no second resume, no loop',
+      );
+    } finally {
+      stubbornBackend.dispose();
+      await stubborn.close();
+    }
+
+    // (d) a refusal that is NOT cold is never retried: ONE attempt, ZERO resumes
+    const settling = createMockDashboard({
+      port: 0,
+      bearer: DASH_BEARER,
+      submitRefusal: { code: 4009, message: 'session disconnect interrupt settling' },
+    });
+    await settling.listen();
+    const settlingBackend = createBackend(settingsFor(settling.url, { apiKey: DASH_BEARER }));
+    try {
+      const refused = await turnOnce(settlingBackend, 'sess-1', 'olá');
+      assert.equal(refused?.status, 4009, 'the settling refusal surfaces as itself');
+      assert.deepEqual(settling.rpcCalls.map((call) => call.method), ['prompt.submit'], 'ONE attempt, ZERO resumes');
+    } finally {
+      settlingBackend.dispose();
+      await settling.close();
+    }
+
+    // (e) ONE resume in flight per stored key: two cold callers started together mint ONE lease
+    const together = createMockDashboard({ port: 0, bearer: DASH_BEARER, coldSessions: ['sess-1'], resumeMint: true });
+    await together.listen();
+    const togetherBackend = createBackend(settingsFor(together.url, { apiKey: DASH_BEARER }));
+    try {
+      const [first, second] = await Promise.all([
+        togetherBackend.attachFile('sess-1', 'data:audio/mp4;base64,AAAA', 'nota-1.m4a', ''),
+        togetherBackend.attachFile('sess-1', 'data:audio/mp4;base64,AAAA', 'nota-2.m4a', ''),
+      ]);
+      assert.equal(first.uploaded, true, 'the first cold caller continues on the lease');
+      assert.equal(second.uploaded, true, 'and so does the second');
+      const positions = together.rpcCalls.map((call, index) => ({ call, index }));
+      const resumes = positions.filter((row) => row.call.method === 'session.resume');
+      assert.equal(resumes.length, 1, 'TWO cold callers, ONE resume on the wire');
+      const resumeAt = resumes[0].index;
+      const attaches = positions.filter((row) => row.call.method === 'file.attach');
+      assert.ok(
+        attaches.some((row) => row.index < resumeAt),
+        'at least one attempt was made BEFORE the resume — the caller really was cold',
+      );
+      assert.ok(
+        attaches.filter((row) => row.index > resumeAt).length >= 2,
+        'and BOTH callers continue after it',
+      );
+      assert.ok(
+        attaches.every((row) =>
+          row.index < resumeAt
+            ? String(row.call.params.session_id) === 'sess-1'
+            : String(row.call.params.session_id) === lease,
+        ),
+        'every attempt before the resume names the stored key, every one after it names the lease',
+      );
+    } finally {
+      togetherBackend.dispose();
+      await together.close();
+    }
+  });
+
+  test('0.14.0 W1: the WATCHER asks the registry too - a 4001 on session.activate resumes once and re-activates ON THE LEASE', async () => {
+    const cold = createMockDashboard({ port: 0, bearer: DASH_BEARER, coldSessions: ['sess-1'], resumeMint: true });
+    await cold.listen();
+    const backend = createBackend(settingsFor(cold.url, { apiKey: DASH_BEARER }));
+    const unavailable: string[] = [];
+    const watch = await backend.watchSession('sess-1', { onUnavailable: () => unavailable.push('x') }, '');
+    try {
+      const sent = cold.rpcCalls.map((call) => ({ method: call.method, session_id: String(call.params.session_id ?? '') }));
+      assert.deepEqual(
+        sent.map((call) => call.method),
+        ['session.activate', 'session.resume', 'session.activate'],
+        'activate asks the registry, resumes ONCE, and retries ONCE',
+      );
+      assert.equal(sent[0].session_id, 'sess-1', 'the first activate names the stored key');
+      assert.equal(sent[2].session_id, 'sess-1-lease-1', 'and the re-activate names the lease it was handed');
+      assert.equal(unavailable.length, 0, 'a cold session that comes back is NOT an unavailable subscription');
+    } finally {
+      watch.close();
+      backend.dispose();
+      await cold.close();
+    }
+
+    // the source: activate now has THREE branches, and the 4007 one no longer discards what it resumed
+    const backendSrc = readFileSync(join(process.cwd(), 'src', 'api', 'backend.ts'), 'utf8');
+    const activateAt = backendSrc.indexOf('const activate = async (live: DashboardSocket)');
+    assert.ok(activateAt > 0, 'the watcher\'s activate is still there');
+    const activateBody = backendSrc.slice(activateAt, backendSrc.indexOf('const live = await shared();', activateAt));
+    assert.match(activateBody, /isColdSessionRpc\(normalized\)/, 'the 4001 branch is INSIDE activate, next to…');
+    assert.match(activateBody, /normalized\.status === 4007/, '…the 4007 branch…');
+    assert.match(activateBody, /normalized\.status === 4009/, '…and the 4009 branch');
+    assert.match(activateBody, /adoptLease\(sessionId, answer\)/, 'the 4007 resume ADOPTS the lease it was handed');
+
+    /**
+     * …and the lease the 4007 branch adopts is the one LATER RPCs send — behaviour, not only a source
+     * reading: the watcher is refused 4007, resumes ONCE, adopts the runtime id that resume minted, and
+     * the next session-scoped RPC rides it with no second resume.
+     */
+    const reattach = createMockDashboard({ port: 0, bearer: DASH_BEARER, activateRefusal: 4007, resumeMint: true });
+    await reattach.listen();
+    const reattachBackend = createBackend(settingsFor(reattach.url, { apiKey: DASH_BEARER }));
+    const handle = await reattachBackend.watchSession('sess-1', { onUnavailable: () => unavailable.push('reattach') }, '');
+    try {
+      assert.deepEqual(
+        reattach.rpcCalls.map((call) => call.method),
+        ['session.activate', 'session.resume'],
+        '4007: one activate, ONE resume — and the resume answers with a new runtime id',
+      );
+      reattach.rpcCalls.length = 0;
+      const attached = await reattachBackend.attachFile('sess-1', 'data:audio/mp4;base64,AAAA', 'nota.m4a', '');
+      assert.equal(attached.uploaded, true, 'the next session-scoped RPC goes through');
+      assert.deepEqual(
+        reattach.rpcCalls.map((call) => String(call.params.session_id)),
+        ['sess-1-lease-1'],
+        'and it goes out on the ADOPTED lease — no second resume, nothing on the replaced id',
+      );
+      assert.equal(unavailable.length, 0, 'a 4007 that resume fixed was never an unavailable subscription');
+    } finally {
+      handle.close();
+      reattachBackend.dispose();
+      await reattach.close();
+    }
+  });
+
+  test('0.14.0 W1: the composer is cleared on SUCCESS only - a failed turn leaves the user\'s sentence in the box', () => {
+    const src = threadSource();
+    const sendAt = src.indexOf('const send = useCallback');
+    const sendBody = src.slice(sendAt, src.indexOf('const stop = useCallback', sendAt));
+    assert.ok(sendAt > 0 && sendBody.includes('await submitTurn('), 'the send path is the one under test');
+    const submitAt = sendBody.indexOf('await submitTurn(');
+    const okAt = sendBody.indexOf('if (turn.ok)');
+    const failAt = sendBody.indexOf('} else if (');
+    const clears = sendBody.match(/setDraft\(''\)/g) ?? [];
+    assert.equal(clears.length, 1, 'ONE clear on the send path');
+    const clearAt = sendBody.indexOf("setDraft('')");
+    assert.ok(clearAt > submitAt, 'the clear runs AFTER the turn is known to have landed — it used to run before');
+    assert.ok(okAt < clearAt && clearAt < failAt, 'and inside the SUCCESS branch, beside the staged-attachment clear');
+    assert.ok(sendBody.indexOf('setStaged([])') < clearAt, 'the same rule the staged attachments already follow');
+    assert.match(
+      sendBody,
+      /setAttachNote\(\(turn\.reason \?\? ''\)\.trim\(\)\)/,
+      'and a failed turn still says WHY, in the note, with the sentence still in the box',
+    );
+  });
+
+  test('0.14.0 W1: the lease has ONE holder and ONE reader, and every session-scoped RPC names it', () => {
+    const backendSrc = readFileSync(join(process.cwd(), 'src', 'api', 'backend.ts'), 'utf8');
+    // one writer for the lease map, and one function that reads it (plus the frame filter)
+    assert.equal((backendSrc.match(/leases\.set\(/g) ?? []).length, 1, 'ONE writer of the lease map');
+    assert.equal((backendSrc.match(/leases\.get\(/g) ?? []).length, 2, 'TWO reads of it: `leaseFor`, and the frame filter');
+    assert.equal(
+      (backendSrc.match(/leaseFor\(/g) ?? []).length,
+      5,
+      'five call sites: adoption, the retry, the interrupt, the replay cursor, and activate',
+    );
+    // the retry is built from the params WITH the lease, never the params as they arrived
+    assert.match(
+      backendSrc,
+      /const attempt = \(lease: string\) => live\.rpc<T>\(method, \{ \.\.\.params, session_id: lease \}\);/,
+      'the retry substitutes the lease',
+    );
+    assert.ok(
+      !/return await live\.rpc<T>\(method, params\);/.test(backendSrc),
+      'the old retry — which re-used the id the gateway had just replaced — is GONE',
+    );
+    // the attach path and the text path share ONE step
+    assert.equal((backendSrc.match(/await withColdSession\(/g) ?? []).length, 1, 'the text path goes through the step');
+    assert.equal((backendSrc.match(/=> withColdSession<T>\(/g) ?? []).length, 1, 'and the attach wrapper IS the step');
+    // exactly two resume call sites: the ONE cold step, and the watcher's 4007 branch
+    assert.equal(
+      (backendSrc.match(/'session\.resume'/g) ?? []).length,
+      2,
+      'two resume call sites, and one single-flight home for the resume in flight',
+    );
+    assert.equal((backendSrc.match(/singleFlightResume\(/g) ?? []).length, 2, 'both of them go through it');
+    // and the frames of a resumed session are not filtered out of its own subscription
+    assert.match(backendSrc, /const frameBelongsTo = /, 'frames are matched on BOTH identities');
+  });
+
   // ─────────────────────────────────────────────────────── report ──
   let index = 0;
   for (const item of tests) {

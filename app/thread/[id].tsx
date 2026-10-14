@@ -876,7 +876,6 @@ export default function ThreadScreen() {
       await runCommand(text);
       return;
     }
-    setDraft('');
     setAttachNote(null);
     const turn = await submitTurn({ text, attachments: staged });
     if (turn.ok) {
@@ -884,6 +883,13 @@ export default function ThreadScreen() {
       // read as this turn's outcome (the clear is new code; the five note writes were all failures).
       setStaged([]);
       setAttachNote(null);
+      /**
+       * 0.14.0 W1 — the composer is cleared on SUCCESS ONLY, the same rule the staged attachments
+       * already follow. This clear used to run BEFORE the turn was known to have landed, so a FAILED
+       * second message (the `4001` cold session) took the user's sentence with it and left only a
+       * note. Now the sentence is still in the box and the real reason is in the note.
+       */
+      setDraft('');
     } else if ((turn.reason ?? '').trim()) {
       // 0.13.0 W1 — the REAL reason, said out loud instead of being dropped: with the write inside
       // `submitTurn` gone, this is the only writer on this path. An EMPTY reason renders nothing new

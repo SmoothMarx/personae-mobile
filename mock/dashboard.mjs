@@ -83,6 +83,31 @@ const DEFAULTS = {
    * `4017 invalid data_url payload`). It must never be retried: one attempt, zero resumes.
    */
   attachRefusal: null,
+  /**
+   * 0.14.0 W1 — `_sess_nowait` (`tui_gateway/server.py:1228-1244`): every session-scoped RPC resolves
+   * out of an IN-MEMORY map, and a miss is `4001 session not found`. `coldSessions` names the ids the
+   * gateway does NOT hold resident — a detached/reaped runtime. It is a LIST so a test can decide which
+   * session is cold; the default (empty) means every fixture id is resident, exactly as before.
+   */
+  coldSessions: [],
+  /**
+   * 0.14.0 W1 — `session.resume` MINTS A NEW runtime id (`methods_session.py:894-905` answers
+   * `session_id` = the new sid, `resumed`/`session_key` = the stored key; `ctx.mint()` at `:970` cold,
+   * `:947` deferred, `:990` eager). Opt-in, because it CHANGES the identity of the session mid-test —
+   * a scenario flag, not a default: with it on, every later RPC for that session must name the lease.
+   */
+  resumeMint: false,
+  /**
+   * 0.14.0 W1 — the retry on the returned lease STILL answers `4001`. That is a different bug (a resume
+   * that does not make the session resident); the mock models it so the check can prove the app STOPS
+   * after one resume + one retry and reports it, rather than working around it.
+   */
+  coldAfterResume: false,
+  /**
+   * 0.14.0 W1 — a `prompt.submit` refusal that is NOT a cold session (the `4007`/`4009` shapes). It
+   * must never be retried: one attempt, zero resumes.
+   */
+  submitRefusal: null,
 };
 
 /** 0.9.0 G — every `image.attach_bytes` the app sent (bytes counted, never the payload). */
@@ -209,6 +234,20 @@ function decodeFrame(buffer) {
   return { opcode, payload: payload.toString('utf8'), consumed: offset + length };
 }
 
+/**
+ * 0.14.0 W1 — the RPCs the gateway resolves out of its in-memory session map (`_sess_nowait`,
+ * `tui_gateway/server.py:1228-1244`). Every one of them answers `4001 session not found` for an id the
+ * map does not hold. `session.resume` is deliberately absent: it is the cure, not a victim.
+ */
+const SESSION_SCOPED_RPCS = [
+  'prompt.submit',
+  'session.activate',
+  'file.attach',
+  'image.attach_bytes',
+  'session.events.since',
+  'session.interrupt',
+];
+
 export function createMockDashboard(options = {}) {
   const config = { ...DEFAULTS, ...options };
   const profiles = options.profiles ?? [
@@ -236,6 +275,8 @@ export function createMockDashboard(options = {}) {
   let seq = 0;
   /** 0.13.0 W3 — how many sessions the socket-mint handed out (the draft registry's own witness). */
   let mintedSessions = 0;
+  /** 0.14.0 W1 — how many runtime leases `session.resume` has minted. */
+  let resumeSeq = 0;
   const events = []; // what the fake dispatch emitted, for assertions
   /** The port actually bound; `config.port === 0` means the OS picks a free one. */
   let boundPort = config.port;
@@ -269,6 +310,17 @@ export function createMockDashboard(options = {}) {
     calls.push({ kind: 'rpc', method, params });
     // 0.11.0 R5/R6/R7 — the same records, reachable as `dashboard.rpcCalls`.
     rpcCalls.push({ method, params });
+    /**
+     * 0.14.0 W1 — the REGISTRY gate, before every handler: `_sess_nowait` resolves a session-scoped RPC
+     * out of the in-memory map and a miss is `4001 session not found`. `session.resume` is deliberately
+     * NOT in this list — it is the one thing that can mint a resident session.
+     */
+    if (SESSION_SCOPED_RPCS.includes(method) && config.coldSessions.includes(String(params.session_id ?? ''))) {
+      socket.write(
+        encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code: 4001, message: 'session not found' } })}\n`),
+      );
+      return;
+    }
     if (method === 'profiles.get_asset') {
       // The live RPC reads `name` (methods_profiles.py:71); accept `profile` too so a caller
       // written against the plan's prose still works.
@@ -289,6 +341,14 @@ export function createMockDashboard(options = {}) {
     }
     if (method === 'prompt.submit') {
       const sessionId = String(params.session_id ?? '');
+      if (config.submitRefusal) {
+        socket.write(
+          encodeFrame(
+            `${JSON.stringify({ jsonrpc: '2.0', id, error: { code: config.submitRefusal.code, message: config.submitRefusal.message } })}\n`,
+          ),
+        );
+        return;
+      }
       socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { ok: true, session_id: sessionId } })}\n`));
       emit(socket, 'message.start', { message_id: 'live_1', role: 'assistant' }, sessionId);
       emit(socket, 'tool.start', { tool_call_id: 'live_t1', name: 'read_file', arguments: '{"path":"a.txt"}' }, sessionId);
@@ -449,8 +509,31 @@ export function createMockDashboard(options = {}) {
       return;
     }
     if (method === 'session.resume') {
+      const stored = String(params.session_id || '');
       if (config.resumeWorks) {
-        socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, result: { session_id: params.session_id, messages: [] } })}\n`));
+        /**
+         * 0.14.0 W1 — the resume MINTS: the answer's `session_id` is the NEW runtime id and the stored
+         * key comes back as `resumed`/`session_key` (`methods_session.py:894-905`). The stored key is
+         * SUPERSEDED, so on a minting resume it leaves the cold set — `coldAfterResume` keeps it cold,
+         * which is how the retry-that-still-fails case is reachable.
+         */
+        const lease = config.resumeMint ? `${stored}-lease-${(resumeSeq += 1)}` : stored;
+        if (config.resumeMint && !config.coldAfterResume) {
+          config.coldSessions = config.coldSessions.filter((id) => id !== stored);
+        }
+        if (config.coldAfterResume) {
+          // The different bug: the resume answered, and the session it minted is STILL not resident.
+          config.coldSessions = [...config.coldSessions, lease];
+        }
+        socket.write(
+          encodeFrame(
+            `${JSON.stringify({
+              jsonrpc: '2.0',
+              id,
+              result: { session_id: lease, resumed: stored, session_key: stored, messages: [] },
+            })}\n`,
+          ),
+        );
         return;
       }
       socket.write(encodeFrame(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code: 4007, message: 'session no longer live' } })}\n`));

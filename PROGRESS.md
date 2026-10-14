@@ -3187,3 +3187,70 @@ directions (markers found, values classified, the live bearer's value counted an
   rule covers it by construction; the path itself was not exercised.
 - **iOS parity**: this release was only ever run on Android.
 - **§6.7.6/7/8 and §5.4.5**: not run, for the reasons in the table — nothing about them is claimed.
+
+---
+
+## 0.14.0 — the second message survives, the roster row stops appearing twice, and opening a box stops yanking the thread to the bottom (2026-10-14)
+
+**Brief: `GOAL-0.14.0.md`** — one release, three workstreams, each revertable alone, no new dependency.
+Baseline `0.13.0` / `versionCode` **16** (`app.json:5`, `:22`) with `npm test` **316/316 passed, 0 failed**
+(measured on this tree before any change); target **`0.14.0` / `versionCode` 17**, signed with 0.13.0's own
+release key (`~/.personae-android/personae-release.keystore`), so it installs straight over the shipped
+build with nothing to re-enter. Built through the README's container lane, never a host `gradlew`.
+
+### W1 — the second message: the registry is the discriminator, and the lease a resume returns is the identity every later RPC sends
+
+`src/api/backend.ts`, `app/thread/[id].tsx` (+ `mock/dashboard.mjs` — the fake gateway now models
+`_sess_nowait` and a MINTING resume).
+
+Verified in the gateway's own source, read today: a session-scoped RPC resolves out of an in-memory map
+(`tui_gateway/server.py:1228-1244` — `_sessions.get(params["session_id"])`, a miss is `4001 session not
+found`, and the log line names the contract: *the client should resume the stored session*);
+`prompt.submit` is gated on that same lookup (`methods_prompt.py:756`) so no RPC can warm a cold session;
+`_sess_building` only builds after it succeeds (`server.py:1252-1259`). Only `session.resume` mints a
+resident session — and `_resume_response` (`methods_session.py:894-905`) answers `session_id` = the **NEW**
+runtime id with the stored key as `resumed`/`session_key` (`ctx.mint()` at `:970` cold, `:947` deferred,
+`:990` eager; the reuse-live fast path `:876-893` is the same shape). Frames ride the same runtime id:
+`_event_frame(event, sid, payload)` sets `params.session_id = sid` and `write_json` routes by
+`_sessions[sid]["transport"]` (`server.py:700-711`).
+
+So the defect had two halves. The attach RPCs had the liveness step (0.13.0 W2) and **the text path had
+none**; and **both existing call sites threw away what the resume answered** — `attachRpc` retried with the
+unchanged params, and `activate`'s 4007 branch returned without reading the result. That is 0.13.0's own
+`reject → resume → reject`, and it is why §4.3.5's device run ("succeeds on the retry") did not reproduce:
+the resume worked, and the retry went out on the id the gateway had just replaced.
+
+- **One liveness step, one home**: `withColdSession(method, params, profile)` consults `isColdSessionRpc`,
+  performs exactly one `session.resume` and exactly one retry, and builds the retry from `{...params,
+  session_id: lease}`. `attachRpc` IS the step now, and `prompt.submit` goes through it.
+- **The lease has one holder and one writer** (`leases` + `adoptLease`, whose only reader is `leaseFor`):
+  the retry, the interrupt, the replay cursor (`session.events.since`), `session.activate`, and the **frame
+  filter** (`frameBelongsTo`) all name it. That last one is not cosmetic: without it a resumed session's
+  own frames would be filtered out of its subscription and a completed turn would read as truncated.
+- **`activate` gained the third branch**: `4001` → one resume → one re-activate ON the lease. Its `4007`
+  branch keeps its own resume (0.13.0 W2's shape) and now ADOPTS it, through the same single-flight home.
+- **One resume in flight per stored key** (`singleFlightResume`): a second cold caller awaits the resume
+  already in flight and receives the same lease. Two attempts, two resumes, is a hazard, not a budget.
+- **The composer is cleared on SUCCESS only** (`app/thread/[id].tsx`): `setDraft('')` used to run before
+  the turn was known to have landed, so a failed second message took the user's sentence with it.
+
+**Checks** (`npm test`, four new): *`0.14.0 W1: a cold second message resumes ONCE, the retry carries the
+returned lease, and the next send carries it too`*, *…the WATCHER asks the registry too…*, *…the composer
+is cleared on SUCCESS only…*, *…the lease has ONE holder and ONE reader…*.
+
+**RED, measured on this tree with only `src/api/backend.ts` and `app/thread/[id].tsx` reverted** (the mock
+and the checks kept): `316/320 passed, 4 failed` — those four, by name, the first with
+`+ ApiError: Erro no gateway (4001): session not found` on the second message. **GREEN after**:
+`320/320 passed, 0 failed`, and the four pre-existing 0.13.0 checks (313-316) pass **unchanged**.
+
+**The wire** (`logs/wire-0.14.0.txt`, from `logs/wire-0.14.0.ts` against the fake gateway — the live
+gateway's shapes, not the live gateway): failing `prompt.submit {"session_id":"sess-1"}` → `{"status":4001,
+"message":"Gateway error (4001): session not found"}`; `session.resume {"session_id":"sess-1"}` →
+`{"session_id":"sess-1-lease-1","resumed":"sess-1","session_key":"sess-1"}`; retry
+`prompt.submit {"session_id":"sess-1-lease-1"}` → `{"ok":true}`; then through the app —
+`prompt.submit(sess-1) → session.resume(sess-1) → prompt.submit(sess-1-lease-1)`, one resume, and the NEXT
+send `prompt.submit(sess-1-lease-1)` with no further resume.
+
+### W2 — the roster row stops appearing twice (`src/logic/rosterFeed.ts`, `src/roster/useRoster.ts`)
+
+### W3 — opening a box stops yanking the thread to the bottom (`src/logic/scrollPin.ts` (new), `app/thread/[id].tsx`)

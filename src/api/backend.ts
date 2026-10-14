@@ -460,36 +460,149 @@ function createDashboardBackend(settings: Settings): Backend {
     return socket;
   };
 
+  // ────────────────────────────── 0.14.0 W1: the runtime LEASE, and the ONE liveness step ──
+
   /**
-   * 0.13.0 W2 — ONE liveness step for the ATTACH RPCs, on the socket this client already holds.
+   * 0.14.0 W1 — the LEASE, and why it has to exist.
    *
-   * The gateway resolves sessions from an in-memory map, so an attach to a session it no longer holds
-   * resident is rejected `4001 session not found` — and an attach can never warm it (`_sess_building`
-   * runs only after that lookup succeeds). The TEXT path already resolves first
-   * (`watchSession`'s activate-then-resume, below); the attach path had no liveness step at all. That
-   * asymmetry is the bug, and this is the missing half. Exactly one resume and one retry, then stop.
+   * A session has TWO identities and they are not interchangeable:
+   *
+   *   * the **stored key** — what the roster lists, what the route carries, and the `session_id` a
+   *     `session.resume` is CALLED WITH (the answer names it back as `resumed`/`session_key`);
+   *   * the **runtime lease** — the `session_id` argument of every session-scoped RPC.
+   *
+   * The gateway resolves a session-scoped RPC out of an IN-MEMORY map (`tui_gateway/server.py:1228-1244`
+   * — `_sessions.get(params["session_id"])`), and a miss is `4001 session not found`; no RPC can warm
+   * one (`prompt.submit` is gated on the same lookup, `methods_prompt.py:756`, and `_sess_building`
+   * only builds AFTER it succeeds). `session.resume` is the only thing that mints a resident session —
+   * and it mints a NEW one: `ctx.mint()` (`methods_session.py:970` cold, `:947` deferred, `:990`
+   * eager), so `_resume_response` (`:894-905`) answers `{"session_id": <the NEW runtime sid>,
+   * "resumed": <the stored key>, "session_key": <the same stored key>}`. The reuse-live fast path
+   * (`:876-893`) has the same shape: `session_id` is the LIVE sid, still not the stored key.
+   *
+   * Retrying on the id that was just replaced is why 0.13.0's liveness step fired and still did not
+   * help — the resume worked, and the retry went out on the dead id. So the lease is adopted from the
+   * resume answer UNCONDITIONALLY (a returned id equal to the old one is still the lease in force), and
+   * `leaseFor` is the only reader: every session-scoped RPC this backend sends names the lease.
    */
-  const attachRpc = async <T,>(
+  const leases = new Map<string, string>();
+  /** Stored key → the resume in flight. See `singleFlightResume`: a hazard to serialise. */
+  const inFlightResumes = new Map<string, Promise<string>>();
+
+  /** The id every session-scoped RPC sends: the adopted lease when there is one, else the stored key. */
+  const leaseFor = (stored: string): string => {
+    const key = String(stored ?? '');
+    return leases.get(key) ?? key;
+  };
+
+  /**
+   * 0.14.0 W1 — does this FRAME belong to the session this screen is watching?
+   *
+   * The gateway publishes a session's frames under its RUNTIME id: `_event_frame(event, sid, payload)`
+   * sets `params.session_id = sid` and `write_json` routes by `_sessions.get(sid)["transport"]`
+   * (`tui_gateway/server.py:700-711`) — the same in-memory key the RPCs are resolved from. So once a
+   * resume has replaced that id, a filter comparing ONLY the stored key drops every frame of the very
+   * session it is watching: the stream goes silent and a completed turn looks truncated. A frame may
+   * legitimately carry either identity (one emitted before the resume carries the old one), and an
+   * event with no session at all is not another session's.
+   */
+  const frameBelongsTo = (stored: string, eventSessionId?: unknown): boolean => {
+    const seen = String(eventSessionId ?? '');
+    if (!seen) return true;
+    const key = String(stored ?? '');
+    return seen === key || seen === leases.get(key);
+  };
+
+  /**
+   * Adopt the runtime lease a resume answered with, and return the lease now in force. This map's only
+   * writer. An answer naming NO id is not a lease — the stored key stands, because a resume whose
+   * answer cannot be read must not point every later RPC at an empty string.
+   */
+  const adoptLease = (stored: string, answer: unknown): string => {
+    const key = String(stored ?? '');
+    const lease = String((answer as { session_id?: unknown } | null)?.session_id ?? '');
+    if (key && lease) leases.set(key, lease);
+    return leaseFor(key);
+  };
+
+  /**
+   * 0.14.0 W1 — ONE resume in flight per stored key.
+   *
+   * Three call sites can be cold at once (the watcher's `activate`, a `prompt.submit`, an attach), and
+   * two concurrent `session.resume`s for the same session are a HAZARD, not a retry budget: a second
+   * caller awaits the one already in flight and receives the same lease. Cleared when it settles — a
+   * failed resume is not a lease.
+   */
+  const singleFlightResume = (stored: string, run: () => Promise<string>): Promise<string> => {
+    const key = String(stored ?? '');
+    if (key) {
+      const existing = inFlightResumes.get(key);
+      if (existing) return existing;
+    }
+    const pending = run();
+    if (key) {
+      inFlightResumes.set(key, pending);
+      const clear = () => {
+        if (inFlightResumes.get(key) === pending) inFlightResumes.delete(key);
+      };
+      void pending.then(clear, clear);
+    }
+    return pending;
+  };
+
+  /** The COLD step's one resume: it names the STORED key and answers with the lease it minted. */
+  const resumeColdSession = (live: DashboardSocket, stored: string, profile: string): Promise<string> =>
+    singleFlightResume(stored, async () => {
+      const answer = await live.rpc<Record<string, unknown>>('session.resume', {
+        session_id: String(stored ?? ''),
+        ...(profile ? { profile } : {}),
+      });
+      return adoptLease(stored, answer);
+    });
+
+  /**
+   * 0.14.0 W1 — ONE liveness step for EVERY session-scoped RPC, on the socket this client holds.
+   *
+   * The registry is the only discriminator: a `4001` / `session not found` means the gateway's
+   * in-memory map does not hold this session, as opposed to `4007`/`4009` (this credential may not /
+   * an interrupt is settling), which are never retried here.
+   *
+   * The retry carries the LEASE the resume returned, not the params as they arrived — otherwise the
+   * retry goes out on the id the gateway has just replaced, which is exactly the second message's
+   * `reject → resume → reject`. Exactly one resume and exactly one retry, then stop: a second cold
+   * answer propagates, and nothing that is not cold is ever retried.
+   */
+  const withColdSession = async <T,>(
     method: string,
     params: Record<string, unknown>,
     profile: string,
   ): Promise<T> => {
     const live = await shared();
+    const stored = String(params.session_id ?? '');
+    const attempt = (lease: string) => live.rpc<T>(method, { ...params, session_id: lease });
     try {
-      return await live.rpc<T>(method, params);
+      return await attempt(leaseFor(stored));
     } catch (error) {
       const normalized = normalizeError(error);
-      // Not a cold session: surface it unchanged. Nothing else is ever retried here.
+      // Not a cold session: surface it unchanged.
       if (!isColdSessionRpc(normalized)) throw normalized;
       // ONE resume …
-      await live.rpc('session.resume', {
-        session_id: String(params.session_id ?? ''),
-        ...(profile ? { profile } : {}),
-      });
-      // … and ONE retry. A second failure propagates: no loop, no backoff, no third attempt.
-      return await live.rpc<T>(method, params);
+      const lease = await resumeColdSession(live, stored, profile);
+      // … and ONE retry, ON THE LEASE. A second failure propagates: no loop, no backoff, no third try.
+      return await attempt(lease);
     }
   };
+
+  /**
+   * 0.13.0 W2 — the ATTACH RPCs' liveness step. 0.14.0 W1 moved the step itself into
+   * `withColdSession`, so the attach path, the text path and the watcher share one rule; the sequence
+   * the attach now produces CHANGED with it — the retry carries the lease the resume returned.
+   */
+  const attachRpc = async <T,>(
+    method: string,
+    params: Record<string, unknown>,
+    profile: string,
+  ): Promise<T> => withColdSession<T>(method, params, profile);
 
   return {
     kind: 'dashboard',
@@ -759,17 +872,25 @@ function createDashboardBackend(settings: Settings): Backend {
           live = await shared();
           offs.push(
             live.on('message.complete', (event) => {
-              if (event.sessionId && event.sessionId !== sessionId) return;
+              // 0.14.0 W1 — the lease counts as this session too: the gateway publishes frames under the
+              // RUNTIME id, which a resume has replaced.
+              if (!frameBelongsTo(sessionId, event.sessionId)) return;
               sawCompletion = true;
               finish(false);
             }),
             live.on('turn.error', (event) => {
-              if (event.sessionId && event.sessionId !== sessionId) return;
+              if (!frameBelongsTo(sessionId, event.sessionId)) return;
               routeEvent(event, handlers); // handlers.onError for this frame
             }),
           );
           handlers.onOpen?.();
-          await live.rpc('prompt.submit', { session_id: sessionId, text, ...(profile ? { profile } : {}) });
+          /**
+           * 0.14.0 W1 — the TEXT path's liveness step. This is the RPC the user's SECOND message
+           * rides, and it had none: a cold session answered `4001` and the sentence was gone. It now
+           * goes through the same one-resume/one-retry step as the attach RPCs — and, like them, the
+           * retry carries the lease the resume returned.
+           */
+          await withColdSession('prompt.submit', { session_id: sessionId, text, ...(profile ? { profile } : {}) }, profile);
         } catch (error) {
           handlers.onError(normalizeError(error));
           finish(false);
@@ -780,7 +901,9 @@ function createDashboardBackend(settings: Settings): Backend {
         close: () => {
           const target = live;
           if (target && !target.closed) {
-            void target.rpc('session.interrupt', { session_id: sessionId }).catch(() => undefined);
+            // 0.14.0 W1 — the interrupt is session-scoped too, so it names the LEASE: an interrupt sent
+            // on a replaced id is rejected and the turn keeps running.
+            void target.rpc('session.interrupt', { session_id: leaseFor(sessionId) }).catch(() => undefined);
           }
           finish(true);
         },
@@ -822,7 +945,7 @@ function createDashboardBackend(settings: Settings): Backend {
             latest_seq?: unknown;
             truncated?: unknown;
             epoch?: unknown;
-          }>('session.events.since', { session_id: sessionId, last_seen: lastSeen });
+          }>('session.events.since', { session_id: leaseFor(sessionId), last_seen: lastSeen });
           if (answer.truncated === true) {
             // Past the ring window: a REFETCH, never a stitched replay with a hole in it.
             lastSeen = Number(answer.latest_seq ?? 0) || lastSeen;
@@ -865,7 +988,7 @@ function createDashboardBackend(settings: Settings): Backend {
         }
         // FILTER BY SESSION: this socket also carries whatever else the app does, and another
         // session's frames must change nothing here.
-        if (event.sessionId && event.sessionId !== sessionId) return;
+        if (!frameBelongsTo(sessionId, event.sessionId)) return;
         if (typeof event.seq === 'number') lastSeen = Math.max(lastSeen, event.seq);
         routeEvent(event, handlers);
       };
@@ -890,17 +1013,49 @@ function createDashboardBackend(settings: Settings): Backend {
        * settling"` (`session_lifecycle.py:819-827`). On 4007 fall back to `session.resume`; on 4009
        * retry once after a short delay; on anything else the thread simply stays readable without a
        * subscription. A watcher that cannot attach must not look broken.
+       *
+       * 0.14.0 W1 adds the THIRD branch: `4001` is the registry's own answer — the gateway's in-memory
+       * map does not hold this session, and a watcher cannot attach to what it does not hold. ONE
+       * resume, then ONE `session.activate` ON THE LEASE it returned; a second refusal is a broken
+       * subscription, not a retry budget. Both resumes ride the same single-flight home, so a cold
+       * `activate` and a cold `prompt.submit` for one session can never mint two leases on the wire.
        */
       const activate = async (live: DashboardSocket) => {
-        const params = { session_id: sessionId, omit_messages: true, ...(profile ? { profile } : {}) };
+        // 0.14.0 W1 — the FIRST attempt names the lease in force, not the stored key: once a resume has
+        // replaced the session's runtime id, the old one is dead on every path.
+        const params = { session_id: leaseFor(sessionId), omit_messages: true, ...(profile ? { profile } : {}) };
         try {
           await live.rpc('session.activate', params);
           return;
         } catch (error) {
           const normalized = normalizeError(error);
+          if (isColdSessionRpc(normalized)) {
+            try {
+              const lease = await resumeColdSession(live, sessionId, profile);
+              await live.rpc('session.activate', { ...params, session_id: lease });
+              return;
+            } catch {
+              handlers.onUnavailable?.();
+              return;
+            }
+          }
           if (normalized.status === 4007) {
             try {
-              await live.rpc('session.resume', { session_id: sessionId, ...(profile ? { profile } : {}) });
+              /**
+               * 0.13.0 W2 — this branch exists for the gateway's own sentence (`4007 session no longer
+               * live; retry resume`).
+               *
+               * 0.14.0 W1 — its resume is no longer a DISCARDED call: the answer's `session_id` is the
+               * new runtime lease, and it is adopted through the same single-flight home as the cold
+               * step, so this watcher and every later RPC for the session send it.
+               */
+              await singleFlightResume(sessionId, async () => {
+                const answer = await live.rpc<Record<string, unknown>>('session.resume', {
+                  session_id: sessionId,
+                  ...(profile ? { profile } : {}),
+                });
+                return adoptLease(sessionId, answer);
+              });
               return;
             } catch {
               handlers.onUnavailable?.();

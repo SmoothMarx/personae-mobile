@@ -1,0 +1,21 @@
+# mock gateway on http://127.0.0.1:35577 — sess-1 is NOT resident, session.resume mints a new id
+
+── the raw wire ──
+  1. prompt.submit (the id the roster holds): {"session_id":"sess-1","text":"segunda mensagem"}
+     -> rejected: {"status":4001,"message":"Gateway error (4001): session not found"}
+  2. session.resume (the STORED key): {"session_id":"sess-1"}
+     -> the runtime lease it RETURNED: "sess-1-lease-1"
+     -> the stored key, named back: "sess-1"
+  3. prompt.submit (the LEASE the resume returned): {"session_id":"sess-1-lease-1","text":"segunda mensagem"}
+     -> answer: {"ok":true,"session_id":"sess-1-lease-1"}
+
+  in order: prompt.submit(sess-1) -> session.resume(sess-1) -> prompt.submit(sess-1-lease-1)
+
+── through the app: backend.chatStream (the text path) ──
+  the app saw: "turn closed normally (aborted=false)"
+  sent prompt.submit: "sess-1"
+  sent session.resume: "sess-1"
+  sent prompt.submit: "sess-1-lease-1"
+  resumes on the wire: 1
+
+  the NEXT send: [{"method":"prompt.submit","session_id":"sess-1-lease-1"}]
