@@ -18,7 +18,7 @@ Just a simple Telegram-like Messenger that shows your profiles in a list. When y
 | 🕰️ **Cron Job Viewer** | A list of the cron jobs associated to that profile, with a toggle for easy on/off |
 | 🖥️ **Screen Preview** | If your profile is working a browser, view it! |
 | 🔌 **Welcome Wizard** | A wizard that asks **LAN** or **Remote** up front, validates IPv4 and port strictly, splits a pasted `host:port` for you, and probes every route in parallel to paint one status dot per row. Tailscale peers are listed by their MagicDNS name. |
-| 🔑 ** EasyPairing** | The app opens your dashboard at `next=/pair`, polls, then redeems a single-use code. The phone ends up with its **own device token** — revocable on its own, never your bearer. |
+| 🔑 **EasyPairing** | The app opens your dashboard at `next=/pair`, polls, then redeems a single-use code. The phone ends up with its **own device token** — revocable on its own, never your bearer. |
 | 🗂️ **Groups** | Named sections shared by both panes; an empty one explains how to fill it |
 | 🌱 **Apropos** *(beta)* | A fresh session that already knows the background of the ones you picked |
 
