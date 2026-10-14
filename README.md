@@ -6,6 +6,7 @@
 
 Just a simple Telegram-like Messenger that shows your profiles in a list. When you click, it expands to show all your sessions with that profile, so you can have multiple sessions with different bots, all still cleanly organised.
 
+<a href="https://github.com/SmoothMarx/personae">Personae is also available as a Plug-in for Hermes Desktop</a>
 ---
 
 ## ✨ What it does
