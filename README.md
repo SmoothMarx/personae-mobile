@@ -15,6 +15,8 @@ Just a simple Telegram-like Messenger that shows your profiles in a list. When y
 | --- | --- |
 | 🟢 **Profile List** | Just like your favorite messenger app, Every profile is a contact cell with a face, a live status dot, and a "new since last visit" count. |
 | 💬 **Sessions** | Upon clicking the profile you want to talk to, it expands to show all your active sessions with that profile. It has status dot to let you know their status.|
+| 🕰️ **Cron Job Viewer** | A list of the cron jobs associated to that profile, with a toggle for easy on/off |
+| 🖥️ **Screen Preview** | If your profile is working a browser, view it! |
 | 🔌 **Welcome Wizard** | A wizard that asks **LAN** or **Remote** up front, validates IPv4 and port strictly, splits a pasted `host:port` for you, and probes every route in parallel to paint one status dot per row. Tailscale peers are listed by their MagicDNS name. |
 | 🔑 ** EasyPairing** | The app opens your dashboard at `next=/pair`, polls, then redeems a single-use code. The phone ends up with its **own device token** — revocable on its own, never your bearer. |
 | 🗂️ **Groups** | Named sections shared by both panes; an empty one explains how to fill it |
