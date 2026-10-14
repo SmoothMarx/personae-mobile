@@ -155,6 +155,8 @@ import {
   filterSessionTypes,
   isAutomatic,
   mergeBodyHits,
+  pagesToRefetch,
+  refetchPages,
   rosterContacts,
   searchRoster,
   sessionTypeChoices,
@@ -1099,6 +1101,131 @@ test('0.8.0 D: search still reaches a session the type filter hides', () => {
   // by the `feed:` tests). Turning a type off therefore never REDUCES what search can find.
   assert.ok(!hits.includes('cron-1'), 'the cron run was never searchable, filter or no filter');
 });
+
+  // ════════════════════════════════════════════════════════════════════════════════════════
+  // 0.14.0 W2 — ONE SESSION, ONE ROW. The feed concatenated the recents slice with the profile's
+  // lazily-loaded page (`useRoster.ts` `openProfile`, LAZY_PAGE 25) and never deduped by id, so a
+  // profile's newest sessions were drawn twice — two rows, one React key. Pull-to-refresh "fixed" it
+  // only by dropping the page and never re-fetching it, which is data loss with the same root.
+  // ════════════════════════════════════════════════════════════════════════════════════════
+
+  test('0.14.0 W2: a session the recents slice AND the profile page both list is drawn ONCE, under ONE key', () => {
+    const now = 1_700_000_000_000;
+    const contacts = [{ name: 'cody', label: 'Cody', isDefault: false, hasAvatar: null }];
+    /** The recents slice — it already carries this profile's newest session. */
+    const recents = [
+      { id: 'dup-1', profile: 'cody', source: 'desktop', title: 'A mesma', last_active: 1_700_000_300 },
+      { id: 'recent-2', profile: 'cody', source: 'desktop', title: 'Só nos recents', last_active: 1_700_000_200 },
+    ];
+    /** The profile's OWN page, fetched when the row was opened — it overlaps by construction. */
+    const page = [
+      { id: 'dup-1', profile: 'cody', source: 'desktop', title: 'A mesma', last_active: 1_700_000_300 },
+      { id: 'page-3', profile: 'cody', source: 'desktop', title: 'Só na página', last_active: 1_700_000_250 },
+    ];
+    const build = (loaded: Record<string, unknown[]>) =>
+      buildRoster({
+        contacts,
+        sessions: recents as never[],
+        loaded: loaded as never,
+        expanded: ['cody'],
+        perProfile: 10,
+        now,
+      });
+    const row = (model: ReturnType<typeof buildRoster>) => model.rows.find((entry) => entry.name === 'cody');
+
+    const model = build({ cody: page });
+    const ids = row(model)!.sessions.map((hit) => hit.sessionId);
+    assert.deepEqual(
+      ids.filter((id) => id === 'dup-1').length,
+      1,
+      'the session BOTH lists carry is drawn exactly once',
+    );
+    assert.equal(new Set(ids).size, ids.length, 'and no id is drawn twice at all');
+    assert.equal(ids.length, 3, 'the total is the number of UNIQUE sessions — the page keeps its own rows too');
+    assert.ok(ids.includes('page-3'), 'the page\'s other session is NOT lost by the dedupe');
+
+    // the row KEY is the pair the duplicate collided on, so it must be unique too
+    const keys = row(model)!.sessions.map((hit) => `session:${row(model)!.name}:${hit.sessionId}`);
+    assert.equal(new Set(keys).size, keys.length, 'one row per React key');
+
+    // ORDER: the surviving row keeps the position the recents slice gave it
+    const recentsOnly = row(build({}))!.sessions.map((hit) => hit.sessionId);
+    assert.equal(
+      ids.indexOf('dup-1'),
+      recentsOnly.indexOf('dup-1'),
+      'the row the recents slice placed does not move down because a page also lists it',
+    );
+    assert.deepEqual(ids, ['dup-1', 'page-3', 'recent-2'], 'activity order, over the UNIQUE set');
+
+    // and the merge is the only writer: no cap changed, no key rewritten
+    assert.equal(row(model)!.sessions.length, 3, 'perProfile is 10 and 3 unique sessions fit');
+  });
+
+  test('0.14.0 W2: refresh means FRESH, not less - it re-fetches the pages it drops, ONCE each', async () => {
+    // (a) WHICH pages: the open ones whose page is being dropped, and only those
+    assert.deepEqual(pagesToRefetch(['cody', 'beta'], ['cody']), ['cody'], 'an open profile with a page in hand');
+    assert.deepEqual(pagesToRefetch(['cody'], ['beta']), [], 'a page for a CLOSED profile is not re-fetched');
+    assert.deepEqual(pagesToRefetch(['cody'], []), [], 'an open profile that never loaded has nothing to re-fetch');
+    assert.deepEqual(pagesToRefetch(['cody', 'beta'], ['cody', 'beta']).sort(), ['beta', 'cody'], 'both open pages, when both are open');
+
+    // (b) the re-fetch itself, against a counting fake backend
+    const now = 1_700_000_000_000;
+    const contacts = [{ name: 'cody', label: 'Cody', isDefault: false, hasAvatar: null }];
+    const recents = [{ id: 'recent-2', profile: 'cody', source: 'desktop', title: 'Recents only', last_active: 1_700_000_200 }];
+    const page = [
+      { id: 'dup-1', profile: 'cody', source: 'desktop', title: 'A mesma', last_active: 1_700_000_300 },
+      { id: 'page-3', profile: 'cody', source: 'desktop', title: 'Só na página', last_active: 1_700_000_250 },
+    ];
+    const calls: string[] = [];
+    const fetched = await refetchPages(
+      async (name, limit) => {
+        calls.push(`${name}:${limit}`);
+        return page as never[];
+      },
+      pagesToRefetch(['cody'], ['cody']),
+      25,
+    );
+    assert.deepEqual(calls, ['cody:25'], 'exactly ONE profileSessions call, with LAZY_PAGE');
+    assert.equal(fetched.cody.length, 2, 'and the page comes back');
+    const refreshed = buildRoster({
+      contacts,
+      sessions: recents as never[],
+      loaded: fetched as never,
+      expanded: ['cody'],
+      perProfile: 10,
+      now,
+    });
+    const ids = refreshed.rows.find((entry) => entry.name === 'cody')!.sessions.map((hit) => hit.sessionId);
+    assert.ok(ids.includes('page-3'), 'so a refreshed roster still contains the page\'s rows — today it dropped them');
+    assert.ok(ids.includes('dup-1') && ids.includes('recent-2'), 'and the recents rows, and the shared one');
+    // a page that cannot load is ABSENT, never an empty row
+    const missing = await refetchPages(async () => {
+      throw new Error('offline');
+    }, ['cody'], 25);
+    assert.deepEqual(Object.keys(missing), [], 'a failed page is not an empty page');
+
+    // (c) the wiring: ONE helper decides, the refresh awaits it alongside loadAll, and the lazy
+    //     on-open rule is untouched
+    const hook = readFileSync(join(process.cwd(), 'src', 'roster', 'useRoster.ts'), 'utf8');
+    const refreshAt = hook.indexOf('const refresh = useCallback');
+    assert.ok(refreshAt > 0, 'the refresh is still there');
+    const refreshBody = hook.slice(refreshAt, hook.indexOf('const createSession = useCallback', refreshAt));
+    assert.match(
+      refreshBody,
+      /pagesToRefetch\(expandedNames\(prefs\), Object\.keys\(loaded\)\)/,
+      'the pages needed are decided by the ONE helper',
+    );
+    assert.match(refreshBody, /fetchPages\(wanted\)/, 'and they are actually re-fetched');
+    assert.match(refreshBody, /await Promise\.all\(\[/, 'alongside loadAll, not instead of it');
+    assert.match(refreshBody, /setLoaded\(pages\)/, 'and the result lands in `loaded`');
+    assert.ok(
+      refreshBody.indexOf('setLoaded({})') < refreshBody.indexOf('await Promise.all(['),
+      'the pages are dropped first and re-fetched after — never cleared and forgotten',
+    );
+    assert.match(hook, /if \(!opening \|\| loaded\[name\] \|\| !backend\.hasProfiles\) return;/, 'openProfile stays lazy-on-open');
+    assert.match(hook, /perProfile: 10/, 'the display cap is untouched');
+    assert.match(hook, /const LAZY_PAGE = 25;/, 'and so is the page size');
+  });
 
 // ─────────────────── 0.8.0 E: slide a row left for archive and delete ──
 

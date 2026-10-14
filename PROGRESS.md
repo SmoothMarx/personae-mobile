@@ -3253,4 +3253,32 @@ send `prompt.submit(sess-1-lease-1)` with no further resume.
 
 ### W2 — the roster row stops appearing twice (`src/logic/rosterFeed.ts`, `src/roster/useRoster.ts`)
 
+`buildRoster`'s merge concatenated the recents slice with every lazily-loaded profile page and never
+deduped by id. The two overlap by construction (`openProfile` fetches the profile's own page with
+`LAZY_PAGE = 25` when the row is opened), so a busy profile's newest sessions were drawn twice — and,
+because the row key is `session:<profile>:<id>`, **two rows with one React key**. Measured on the
+pre-fix revision with the check's own fixture (`logs/prefix-w2-probe.ts`, run against
+`git show <pre-W2>:src/logic/rosterFeed.ts`):
+
+    drawn ids:  ["dup-1","dup-1","page-3","recent-2"]
+    row keys:   ["session:cody:dup-1","session:cody:dup-1","session:cody:page-3","session:cody:recent-2"]
+    DEDUPE: FAIL — dup-1 drawn 2 time(s); unique ids 3, rows 4; unique keys 3 of 4
+
+- **The merge is the feed's only writer and it is unique by session** (`sessionIdentity` — the same pair
+  the row key is built from, so "one row" and "one key" cannot drift). First occurrence wins, so a session
+  the recents slice already placed keeps its (more recent) position.
+- **Refresh re-fetches the pages it drops.** `refresh` used to `setLoaded({})` and never re-fetch: the row
+  stayed open, so `openProfile`'s lazy guard never re-ran and the profile kept rendering from the recents
+  slice alone. That is why pull-to-refresh "fixed" the doubling — it was deleting the page's other
+  sessions with it. Now one helper (`pagesToRefetch`: the OPEN profiles whose page is being dropped) and
+  one loader (`refetchPages`, shared with `openProfile`) mean a refreshed roster is never missing a row it
+  re-fetched, and a page whose fetch fails is ABSENT rather than an empty row. No cap changed
+  (`LAZY_PAGE` 25, `perProfile` 10), and no key was rewritten to paper over the double.
+
+**Checks** (two new): *`0.14.0 W2: a session the recents slice AND the profile page both list is drawn
+ONCE, under ONE key`* and *`0.14.0 W2: refresh means FRESH, not less - it re-fetches the pages it drops,
+ONCE each`*. RED, measured: the refresh check fails by name against the pre-fix `useRoster.ts`
+(321/322, 1 failed) and the dedupe rule FAILs on the pre-fix `rosterFeed.ts` as quoted above. GREEN:
+**322/322 passed, 0 failed**, with every pre-existing roster/group/search check unchanged.
+
 ### W3 — opening a box stops yanking the thread to the bottom (`src/logic/scrollPin.ts` (new), `app/thread/[id].tsx`)

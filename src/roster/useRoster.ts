@@ -32,6 +32,8 @@ import {
   bodySearchPlan,
   buildRoster,
   mergeBodyHits,
+  pagesToRefetch,
+  refetchPages,
   rosterContacts,
   searchRoster,
   sessionRowModels,
@@ -448,18 +450,31 @@ export function useRoster() {
     [router],
   );
 
+  /**
+   * 0.14.0 W2 — ONE page loader. `openProfile`'s lazy fetch and `refresh`'s re-fetch ride the same
+   * code, so "what a profile's row shows" cannot depend on which of the two put the page there.
+   * `refetchPages` returns a FAILED page as absent, never as an empty list: a row whose page cannot load
+   * falls back to the recents slice instead of rendering a profile with no sessions under it.
+   */
+  const fetchPages = useCallback(
+    (names: string[]): Promise<Record<string, FeedSession[]>> =>
+      refetchPages(
+        (name, limit) => backend.profileSessions(name, limit) as Promise<FeedSession[]>,
+        names,
+        LAZY_PAGE,
+      ),
+    [backend],
+  );
+
   /** R9's lazy page: the row is opened first, the page lands after. */
   const openProfile = useCallback(
     (name: string) => {
       const opening = !isExpanded(prefs, name);
       mutate((current) => toggleExpanded(current, name));
       if (!opening || loaded[name] || !backend.hasProfiles) return;
-      void backend
-        .profileSessions(name, LAZY_PAGE)
-        .then((rows) => setLoaded((current) => ({ ...current, [name]: rows as FeedSession[] })))
-        .catch(() => undefined);
+      void fetchPages([name]).then((pages) => setLoaded((current) => ({ ...current, ...pages })));
     },
-    [backend, loaded, mutate, prefs],
+    [backend.hasProfiles, fetchPages, loaded, mutate, prefs],
   );
 
   const toggleProfile = useCallback(
@@ -470,10 +485,23 @@ export function useRoster() {
     [mutate, openProfile, prefs],
   );
 
+  /**
+   * 0.14.0 W2 — refresh means FRESH, not less.
+   *
+   * `setLoaded({})` alone dropped every lazily-loaded page and never re-fetched one: the profile row
+   * stayed open (so `openProfile`'s lazy fetch never re-ran — the guard is `if (!opening || loaded[name]
+   * || …) return`) and kept rendering from the recents slice alone. That is why pull-to-refresh made the
+   * user's doubled rows disappear — it was silently deleting the page's other sessions with them. The
+   * pages it drops are the pages it re-fetches: the profiles that are open right now.
+   */
   const refresh = useCallback(async () => {
+    const wanted = pagesToRefetch(expandedNames(prefs), Object.keys(loaded));
     setLoaded({});
-    await loadAll({ silent: true });
-  }, [loadAll]);
+    await Promise.all([
+      loadAll({ silent: true }),
+      fetchPages(wanted).then((pages) => setLoaded(pages)),
+    ]);
+  }, [fetchPages, loadAll, loaded, prefs]);
 
   const createSession = useCallback(
     async (name: string, title: string) => {

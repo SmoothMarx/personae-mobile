@@ -460,6 +460,52 @@ function toHit(session: FeedSession, profile: string): SearchHit {
 }
 
 /**
+ * 0.14.0 W2 — a session's identity as the ROSTER uses it: the same pair the row key is built from
+ * (`session:${session.profile}:${session.id}` — `src/roster/useRoster.ts`). ONE place decides what
+ * "the same session" means, so "one drawn row" and "one React key" can never drift apart. A session
+ * with no `profile` is the default profile's, which is what the row key draws too.
+ */
+export function sessionIdentity(session: { id?: unknown; profile?: unknown } | null | undefined): string {
+  return `${String(session?.profile ?? 'default')}\u0000${String(session?.id ?? '')}`;
+}
+
+/**
+ * 0.14.0 W2 — the pages a refresh must RE-FETCH: the profiles that are open (expanded) and whose
+ * lazily-loaded page the refresh is about to drop. `loaded` is the list of profiles that HAVE a page
+ * in hand, so this is the intersection — profiles that are open but never loaded have nothing to
+ * re-fetch, and profiles that have a page but are closed must not be fetched at all (`openProfile`'s
+ * lazy-on-open rule stays exactly as it was).
+ */
+export function pagesToRefetch(expanded: Iterable<string>, loaded: Iterable<string>): string[] {
+  const open = new Set(expanded);
+  return [...loaded].filter((name) => open.has(name));
+}
+
+/**
+ * 0.14.0 W2 — fetch the pages a refresh dropped, as the record `loaded` becomes. A page whose fetch
+ * FAILS is absent rather than empty: the row falls back to the recents slice exactly as before,
+ * instead of rendering a profile with no sessions under it.
+ */
+export async function refetchPages(
+  fetch: (name: string, limit: number) => Promise<FeedSession[]>,
+  names: string[],
+  limit: number,
+): Promise<Record<string, FeedSession[]>> {
+  const entries = await Promise.all(
+    names.map(async (name) => {
+      try {
+        return [name, await fetch(name, limit)] as const;
+      } catch {
+        return null;
+      }
+    }),
+  );
+  const out: Record<string, FeedSession[]> = {};
+  for (const entry of entries) if (entry) out[entry[0]] = entry[1];
+  return out;
+}
+
+/**
  * Build the roster.
  *
  * `sessions` is whatever the surface handed over — the sidebar's `recents` slice, or a scoped page
@@ -499,9 +545,27 @@ export function buildRoster(input: {
   /** Runs the filter HIDES. Zero when the caller has no opinion (the 0.7.0 call sites). */
   const runVisible = (session: HermesSession) => (types ? sessionTypeEnabled(sessionTypeOf(session), types) : true);
 
-  // The feed: conversations only, from the batched slice plus anything lazily loaded per profile.
-  const merged: FeedSession[] = [...input.sessions];
-  for (const list of Object.values(input.loaded ?? {})) merged.push(...list);
+  /**
+   * 0.14.0 W2 — the feed's merge is its ONLY writer, and it is UNIQUE by session.
+   *
+   * `input.sessions` is the recents slice — which for a busy profile ALREADY contains that profile's
+   * newest sessions — and `input.loaded[profile]` is the profile's own lazily-loaded page, fetched when
+   * the row is opened. The two overlap by construction, so appending one to the other drew the same
+   * session twice; and because every row is keyed `session:<profile>:<id>`, the duplicate was not only
+   * visible but **two rows with one React key**. Deduping HERE, not in a row builder, is what keeps the
+   * search path from disagreeing about what a session is.
+   *
+   * The FIRST occurrence's position is kept: a session the recents slice already placed (the more
+   * recent ordering) does not move down just because a page also lists it.
+   */
+  const merged: FeedSession[] = [];
+  const seen = new Set<string>();
+  for (const session of [...input.sessions, ...Object.values(input.loaded ?? {}).flat()]) {
+    const key = sessionIdentity(session);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(session);
+  }
   const feed = conversations(merged);
   const runs = automaticRuns(merged);
   const byProfile = groupByProfile(feed);
