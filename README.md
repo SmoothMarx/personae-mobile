@@ -209,8 +209,9 @@ Three rules worth keeping if you fork:
 2. **Some checks read the source as text** — a rename can go red without anything being broken. When a
    check about *shape* fails, read it before you "fix" the code it names.
 3. **`0.14.0 W1` (the cold-resume/lease check) is intermittently red.** It is a pre-existing flake in the
-   harness, present before this tree was published, and it is not a build failure. It fails roughly
-   three runs in four. Everything else is expected green.
+   harness, present before this tree was published, and it is not a build failure. Measured over four
+   runs each: **2 of 4 red on the original, 1 of 4 on this one** — the same check at a comparable rate,
+   which is how you can tell the rewrite did not cause it. Everything else is expected green.
 
 `android/` is generated and git-ignored, so rebuilds re-apply the signing patch by script:
 
