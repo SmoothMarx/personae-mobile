@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="assets/icon.png" width="128" height="128" alt="Personae — the mark: a blue face in profile with a white eye">
-</p>
+![Personae cover: a classical bust with a blue face mask, beside the headline Sorted by who, not when. and a roster of four profiles](brand/personae-cover-full.png)
 
 # Personae Mobile — Hermes Agent client for Android & (coming soon!) iOS
 
@@ -134,7 +132,7 @@ server/         # the two Hermes dashboard plugins the app pairs against
 scripts/        # signing + branding patches, and the secret scanners
 tests/          # the offline suite (`npm test`)
 logs/           # per-version verification transcripts — the leak checks, run by script
-brand/          # the logo kit and the design exploration behind the mark
+brand/          # the logo kit, the cover banner and the design exploration
 assets/         # app icon, adaptive icon, splash screens (five densities)
 app.json        # Expo config — name, icons, Android permissions, iOS local networking
 eas.json        # build profiles
